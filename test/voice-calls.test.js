@@ -177,7 +177,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
   assert.equal(fish.ttss.length, 2);
   assert.equal(fish.ttss[0].text, "Sto testando la chiamata.");
   assert.equal(fish.ttss[0].options.voice, fishVoiceFor(ada));
-  assert.equal(fish.ttss[0].options.speed, 1.7, "live calls request faster speech");
+  assert.equal(fish.ttss[0].options.speed, 1.3, "live calls request the default pace");
   assert.notEqual(fish.ttss[1].options.voice, fish.ttss[0].options.voice, "two agents never share a voice");
   assert.equal(links[1].speeches[0].bytes, 9600, "Ada's own bot speaks Ada's words");
   assert.equal(links[0].speeches[0].bytes, 9600, "Radix's bot speaks Radix's");

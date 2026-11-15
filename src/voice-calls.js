@@ -16,7 +16,7 @@ export const FISH_VOICES = {
 };
 const SAMPLE_RATE = 48000;
 const HISTORY = 30;
-const MAX_REPLY = 600;
+const MAX_REPLY = 280;
 // Agents may answer each other this many times in a row; then they wait for a person to speak.
 export const AGENT_CHAIN = 6;
 // Audio quieter than this is a stream of silence, not speech.
@@ -38,7 +38,7 @@ const BARGE_MS = 700;
 // The person must still be making sound this recently for the cut to be theirs and not a leftover turn.
 const BARGE_SILENCE_MS = 280;
 const WORK_DEDUPE_MS = 120000;
-const SPEECH_SPEED = 1.7;
+const SPEECH_SPEED = 1.3;
 
 // A refusal or a request to wait changes what the agents do: never a murmur, whatever else it says.
 const MEANINGFUL = new Set(["no", "non", "aspetta", "stop", "fermo", "fermati", "smetti", "basta"]);
@@ -557,13 +557,14 @@ export class VoiceCalls {
         `## Ora`,
         `Sei in una chiamata vocale dal vivo su Discord, nel canale «${call.name}».`,
         `Nella chiamata: ${[...people, ...others].join(", ") || "nessun altro per ora"}${others.length ? ` (${others.join(", ")} ${others.length === 1 ? "è un agente" : "sono agenti"} come te)` : ""}.`,
-        `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, da una a tre frasi brevi.`,
+        `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, una o due frasi brevi, al massimo una ventina di parole.`,
         "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
         "Parli solo per te.",
         "Non confermare la tua presenza e non riempire i silenzi: mai «ci sono», «sono qui», «ti sento». Se non c'è niente da dire, PASS.",
         "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
+        "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto). Se un collega ha già risposto, non aggiungere niente: PASS.",
         ...(this.dispatch ? [
-          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' in una frase breve che ci lavori, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
+          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
           "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
           "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.",
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
