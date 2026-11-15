@@ -29,6 +29,35 @@ const EMPTY_CALL_MS = 180000;
 const REPLY_TIMEOUT_MS = 45000;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+// The words a person uses only to acknowledge, to test the line or to fill a silence: not a request.
+const FILLERS = new Set(["mm", "mmm", "mmh", "mhm", "hmm", "eh", "ah", "oh", "beh", "boh", "si", "no", "ok", "okay", "okei", "grazie", "mille", "ciao", "ecco", "allora", "pronto", "ascolta", "ascoltate", "ascoltami", "senti", "dimmi", "perfetto", "certo", "bene", "buono", "giusto", "esatto", "test", "ti", "mi", "ci", "sei", "sono", "qui", "eccomi", "sento", "sentite", "sentito", "presente", "anche", "ora", "che", "come", "va", "vabbe", "un", "il", "la", "di", "dunque", "hmm"]);
+const BARGE_MS = 700;
+const WORK_DEDUPE_MS = 120000;
+const SPEECH_SPEED = 1.35;
+
+/** What a person says only to acknowledge or to test the line: it is not a request and does not cut an agent. */
+export function isNoise(text) {
+  const words = fold(text).match(/[\p{L}\p{N}]+/gu) || [];
+  if (!words.length || words.length > 6) return false;
+  return words.every((word) => FILLERS.has(word));
+}
+
+/** The same job asked twice in a call, written a little differently, gets the same key. */
+export function workKey(task) {
+  return fold(task).replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/** Two jobs are the same when one is the other with a few more words, or they share most of their words. */
+export function sameWork(one, other) {
+  if (!one || !other) return false;
+  if (one === other || one.includes(other) || other.includes(one)) return true;
+  const a = new Set(one.split(" ").filter(Boolean));
+  const b = new Set(other.split(" ").filter(Boolean));
+  if (a.size < 3 || b.size < 3) return false;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  return shared / new Set([...a, ...b]).size >= 0.6;
+}
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The agent named first in what was said, if any: «Radix, che ne pensi?» goes to Radix. */
@@ -282,19 +311,21 @@ export class VoiceCalls {
       this.log({ type: "error", channelId: call.channelId, text: `voice: ${error.message}` });
       return null;
     }
-    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), finalizer: null };
+    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), finalizer: null, bargeTimer: null };
     call.speakers.set(userId, speaker);
     stt.on("speech_start", () => { speaker.inTurn = true; });
-    stt.on("user_turn_taken", () => this.bargeIn(call, speaker));
+    stt.on("user_turn_taken", () => this.pendingBarge(call, speaker));
     stt.on("committed", (event) => {
       speaker.inTurn = false;
       clearTimeout(speaker.finalizer);
+      clearTimeout(speaker.bargeTimer);
       const text = String(event.text || "").trim();
       if (event.user_turn === false || !text) return;
       this.turn(call, { userId, name: speaker.name, text, agent: null });
     });
     stt.on("failure", (error) => {
       speaker.open = false;
+      clearTimeout(speaker.bargeTimer);
       if (call.speakers.get(userId) === speaker) call.speakers.delete(userId);
       if (error.code !== "aborted") this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} stopped (${error.status || error.code})` });
     });
@@ -310,12 +341,24 @@ export class VoiceCalls {
   closeSpeaker(call, speaker) {
     speaker.open = false;
     clearTimeout(speaker.finalizer);
+    clearTimeout(speaker.bargeTimer);
     if (call.speakers.get(speaker.userId) === speaker) call.speakers.delete(speaker.userId);
     speaker.stt.end().catch(() => {}).finally(() => speaker.stt.abort());
   }
 
   sttContext(call) {
     return call.history.slice(-8).map((turn) => ({ role: turn.agent ? "assistant" : "user", text: turn.text.slice(0, 2000) }));
+  }
+
+  /** A short "mm-hmm" does not cut an agent: it stops only if the person keeps talking over it. */
+  pendingBarge(call, speaker) {
+    if (!call.speaking && !call.thinking) return;
+    clearTimeout(speaker.bargeTimer);
+    speaker.bargeTimer = setTimeout(() => {
+      speaker.bargeTimer = null;
+      if (speaker.inTurn) this.bargeIn(call, speaker);
+    }, BARGE_MS);
+    speaker.bargeTimer.unref?.();
   }
 
   /** A person started talking over an agent: the agent stops, and what it was preparing is dropped. */
@@ -366,6 +409,11 @@ export class VoiceCalls {
       call.lastHumanAt = Date.now();
     } else call.chain += 1;
     this.log({ type: "voice", agentId: turn.agent?.id, channelId: call.channelId, text: `[voce] ${turn.agent?.name || turn.name}: ${turn.text.slice(0, 300)}` });
+    // A murmur or a test of the line is not a request: it neither cuts the agent nor is answered, and starts no work.
+    if (!turn.agent && isNoise(turn.text)) {
+      this.log({ type: "voice", channelId: call.channelId, text: `[voce] ${turn.name}: ${turn.text.slice(0, 120)} (riscontro, ignorato)` });
+      return;
+    }
     for (const speaker of call.speakers.values()) {
       if (speaker.ready && speaker.open && turn.agent) try { speaker.stt.addContext([{ role: "assistant", text: turn.text.slice(0, 2000) }]); } catch {}
     }
@@ -394,10 +442,12 @@ export class VoiceCalls {
         `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, da una a tre frasi brevi.`,
         "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
         "Parli solo per te.",
+        "Non confermare la tua presenza e non riempire i silenzi: mai «ci sono», «sono qui», «ti sento». Se non c'è niente da dire, PASS.",
+        "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
         ...(this.dispatch ? [
           "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' in una frase breve che ci lavori, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
           "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
-          "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati.",
+          "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.",
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
         ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
         "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
@@ -474,7 +524,13 @@ export class VoiceCalls {
     if (!member) return;
     const wanted = fold(workerName).trim();
     const worker = (wanted && (this.store.agents?.() || []).find((entry) => entry.enabled !== false && fold(entry.name) === wanted)) || agent;
-    const work = { agentId: worker.id, agentName: worker.name, by: asker.name, byId: asker.userId, task, said: asker.text, at: Date.now(), channelId: member.origin || call.channelId };
+    const key = workKey(task);
+    const again = call.works.find((entry) => entry.agentId === worker.id && sameWork(entry.key, key) && Date.now() - entry.at < WORK_DEDUPE_MS);
+    if (again) {
+      this.log({ type: "voice", agentId: worker.id, channelId: call.channelId, text: `${worker.name} ha già questo lavoro, aperto ${Math.round((Date.now() - again.at) / 1000)} s fa: non lo riapro (${task.slice(0, 200)})` });
+      return;
+    }
+    const work = { key, agentId: worker.id, agentName: worker.name, by: asker.name, byId: asker.userId, task, said: asker.text, at: Date.now(), channelId: member.origin || call.channelId };
     call.works.push(work);
     if (call.works.length > 20) call.works.shift();
     const who = worker === agent ? `${agent.name} prende` : `${agent.name} passa a ${worker.name}`;
@@ -484,10 +540,16 @@ export class VoiceCalls {
       .catch((error) => this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: work not started (${error.message})` }));
   }
 
+  /** How fast the voice speaks: the agent's own, else the space's, else the measured default. */
+  speechSpeed(agent) {
+    const wanted = Number(agent?.voiceSpeed ?? this.store?.settings?.voiceSpeed ?? SPEECH_SPEED);
+    return Number.isFinite(wanted) && wanted >= 0.5 && wanted <= 2 ? wanted : SPEECH_SPEED;
+  }
+
   async speak(call, member, text, thoughtMs = 0) {
     this.stopSpeaking(call);
     const { agent, link } = member;
-    const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: 1.2 });
+    const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: this.speechSpeed(agent) });
     const speaking = { agentId: agent.id, name: agent.name, tts, speech: null, text };
     call.speaking = speaking;
     this.setAgentSpeaking(call, true);
