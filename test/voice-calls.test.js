@@ -91,7 +91,7 @@ class FakeTts extends EventEmitter {
   abort() { this.aborted = true; }
 }
 
-function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
+function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now } = {}) {
   const people = [{ userId: SEB, name: "Seb", bot: false }];
   const members = () => [...people, ...[...calls.calls.values()].flatMap((call) => [...call.members.values()].map((member) => ({ userId: member.userId, name: member.agent.name, bot: true })))];
   const clients = { [radix.id]: fakeClient("bot-radix", members), [ada.id]: fakeClient("bot-ada", members) };
@@ -111,6 +111,7 @@ function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
   const calls = new VoiceCalls({
     store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch,
     log: (entry) => log.push(entry), makeLink: (options) => { const link = new FakeLink(options); links.push(link); return link; },
+    listenGapMs, now,
   });
   return { calls, fish, llm, asked, links, log, people, clients };
 }
@@ -363,4 +364,67 @@ test("voice calls: the answer starts when the turn is expected to end, and is ke
   stt.emit("committed", { text: "Radix, ferma tutto il Feed adesso.", user_turn: true });
   await until(() => asked.length === 5, "different final words are thought again");
   assert.match(asked[4].prompt, /Seb: Radix, ferma tutto il Feed adesso\./);
+});
+
+test("voice calls: a listen gap is logged once when audio stops and again when it returns", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log, people } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.listenHealth = () => ({ status: "ready", ws: 40, udp: null, drops: 2 });
+  other.listenHealth = () => ({ status: "ready", ws: 40, udp: 15, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  clock += 19000;
+  calls.sweep();
+  assert.equal(log.filter((entry) => entry.text.startsWith("ascolto fermo")).length, 0, "a pause under the gap stays quiet");
+  clock += 2000;
+  calls.sweep();
+  const stalled = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(stalled.length, 1);
+  assert.equal(stalled[0].type, "voice");
+  assert.match(stalled[0].text, /ascolto fermo: Seb nel canale «General» da 21 s senza audio/);
+  assert.match(stalled[0].text, /ear Radix, connessione ready, ping ws 40 ms, ping udp assente, mute no, sordità no, scartati 2, ultimo pacchetto 21 s fa/);
+  calls.sweep();
+  assert.equal(log.filter((entry) => entry.text.startsWith("ascolto fermo")).length, 1, "the gap is logged once until audio returns");
+  clock += 29000;
+  ear.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const resumed = log.filter((entry) => entry.text.startsWith("ascolto ripreso"));
+  assert.equal(resumed.length, 1);
+  assert.match(resumed[0].text, /ascolto ripreso: Seb nel canale «General» dopo 50 s/);
+  assert.match(resumed[0].text, /ultimo pacchetto 0 s fa/);
+  people[0].selfMute = true;
+  clock += 21000;
+  calls.sweep();
+  const muted = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(muted.length, 2);
+  assert.match(muted[1].text, /mute sì/);
+});
+
+test("voice calls: the listen log names a speaking signal with no packets, another agent still hearing, and a connection change", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.listenHealth = () => ({ status: "disconnected", ws: null, udp: null, drops: 0 });
+  other.listenHealth = () => ({ status: "ready", ws: 12, udp: 12, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  clock += 25000;
+  ear.emit("speaking", SEB);
+  other.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const stalled = log.find((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.ok(stalled, "the ear's silence is a gap even when someone else still hears");
+  assert.match(stalled.text, /connessione disconnected/);
+  assert.match(stalled.text, /segnale di parola senza pacchetti/);
+  assert.match(stalled.text, /Ada riceve audio/);
+  assert.match(stalled.text, /Ada ready/);
+  ear.emit("connection", "ready", "disconnected");
+  const change = log.find((entry) => entry.text.includes("connessione ready"));
+  assert.equal(change.text, "voce Radix: connessione ready → disconnected");
+  assert.equal(change.type, "voice");
 });

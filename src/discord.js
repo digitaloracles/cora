@@ -390,7 +390,15 @@ export class Discord extends EventEmitter {
   voiceMembers(channelId) {
     for (const guild of this.guilds.values()) {
       if (!guild.channels.has(channelId)) continue;
-      return [...(guild.voiceStates?.values() || [])].filter((state) => state.channel_id === channelId).map((state) => ({ userId: state.user_id, name: state.member?.nick || state.member?.user?.global_name || state.member?.user?.username || "", bot: Boolean(state.member?.user?.bot) }));
+      return [...(guild.voiceStates?.values() || [])].filter((state) => state.channel_id === channelId).map((state) => ({
+        userId: state.user_id,
+        name: state.member?.nick || state.member?.user?.global_name || state.member?.user?.username || "",
+        bot: Boolean(state.member?.user?.bot),
+        selfMute: Boolean(state.self_mute),
+        selfDeaf: Boolean(state.self_deaf),
+        mute: Boolean(state.mute),
+        deaf: Boolean(state.deaf),
+      }));
     }
     return [];
   }
