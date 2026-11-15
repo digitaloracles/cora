@@ -427,7 +427,7 @@ export class VoiceCalls {
   async speak(call, member, text, thoughtMs = 0) {
     this.stopSpeaking(call);
     const { agent, link } = member;
-    const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced" });
+    const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: 1.2 });
     const speaking = { agentId: agent.id, name: agent.name, tts, speech: null, text };
     call.speaking = speaking;
     this.setAgentSpeaking(call, true);

@@ -251,12 +251,13 @@ export class FishLive {
     }, signal);
   }
 
-  openTts({ voice = "", language = "", sampleRate = 24000, latency = "normal", signal } = {}) {
+  openTts({ voice = "", language = "", sampleRate = 24000, latency = "normal", speed = 1, signal } = {}) {
     if (![24000, 44100].includes(sampleRate)) throw new TypeError("Unsupported Fish TTS sample rate");
     if (typeof voice !== "string" || voice.length > 256) throw new TypeError("Invalid Fish voice");
+    if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) throw new TypeError("Invalid Fish speaking speed");
     if (typeof language !== "string" || (language && !/^[a-zA-Z0-9_-]{1,35}$/.test(language))) throw new TypeError("Invalid Fish language");
     return this.open("tts", this.ttsUrl, this.ttsModel, {
-      event: "start", request: { text: "", format: "pcm", sample_rate: sampleRate, latency: ["low", "normal", "balanced"].includes(latency) ? latency : "normal", ...(voice ? { reference_id: voice } : {}), ...(language ? { language } : {}) },
+      event: "start", request: { text: "", format: "pcm", sample_rate: sampleRate, latency: ["low", "normal", "balanced"].includes(latency) ? latency : "normal", ...(speed !== 1 ? { prosody: { speed } } : {}), ...(voice ? { reference_id: voice } : {}), ...(language ? { language } : {}) },
     }, signal);
   }
 
