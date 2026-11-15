@@ -21,9 +21,12 @@ const MAX_REPLY = 600;
 export const AGENT_CHAIN = 6;
 // Audio quieter than this is a stream of silence, not speech.
 const VOICE_PEAK = 300;
-// When a speaker goes quiet, the speech to text is given this much silence at once to close the turn.
-const TAIL_MS = 1600;
-const FINALIZE_AFTER_MS = 2500;
+// Discord sends nothing while a person is silent: after this long without audio the speech to text
+// is given silence in real time, so its own turn detection hears the pause as it happens.
+const SILENCE_PUMP_AFTER_MS = 100;
+const SILENCE_PUMP_TICK_MS = 20;
+const SILENCE_PUMP_MAX_MS = 4000;
+const FINALIZE_AFTER_MS = 1500;
 const IDLE_SPEAKER_MS = 120000;
 const EMPTY_CALL_MS = 180000;
 const REPLY_TIMEOUT_MS = 45000;
@@ -69,6 +72,11 @@ export function sameWork(one, other) {
   return shared / new Set([...a, ...b]).size >= 0.75;
 }
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The words of a turn without case, accents or punctuation: an early guess and the final text compare on these. */
+export function sameWords(text) {
+  return (fold(text).match(/[\p{L}\p{N}]+/gu) || []).join(" ");
+}
 
 /** The agent named first in what was said, if any: «Radix, che ne pensi?» goes to Radix. */
 export function namedAgent(text, agents) {
@@ -284,8 +292,30 @@ export class VoiceCalls {
     speaker.lastAt = Date.now();
     if (peakOf(pcm) >= VOICE_PEAK) speaker.lastSoundAt = speaker.lastAt;
     clearTimeout(speaker.finalizer);
-    if (speaker.ready) this.feed(speaker, pcm);
-    else speaker.queued.push(pcm);
+    if (speaker.ready) {
+      this.feed(speaker, pcm);
+      speaker.fedAt = speaker.lastAt;
+    } else speaker.queued.push(pcm);
+    this.pumpSilence(speaker);
+  }
+
+  /** While a person is silent the recogniser keeps hearing time pass, as silence, until it closes the turn. */
+  pumpSilence(speaker) {
+    if (speaker.pump) return;
+    speaker.pump = setInterval(() => {
+      const now = Date.now();
+      if (!speaker.open || now - speaker.lastAt > SILENCE_PUMP_MAX_MS) {
+        clearInterval(speaker.pump);
+        speaker.pump = null;
+        return;
+      }
+      if (!speaker.ready || now - speaker.lastAt < SILENCE_PUMP_AFTER_MS) return;
+      const ms = Math.min(now - (speaker.fedAt || speaker.lastAt), 200);
+      if (ms < SILENCE_PUMP_TICK_MS) return;
+      this.feed(speaker, Buffer.alloc(Math.round(SAMPLE_RATE * ms / 1000) * 2));
+      speaker.fedAt = (speaker.fedAt || speaker.lastAt) + ms;
+    }, SILENCE_PUMP_TICK_MS);
+    speaker.pump.unref?.();
   }
 
   feed(speaker, pcm) {
@@ -299,8 +329,8 @@ export class VoiceCalls {
   quiet(call, member, userId) {
     const speaker = call.speakers.get(userId);
     if (!speaker?.ready || this.ear(call) !== member) return;
-    // Discord stops sending when someone stops talking: the silence is given at once, so the turn can close.
-    this.feed(speaker, Buffer.alloc(Math.round(SAMPLE_RATE * TAIL_MS / 1000) * 2));
+    // The silence is already being given in real time; if the recogniser still holds the turn, it is closed.
+    this.pumpSilence(speaker);
     clearTimeout(speaker.finalizer);
     speaker.finalizer = setTimeout(() => {
       if (speaker.open && speaker.inTurn) try { speaker.stt.finalize(); } catch {}
@@ -322,10 +352,13 @@ export class VoiceCalls {
       this.log({ type: "error", channelId: call.channelId, text: `voice: ${error.message}` });
       return null;
     }
-    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), lastSoundAt: 0, finalizer: null, bargeTimer: null, bargeAt: 0 };
+    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), fedAt: 0, pump: null, lastSoundAt: 0, finalizer: null, bargeTimer: null, bargeAt: 0, early: null };
     call.speakers.set(userId, speaker);
     stt.on("speech_start", () => { speaker.inTurn = true; this.pendingBarge(call, speaker); });
     stt.on("user_turn_taken", () => this.pendingBarge(call, speaker));
+    // The recogniser expects the turn to be over: the answer starts now, and is kept only if the words stay the same.
+    stt.on("eager_end_of_turn", (event) => this.prepare(call, speaker, String(event.text || "").trim()));
+    stt.on("turn_resumed", () => this.dropEarly(speaker));
     stt.on("committed", (event) => {
       speaker.inTurn = false;
       speaker.bargeAt = 0;
@@ -334,12 +367,16 @@ export class VoiceCalls {
       clearTimeout(speaker.finalizer);
       clearTimeout(speaker.bargeTimer);
       const text = String(event.text || "").trim();
-      if (event.user_turn === false || !text) return;
-      this.turn(call, { userId, name: speaker.name, text, agent: null });
+      const early = speaker.early;
+      speaker.early = null;
+      if (event.user_turn === false || !text) return void early?.controller.abort();
+      this.turn(call, { userId, name: speaker.name, text, agent: null }, early);
     });
     stt.on("failure", (error) => {
       speaker.open = false;
       clearTimeout(speaker.bargeTimer);
+      clearInterval(speaker.pump);
+      this.dropEarly(speaker);
       if (call.speakers.get(userId) === speaker) call.speakers.delete(userId);
       if (error.code !== "aborted") this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} stopped (${error.status || error.code})` });
     });
@@ -356,6 +393,8 @@ export class VoiceCalls {
     speaker.open = false;
     clearTimeout(speaker.finalizer);
     clearTimeout(speaker.bargeTimer);
+    clearInterval(speaker.pump);
+    this.dropEarly(speaker);
     if (call.speakers.get(speaker.userId) === speaker) call.speakers.delete(speaker.userId);
     speaker.stt.end().catch(() => {}).finally(() => speaker.stt.abort());
   }
@@ -402,6 +441,33 @@ export class VoiceCalls {
     speaker.bargeAt = 0;
   }
 
+  /**
+   * The answer to a turn the recogniser expects to be over, thought before the turn is committed.
+   * Nothing is said or logged: the committed turn uses it only when its words and the call are unchanged.
+   */
+  prepare(call, speaker, text) {
+    this.dropEarly(speaker);
+    if (!text || (isNoise(text) && !this.askedQuestion(call)) || !this.calls.has(call.channelId)) return;
+    const turn = { userId: speaker.userId, name: speaker.name, text, agent: null };
+    const agent = this.responder(call, turn);
+    if (!agent) return;
+    const controller = new AbortController();
+    const reply = this.think(agent, this.prompt(call, agent, turn), controller.signal);
+    reply.catch(() => {});
+    speaker.early = { key: sameWords(text), agentId: agent.id, history: call.history.length, last: call.history.at(-1), works: call.works.length, controller, reply, at: Date.now() };
+  }
+
+  dropEarly(speaker) {
+    speaker.early?.controller.abort();
+    speaker.early = null;
+  }
+
+  /** A prepared answer is still the right one: same words, same agent, nothing else said or started meanwhile. */
+  earlyFits(call, early, turn, agent) {
+    return Boolean(early && !early.controller.signal.aborted && early.agentId === agent.id && early.key === sameWords(turn.text)
+      && early.history === call.history.length - 1 && early.last === call.history.at(-2) && early.works === call.works.length);
+  }
+
   /** A person started talking over an agent: the agent stops, and what it was preparing is dropped. */
   bargeIn(call, speaker) {
     if (call.speaking) {
@@ -441,8 +507,8 @@ export class VoiceCalls {
     return last ? call.members.get(last.agent.id).agent : this.ear(call).agent;
   }
 
-  turn(call, turn) {
-    if (!this.calls.has(call.channelId)) return;
+  turn(call, turn, early = null) {
+    if (!this.calls.has(call.channelId)) return void early?.controller.abort();
     call.history.push({ ...turn, at: Date.now() });
     if (call.history.length > HISTORY) call.history.splice(0, call.history.length - HISTORY);
     if (!turn.agent) {
@@ -453,17 +519,19 @@ export class VoiceCalls {
     // A murmur or a test of the line is not a request: it neither cuts the agent nor is answered, and starts no work.
     if (!turn.agent && isNoise(turn.text) && !this.askedQuestion(call)) {
       this.log({ type: "voice", channelId: call.channelId, text: `[voce] ${turn.name}: ${turn.text.slice(0, 120)} (riscontro, ignorato)` });
-      return;
+      return void early?.controller.abort();
     }
     for (const speaker of call.speakers.values()) {
       if (speaker.ready && speaker.open && turn.agent) try { speaker.stt.addContext([{ role: "assistant", text: turn.text.slice(0, 2000) }]); } catch {}
     }
     const agent = this.responder(call, turn);
+    const ready = agent && this.earlyFits(call, early, turn, agent) ? early : null;
+    if (early && !ready) early.controller.abort();
     if (!agent) return;
     // One answer at a time: what is being prepared for an older turn gives way to the newer one.
     if (call.thinking) call.thinking.controller.abort();
     if (call.speaking && !turn.agent) this.stopSpeaking(call);
-    this.answer(call, agent).catch((error) => {
+    this.answer(call, agent, ready).catch((error) => {
       if (error.name !== "AbortError" || error.message?.includes("timed out")) this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: ${error.message}` });
     });
   }
@@ -477,7 +545,7 @@ export class VoiceCalls {
     return false;
   }
 
-  prompt(call, agent) {
+  prompt(call, agent, extra = null) {
     const others = [...call.members.values()].filter((member) => member.agent.id !== agent.id).map((member) => member.agent.name);
     const people = this.people(call).map((person) => person.name).filter(Boolean);
     const language = this.language(agent);
@@ -504,7 +572,7 @@ export class VoiceCalls {
         "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS.",
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
-    const lines = call.history.map((entry) => entry.agent?.id === agent.id ? `Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
+    const lines = [...call.history, ...(extra ? [extra] : [])].map((entry) => entry.agent?.id === agent.id ? `Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
     const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}\n\nLa tua risposta a voce:`;
     return { system, prompt };
   }
@@ -531,11 +599,12 @@ export class VoiceCalls {
     return result.text;
   }
 
-  async answer(call, agent) {
-    const controller = new AbortController();
+  async answer(call, agent, early = null) {
+    const controller = early?.controller || new AbortController();
     const thinking = { agentId: agent.id, controller };
     call.thinking = thinking;
     const started = Date.now();
+    const ahead = early ? started - early.at : null;
     // A job, or leaving, comes only from a person: what was asked, by whom, in the last human words.
     const asker = [...call.history].reverse().find((entry) => !entry.agent);
     const lastIsHuman = Boolean(call.history.at(-1) && !call.history.at(-1).agent);
@@ -543,7 +612,7 @@ export class VoiceCalls {
     let reply;
     let leaving = false;
     try {
-      const raw = String(await this.think(agent, this.prompt(call, agent), controller.signal) || "");
+      const raw = String(await (early ? early.reply : this.think(agent, this.prompt(call, agent), controller.signal)) || "");
       leaving = lastIsHuman && LEAVE_LINE.test(raw);
       reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
       text = spokenReply(reply.said, agent.name);
@@ -562,7 +631,7 @@ export class VoiceCalls {
       return;
     }
     if (!member || !this.calls.has(call.channelId)) return;
-    await this.speak(call, member, text, Date.now() - started);
+    await this.speak(call, member, text, Date.now() - started, ahead);
     // Asked by a person to leave: it says goodbye, then goes.
     if (leaving && call.members.get(agent.id) === member) await this.leave(agent);
   }
@@ -596,7 +665,7 @@ export class VoiceCalls {
     return Number.isFinite(wanted) && wanted >= 0.5 && wanted <= 2 ? wanted : SPEECH_SPEED;
   }
 
-  async speak(call, member, text, thoughtMs = 0) {
+  async speak(call, member, text, thoughtMs = 0, aheadMs = null) {
     this.stopSpeaking(call);
     const { agent, link } = member;
     const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: this.speechSpeed(agent) });
@@ -621,7 +690,7 @@ export class VoiceCalls {
       if (call.speaking !== speaking) return;
       call.speaking = null;
       this.setAgentSpeaking(call, false);
-      this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} ha parlato (pensato in ${(thoughtMs / 1000).toFixed(1)} s, prima voce dopo ${(firstAudio / 1000).toFixed(1)} s, ${how})` });
+      this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} ha parlato (pensato in ${(thoughtMs / 1000).toFixed(1)} s${aheadMs !== null ? `, iniziato ${(aheadMs / 1000).toFixed(1)} s prima della fine del turno` : ""}, prima voce dopo ${(firstAudio / 1000).toFixed(1)} s, ${how})` });
       // Words that were fully said become a turn the others hear.
       if (how === "played") this.turn(call, { userId: member.userId, name: agent.name, text, agent });
     } catch (error) {

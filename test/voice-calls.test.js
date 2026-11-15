@@ -147,8 +147,14 @@ test("voice calls: one speech-to-text stream per person, through the first agent
   assert.equal(fish.stts.length, 1);
   assert.equal(fish.stts[0].options.sampleRate, 48000);
   assert.deepEqual(fish.stts[0].options.terms, ["Radix", "Ada"], "the agents' names are terms to recognize");
+  const heard = fish.stts[0].audio.length;
   ear.emit("quiet", SEB);
-  assert.equal(fish.stts[0].audio.at(-1), 48000 * 1.6 * 2, "a quiet speaker's turn is closed with silence given at once");
+  await until(() => fish.stts[0].audio.length >= heard + 3, "silence given while Seb is quiet", 1000);
+  const pumped = fish.stts[0].audio.slice(heard);
+  assert.ok(pumped.every((bytes) => bytes <= 48000 * 0.2 * 2), "the silence goes in real time, never as one burst");
+  const given = pumped.reduce((sum, bytes) => sum + bytes, 0) / 96;
+  const quietFor = Date.now() - calls.calls.get(VOICE).speakers.get(SEB).lastAt;
+  assert.ok(given <= quietFor + 25, `no more silence than the time that passed (${given} ms given, ${quietFor} ms quiet)`);
 });
 
 test("voice calls: a person names an agent, it answers by voice, and agents answer each other up to the chain limit", async (t) => {
@@ -195,10 +201,9 @@ test("voice calls: a person who keeps talking over an agent stops its voice, and
   const call = calls.calls.get(VOICE);
   assert.equal(call.speaking?.name, "Radix");
   fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
-  for (let frame = 0; frame < 9; frame += 1) {
-    link.emit("audio", SEB, speech16(8000));
-    await wait(100);
-  }
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[0].stopped, "the cut once Seb keeps talking", 2000);
+  clearInterval(talking);
   assert.equal(link.speeches[0].stopped, true, "the voice stops");
   assert.equal(fish.ttss[0].aborted, true, "and so does the synthesis");
   assert.equal(call.speaking, null);
@@ -325,4 +330,37 @@ test("discord voice: 24 kHz mono speech becomes 48 kHz stereo without a seam bet
   assert.deepEqual(read(second), [250, 250, 300, 300], "an odd byte waits for the next chunk; the join is interpolated");
   assert.deepEqual(read(toMono(second)), [250, 300]);
   assert.equal(peakOf(speech16(-1234)), 1234);
+});
+
+test("voice calls: the answer starts when the turn is expected to end, and is kept only if the words stay the same", async (t) => {
+  const { calls, fish, links, asked, log } = setup({ replies: { Radix: (prompt) => (/Seb: Radix, a che punto è il rilascio\?/.test(prompt) ? "Il rilascio è fermo sul gate." : "Altro.") } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  const stt = fish.stts[0];
+  stt.emit("eager_end_of_turn", { text: "Radix, a che punto è il rilascio?" });
+  await until(() => asked.length === 1, "the answer thought before the commit");
+  const call = calls.calls.get(VOICE);
+  assert.equal(call.history.length, 0, "nothing is a turn before the commit");
+  assert.equal(fish.ttss.length, 0, "and nothing is said");
+  stt.emit("committed", { text: "Radix, a che punto è il rilascio", user_turn: true });
+  await until(() => fish.ttss.length === 1, "the prepared answer spoken");
+  assert.equal(fish.ttss[0].text, "Il rilascio è fermo sul gate.");
+  assert.equal(asked.length, 1, "the same words are not thought twice");
+  await until(() => log.some((entry) => /Radix ha parlato \(pensato in [\d.]+ s, iniziato [\d.]+ s prima della fine del turno/.test(entry.text)), "the log says it started early");
+
+  stt.emit("eager_end_of_turn", { text: "Radix, e poi" });
+  await until(() => asked.length === 2, "a second early answer");
+  stt.emit("turn_resumed", {});
+  stt.emit("committed", { text: "Radix, e poi controlla il Feed.", user_turn: true });
+  await until(() => asked.length === 3, "a resumed turn is thought again with its final words");
+  assert.match(asked[2].prompt, /Seb: Radix, e poi controlla il Feed\./);
+  await until(() => fish.ttss.length === 2, "the answer to the final words");
+
+  stt.emit("eager_end_of_turn", { text: "Radix, ferma tutto" });
+  await until(() => asked.length === 4, "a third early answer");
+  stt.emit("committed", { text: "Radix, ferma tutto il Feed adesso.", user_turn: true });
+  await until(() => asked.length === 5, "different final words are thought again");
+  assert.match(asked[4].prompt, /Seb: Radix, ferma tutto il Feed adesso\./);
 });
