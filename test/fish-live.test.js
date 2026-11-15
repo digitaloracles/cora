@@ -261,3 +261,18 @@ for (const code of ["server_restarting", "max_duration_exceeded"]) test(`Fish dr
   await assert.rejects(session.done, { code });
   assert.deepEqual(turns, ["ultima frase"]);
 });
+
+test("Fish TTS applies requested speaking speed and rejects invalid rates before opening", async (t) => {
+  const { fish, state } = await fixture(t, (ws, event) => {
+    if (event.event === "stop") send(ws, { event: "finish", reason: "stop" });
+  });
+  const session = fish.openTts({ speed: 1.2 });
+  t.after(() => session.close());
+  await session.ready;
+  await session.end();
+  assert.deepEqual(state.events[0].request.prosody, { speed: 1.2 });
+  for (const speed of [0, 0.49, 2.01, NaN, Infinity, "1.2", null]) {
+    assert.throws(() => fish.openTts({ speed }), /Invalid Fish speaking speed/);
+  }
+  assert.equal(state.headers.length, 1, "invalid rates never reach the provider");
+});

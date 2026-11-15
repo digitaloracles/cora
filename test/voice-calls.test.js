@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, FISH_VOICES } from "../src/voice-calls.js";
+import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
 import { Upsampler, toMono, peakOf } from "../src/discord-voice.js";
 
 const GUILD = "g1";
@@ -91,7 +91,7 @@ class FakeTts extends EventEmitter {
   abort() { this.aborted = true; }
 }
 
-function setup({ replies = {}, agentChain = 6 } = {}) {
+function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
   const people = [{ userId: SEB, name: "Seb", bot: false }];
   const members = () => [...people, ...[...calls.calls.values()].flatMap((call) => [...call.members.values()].map((member) => ({ userId: member.userId, name: member.agent.name, bot: true })))];
   const clients = { [radix.id]: fakeClient("bot-radix", members), [ada.id]: fakeClient("bot-ada", members) };
@@ -109,7 +109,7 @@ function setup({ replies = {}, agentChain = 6 } = {}) {
   const links = [];
   const log = [];
   const calls = new VoiceCalls({
-    store: { settings: { defaultModel: "ollama/fast" } }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain,
+    store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch,
     log: (entry) => log.push(entry), makeLink: (options) => { const link = new FakeLink(options); links.push(link); return link; },
   });
   return { calls, fish, llm, asked, links, log, people, clients };
@@ -171,6 +171,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
   assert.equal(fish.ttss.length, 2);
   assert.equal(fish.ttss[0].text, "Sto testando la chiamata.");
   assert.equal(fish.ttss[0].options.voice, fishVoiceFor(ada));
+  assert.equal(fish.ttss[0].options.speed, 1.2, "live calls request faster speech");
   assert.notEqual(fish.ttss[1].options.voice, fish.ttss[0].options.voice, "two agents never share a voice");
   assert.equal(links[1].speeches[0].bytes, 9600, "Ada's own bot speaks Ada's words");
   assert.equal(links[0].speeches[0].bytes, 9600, "Radix's bot speaks Radix's");
@@ -212,6 +213,65 @@ test("voice calls: a person talking over an agent stops its voice at once, and P
   assert.equal(call.history.length, 2, "a backchannel is not a turn");
 });
 
+test("voice calls: an agent takes on a job and keeps talking; a job for a colleague goes to them; only a person starts one", async (t) => {
+  const jobs = [];
+  let radixReply = "Sì, ci lavoro subito.\nLAVORO: Controlla i 503 di REF-93 nel Feed production";
+  const { calls, fish, links, asked, log } = setup({ agentChain: 2, dispatch: async (work) => { jobs.push(work); return "thread"; }, replies: { Radix: () => radixReply, Ada: "Ada, io ci sono.\nLAVORO: qualcosa che nessuno ha chiesto" } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE, origin: "text-thread" });
+  await calls.join(ada, { channelId: VOICE, origin: "ada-thread" });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, controlla i 503 del Feed.", user_turn: true });
+  await until(() => jobs.length === 1 && fish.ttss.length >= 1, "the job and the spoken answer");
+  assert.equal(fish.ttss[0].text, "Sì, ci lavoro subito.", "the job line is never spoken");
+  assert.deepEqual({ agent: jobs[0].agent.id, from: jobs[0].from.id, channelId: jobs[0].channelId, speakerId: jobs[0].speakerId, speakerName: jobs[0].speakerName, said: jobs[0].said, task: jobs[0].task, callName: jobs[0].callName },
+    { agent: "ag_radix", from: "ag_radix", channelId: "text-thread", speakerId: SEB, speakerName: "Seb", said: "Radix, controlla i 503 del Feed.", task: "Controlla i 503 di REF-93 nel Feed production", callName: "General" });
+  assert.ok(log.some((entry) => entry.text === "Radix prende un lavoro dalla chiamata per Seb: Controlla i 503 di REF-93 nel Feed production"));
+  assert.match(asked[0].system, /In chiamata coordini il lavoro: parli e intanto lavori\./);
+  assert.doesNotMatch(asked[0].system, /non puoi usare strumenti/);
+  const call = calls.calls.get(VOICE);
+  await until(() => call.history.length === 3, "Radix's words, and Ada answering them");
+  await wait(30);
+  assert.equal(call.history[2].text, "Ada, io ci sono.");
+  assert.equal(jobs.length, 1, "Ada's job line answering an agent starts nothing");
+
+  radixReply = "LAVORO per Ada: Rifai il giro UI di NOT-34 a 360 px";
+  fish.stts[0].emit("committed", { text: "Radix, fai fare ad Ada il giro UI.", user_turn: true });
+  await until(() => jobs.length === 2, "the job for Ada");
+  assert.equal(jobs[1].agent.id, "ag_ada", "the colleague named does the job");
+  assert.equal(jobs[1].from.id, "ag_radix");
+  assert.equal(jobs[1].channelId, "text-thread", "written where Radix was called from");
+  await until(() => fish.ttss.some((tts, index) => index >= 2 && tts.text === "Ci lavoro."), "Radix's short confirmation");
+  assert.ok(log.some((entry) => entry.text === "Radix passa a Ada un lavoro dalla chiamata per Seb: Rifai il giro UI di NOT-34 a 360 px"));
+  radixReply = "Ok.";
+  const before = asked.filter((entry) => entry.name === "Radix").length;
+  fish.stts[0].emit("committed", { text: "Radix, a che punto siete?", user_turn: true });
+  await until(() => asked.filter((entry) => entry.name === "Radix").length > before, "Radix asked again");
+  assert.match(asked.filter((entry) => entry.name === "Radix").at(-1).system, /Lavori già avviati da questa chiamata[\s\S]*Radix, per Seb: Controlla i 503 di REF-93[\s\S]*Ada, per Seb: Rifai il giro UI/, "it knows what the call already started");
+});
+
+test("voice calls: asked to leave, an agent says goodbye and goes; an agent cannot send another out", async (t) => {
+  const { calls, fish, links } = setup({ replies: { Radix: "Ciao Seb, a dopo.\nESCI", Ada: "Radix, esci pure.\nESCI" } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, staccati dalla chiamata.", user_turn: true });
+  await until(() => !calls.calls.has(VOICE), "Radix leaving");
+  assert.equal(fish.ttss[0].text, "Ciao Seb, a dopo.", "the goodbye is spoken, the line is not");
+  assert.equal(links[0].closed, true);
+
+  const two = setup({ agentChain: 2, replies: { Radix: "Ciao Ada.", Ada: "Ciao Radix.\nESCI" } });
+  t.after(() => two.calls.stop());
+  await two.calls.join(radix, { channelId: VOICE });
+  await two.calls.join(ada, { channelId: VOICE });
+  await two.calls.speak(two.calls.calls.get(VOICE), two.calls.calls.get(VOICE).members.get(radix.id), "Ciao Ada.");
+  await until(() => two.fish.ttss.length === 2, "Ada answering Radix");
+  await wait(30);
+  assert.equal(two.calls.calls.get(VOICE)?.members.has(ada.id), true, "an agent's words never make another leave");
+});
+
 test("voice calls: leaving closes the person's stream, and the last agent out ends the call", async (t) => {
   const { calls, fish, links } = setup();
   t.after(() => calls.stop());
@@ -229,6 +289,12 @@ test("voice calls: leaving closes the person's stream, and the last agent out en
   await calls.leave(ada);
   assert.equal(calls.calls.size, 0);
   assert.deepEqual(await calls.leave(ada), { left: false });
+});
+
+test("voice calls: a job line and a leave line are split from what is spoken", () => {
+  assert.deepEqual(splitWork("Ci lavoro.\nLAVORO: controlla\n  i log"), { said: "Ci lavoro.\n", task: "controlla i log", for: "" });
+  assert.equal(splitWork("Va bene.\nLAVORO per Ada: rifai il giro").for, "Ada");
+  assert.deepEqual(splitWork("Nessun lavoro qui, il lavoro: lo vedo dopo."), { said: "Nessun lavoro qui, il lavoro: lo vedo dopo.", task: "", for: "" }, "only a line that starts with LAVORO counts");
 });
 
 test("voice calls: names, voices and spoken replies", () => {

@@ -211,6 +211,7 @@ export function startCora(overrides = {}) {
   const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
   voiceCalls.refreshKey = fishFromVault;
   brain.voiceCalls = voiceCalls;
+  voiceCalls.dispatch = (work) => orchestrator.fromCall(work);
   brain.allowedGuild = (guildId) => orchestrator.allowedGuild(guildId);
   // Each agent's own GitHub App: made from the panel, its hour-long tokens written on the agent's desktop.
   const github = new GithubApps({

@@ -43,7 +43,7 @@ const AREAS = [
   { name: "artifacts", paths: [/^src\/(artifacts|share-host|share-drive)\.js$/], files: ["artifacts", "artifact-shares", "artifact-level-access", "artifact-level-policy", "sealed-artifacts", "cloud"], cora: ["artifact "] },
   { name: "vault", paths: [/^src\/(vault|secrets|send-pages)\.js$/, /^web\/send\.js$/], files: ["vault"], cora: [] },
   { name: "voice", paths: [/^src\/voice\.js$/], files: ["voice", "voice-calls"], cora: ["voice "] },
-  { name: "voice calls", paths: [/^src\/(voice-calls|discord-voice|fish-live)\.js$/, /^test\/(voice-calls|fish-live)\.test\.js$/], files: ["voice-calls", "fish-live", "units"], cora: ["voice calls"] },
+  { name: "voice calls", paths: [/^src\/(voice-calls|discord-voice|fish-live)\.js$/, /^test\/(voice-calls|discord-voice|fish-live)\.test\.js$/], files: ["voice-calls", "discord-voice", "fish-live", "units"], cora: ["voice calls"] },
   { name: "character", paths: [/^src\/character\.js$/], files: ["character"], cora: ["agent character sheet"] },
   { name: "usage", paths: [/^src\/(usage|provider-usage|subscription-usage|subscription-usage-worker)\.js$/], files: ["usage", "deepseek"], cora: ["subscription usage"] },
   { name: "subscriptions", paths: [/^src\/(subscriptions|subscription-browser|gemini-profile|gemini-quota)\.js$/, /^src\/subscription-terminal\.py$/, /^test\/subscription-fixtures\.js$/], files: ["connections", "model-catalogs"], cora: ["per-agent subscription", "subscription ", "manual subscription", "Claude OAuth", "device-code", "Gemini "] },

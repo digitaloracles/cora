@@ -61,6 +61,17 @@ export function peakOf(pcm) {
   return peak;
 }
 
+export class OpusDecoder extends prism.opus.Decoder {
+  _transform(chunk, encoding, done) {
+    super._transform(chunk, encoding, (error) => {
+      if (error?.message === "Decode error: Invalid packet") {
+        this.emit("packetDropped");
+        done();
+      } else done(error);
+    });
+  }
+}
+
 /**
  * One agent's bot in one Discord voice channel, through that bot's own gateway connection:
  * it hears every participant on a stream of their own (decrypted, DAVE included, and decoded
@@ -137,7 +148,7 @@ export class VoiceLink extends EventEmitter {
     const receiver = this.connection?.receiver;
     if (!receiver || this.closed || userId === this.userId || receiver.subscriptions.has(userId)) return;
     const opus = receiver.subscribe(userId, { end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_AFTER_MS } });
-    const decoder = new prism.opus.Decoder({ rate: DISCORD_RATE, channels: 2, frameSize: FRAME_SAMPLES });
+    const decoder = new OpusDecoder({ rate: DISCORD_RATE, channels: 2, frameSize: FRAME_SAMPLES });
     opus.on("error", (error) => this.log(`voice receive ${userId}: ${error.message}`));
     decoder.on("error", (error) => this.log(`voice decode ${userId}: ${error.message}`));
     opus.pipe(decoder);

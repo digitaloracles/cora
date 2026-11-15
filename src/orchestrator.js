@@ -13,6 +13,7 @@ import { asksToStop } from "./brain.js";
 import { VOICE_MESSAGE } from "./discord.js";
 import { AUDIO_LIMIT_BYTES, VOICE_LANGUAGES, speechParts } from "./voice.js";
 import { imageMime } from "./images.js";
+import { issueKeys } from "./thread-topics.js";
 
 const HUMAN_DEBOUNCE_MS = 1200;
 // After a restart, unanswered human messages this recent are picked up again.
@@ -1248,6 +1249,44 @@ export class Orchestrator {
    * archived as passive, so it wakes nobody. A private conversation with an agent's
    * own bot has no voice of Cora's and gets nothing.
    */
+  /**
+   * A job taken on in a voice call: it becomes the person's own request to the agent, written where the
+   * work belongs, while the call goes on. The thread of the issue it names, when the agent works there,
+   * otherwise the conversation the agent was called into the call from. Returns where it went.
+   */
+  async fromCall({ agent, from = null, channelId, callChannelId = "", speakerId, speakerName, said = "", task, callName = "" }) {
+    if (!agent?.id || !task || !speakerId) throw new Error("nothing to hand over");
+    const listens = (id) => this.agentsFor(id).some((candidate) => candidate.id === agent.id);
+    // Where the agent was called from, else the voice channel's own chat when the agent works there.
+    let target = [channelId, callChannelId].find((id) => id && transportOf(id) === "discord" && listens(id)) || "";
+    if (!target) throw new Error(`${agent.name} does not work in the conversation of this call`);
+    const keys = issueKeys(`${task} ${said}`);
+    const map = keys.length && this.brain.threadMap ? this.brain.threadMap(agent, target) : { topic: [], others: new Map() };
+    if (!keys.some((key) => map.topic.includes(key))) {
+      const thread = keys.flatMap((key) => map.others.get(key) || []).find((candidate) => listens(candidate.id));
+      if (thread) target = thread.id;
+    }
+    const channel = this.channelMeta(target);
+    if (channel.guildId && !this.allowedGuild(channel.guildId)) throw new Error("that server is not one this Cora works in");
+    const state = this.state(target);
+    await this.ensureHistory(state);
+    const place = callName ? `«${callName}»` : "vocale";
+    const via = from && from.id !== agent.id ? `, passato da ${from.name}` : "";
+    await this.notice(target, `🎙️ Dalla chiamata ${place}${via}: ${speakerName} chiede a ${agent.name}: ${task}`.slice(0, 1500)).catch(() => {});
+    const item = {
+      id: `call_${randomBytes(8).toString("hex")}`,
+      at: Date.now(),
+      authorId: speakerId,
+      authorName: speakerName,
+      kind: this.isOwner(speakerId) ? "owner" : "human",
+      agentId: null,
+      content: `@${agent.name} ${task}\n[chiesto a voce nella chiamata ${place}${via}${said ? `: «${String(said).slice(0, 600)}»` : ""}]`,
+      others: [],
+    };
+    await this.ingest(state, item);
+    return target;
+  }
+
   async notice(channelId, text) {
     const content = String(text || "").slice(0, 1500);
     if (!content || this.dmAgent.has(channelId)) return [];
