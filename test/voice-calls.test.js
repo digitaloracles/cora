@@ -91,7 +91,7 @@ class FakeTts extends EventEmitter {
   abort() { this.aborted = true; }
 }
 
-function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
+function setup({ replies = {}, agentChain = 6, dispatch = null, listenStallMs } = {}) {
   const people = [{ userId: SEB, name: "Seb", bot: false }];
   const members = () => [...people, ...[...calls.calls.values()].flatMap((call) => [...call.members.values()].map((member) => ({ userId: member.userId, name: member.agent.name, bot: true })))];
   const clients = { [radix.id]: fakeClient("bot-radix", members), [ada.id]: fakeClient("bot-ada", members) };
@@ -109,7 +109,7 @@ function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
   const links = [];
   const log = [];
   const calls = new VoiceCalls({
-    store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch,
+    store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch, listenStallMs,
     log: (entry) => log.push(entry), makeLink: (options) => { const link = new FakeLink(options); links.push(link); return link; },
   });
   return { calls, fish, llm, asked, links, log, people, clients };
@@ -363,4 +363,95 @@ test("voice calls: the answer starts when the turn is expected to end, and is ke
   stt.emit("committed", { text: "Radix, ferma tutto il Feed adesso.", user_turn: true });
   await until(() => asked.length === 5, "different final words are thought again");
   assert.match(asked[4].prompt, /Seb: Radix, ferma tutto il Feed adesso\./);
+});
+
+test("voice calls: a person's audio that stops and comes back is a silence window written in the registry", async (t) => {
+  const { calls, links, log } = setup({ listenStallMs: 25 });
+  t.after(() => calls.stop());
+  await calls.join(ada, { channelId: VOICE });
+  const [ear] = links;
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => log.some((entry) => /^ascolto Seb nel canale vocale/.test(entry.text || "")), "Seb's stream");
+  const before = log.length;
+  await wait(45);
+  calls.sweep();
+  const stall = log.slice(before).filter((entry) => /nessuna voce in arrivo da/.test(entry.text || ""));
+  assert.equal(stall.length, 1, "the silence is one row");
+  assert.match(stall[0].text, /nessuna voce in arrivo da \d+ s \(ultima alle \d\d:\d\d:\d\dZ, Seb\)/);
+  assert.match(stall[0].text, /riconoscimento aperto, nessun turno in corso/);
+  assert.match(stall[0].text, /nessun bot riceve più audio/);
+  calls.sweep();
+  assert.equal(log.slice(before).filter((entry) => /nessuna voce in arrivo da/.test(entry.text || "")).length, 1, "no second row for the same silence");
+  ear.emit("audio", SEB, speech16(8000));
+  const resume = log.slice(before).filter((entry) => /torna in arrivo/.test(entry.text || ""));
+  assert.equal(resume.length, 1, "the end of the window is written once");
+  assert.match(resume[0].text, /la voce di Seb torna in arrivo dopo \d+ s di silenzio/);
+  calls.sweep();
+  assert.equal(log.filter((entry) => /torna in arrivo/.test(entry.text || "")).length, 1, "a resumed window does not write again");
+  assert.equal(log.filter((entry) => /nessuna voce in arrivo da/.test(entry.text || "")).length, 1, "and the closed window is not reopened");
+});
+
+test("voice calls: a first bot gone deaf while another still hears is told apart and named", async (t) => {
+  const { calls, links, log } = setup({ listenStallMs: 25 });
+  t.after(() => calls.stop());
+  await calls.join(ada, { channelId: VOICE });
+  await calls.join(radix, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => log.some((entry) => /^ascolto Seb nel canale vocale/.test(entry.text || "")), "Seb's stream");
+  const before = log.length;
+  await wait(45);
+  other.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const rows = log.slice(before).filter((entry) => /nessuna voce in arrivo da/.test(entry.text || ""));
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].text, /Radix riceve ancora audio/, "the row names the bot that still hears");
+  assert.equal(log.slice(before).filter((entry) => /torna in arrivo/.test(entry.text || "")).length, 0, "the ear has not come back");
+});
+
+test("voice calls: an ear that never heard a person while another bot did says so", async (t) => {
+  const { calls, links, log } = setup({ listenStallMs: 25 });
+  t.after(() => calls.stop());
+  await calls.join(ada, { channelId: VOICE });
+  await calls.join(radix, { channelId: VOICE });
+  const [, other] = links;
+  other.emit("audio", SEB, speech16(8000));
+  const before = log.length;
+  await wait(45);
+  calls.sweep();
+  const rows = log.slice(before).filter((entry) => /il primo bot in chiamata non riceve la voce/.test(entry.text || ""));
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].text, /non riceve la voce di Seb, mentre Radix ha ricevuto audio/);
+  calls.sweep();
+  assert.equal(log.slice(before).filter((entry) => /il primo bot in chiamata non riceve la voce/.test(entry.text || "")).length, 1, "one row, not one for every sweep");
+});
+
+test("voice calls: a call where nobody has spoken yet writes no silence", async (t) => {
+  const { calls, log } = setup({ listenStallMs: 10 });
+  t.after(() => calls.stop());
+  await calls.join(ada, { channelId: VOICE });
+  await wait(30);
+  calls.sweep();
+  assert.equal(log.filter((entry) => /nessuna voce in arrivo da|il primo bot in chiamata non riceve/.test(entry.text || "")).length, 0);
+});
+
+test("voice calls: a first bot gone deaf hands listening to the bot that still hears", async (t) => {
+  const { calls, links, log, fish } = setup({ listenStallMs: 25, replies: { Radix: "Eccomi, ti ascolto." } });
+  t.after(() => calls.stop());
+  await calls.join(ada, { channelId: VOICE });
+  await calls.join(radix, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream through the first bot");
+  await wait(45);
+  other.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  assert.equal(log.filter((entry) => /ascolto: passa a Radix/.test(entry.text || "")).length, 1, "listening moves to the bot that hears");
+  assert.equal(fish.stts.length, 1, "nothing is opened a second time for the same silence");
+  assert.ok(fish.stts[0].ended || fish.stts[0].aborted, "the recogniser of the deaf bot is closed");
+  other.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 2, "a stream opened on the bot that hears");
+  assert.equal(calls.ear(calls.calls.get(VOICE)).agent.name, "Radix");
+  fish.stts[1].emit("committed", { text: "Che cosa stavi dicendo?", user_turn: true });
+  await until(() => other.speeches.length === 1, "the answer is spoken");
 });

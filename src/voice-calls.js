@@ -29,6 +29,11 @@ const SILENCE_PUMP_MAX_MS = 4000;
 const FINALIZE_AFTER_MS = 1500;
 const IDLE_SPEAKER_MS = 120000;
 const EMPTY_CALL_MS = 180000;
+// A person's voice can stop reaching the call while everything else looks alive. After this long
+// without sound from a person the call writes the silence down, and writes its end when it returns.
+const LISTEN_STALL_MS = 45000;
+// Listening moves to a bot only while its audio is this recent: a bot that heard long ago proves nothing.
+const LISTEN_RECENT_MS = 5000;
 const REPLY_TIMEOUT_MS = 45000;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -145,13 +150,15 @@ class Call {
     this.thinking = null;
     this.pending = null;
     this.works = [];
+    // The last sound heard from a person, so a silence that is not a pause can be told and timed.
+    this.listen = { lastAt: 0, lastUser: "", anyAt: 0, anyUser: "", stalledAt: 0, deafAt: 0, earId: "" };
     this.lastHumanAt = Date.now();
     this.startedAt = Date.now();
   }
 }
 
 export class VoiceCalls {
-  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null }) {
+  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null, listenStallMs = LISTEN_STALL_MS }) {
     this.store = store;
     this.bots = bots;
     this.llm = llm;
@@ -163,6 +170,7 @@ export class VoiceCalls {
     this.agentChain = agentChain;
     // Hands a job taken on in a call to the agent's written conversation, where it works with its tools.
     this.dispatch = dispatch;
+    this.listenStallMs = listenStallMs;
     this.calls = new Map();
     this.sweeper = setInterval(() => this.sweep(), 15000);
     this.sweeper.unref?.();
@@ -256,6 +264,7 @@ export class VoiceCalls {
     const member = call.members.get(agentId);
     if (!member) return;
     call.members.delete(agentId);
+    if (call.listen.earId === agentId) call.listen.earId = "";
     if (call.speaking?.agentId === agentId) this.stopSpeaking(call);
     if (call.thinking?.agentId === agentId) call.thinking.controller.abort();
     // The speakers were heard through this agent's bot: hand them to whoever stays.
@@ -272,8 +281,13 @@ export class VoiceCalls {
     this.emit({ type: "voice-calls", calls: this.status() });
   }
 
-  /** The first agent in the call is the ear: one stream per person, never one per agent. */
+  /**
+   * The ear is the first agent in the call: one stream per person, never one per agent. It is another
+   * agent only when the first one has gone deaf and listening has moved to the one that still hears.
+   */
   ear(call) {
+    const moved = call.listen?.earId ? call.members.get(call.listen.earId) : null;
+    if (moved && !moved.link.closed) return moved;
     return [...call.members.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0] || null;
   }
 
@@ -282,21 +296,96 @@ export class VoiceCalls {
   }
 
   heard(call, member, userId, pcm) {
-    if (this.ear(call) !== member || this.isOwnAgent(call, userId)) return;
+    if (this.isOwnAgent(call, userId)) return;
+    const peak = peakOf(pcm);
+    if (peak >= VOICE_PEAK) this.arrived(call, member, userId);
+    if (this.ear(call) !== member) return;
     let speaker = call.speakers.get(userId);
     if (!speaker) {
-      if (peakOf(pcm) < VOICE_PEAK) return;
+      if (peak < VOICE_PEAK) return;
       speaker = this.openSpeaker(call, member, userId);
       if (!speaker) return;
     }
     speaker.lastAt = Date.now();
-    if (peakOf(pcm) >= VOICE_PEAK) speaker.lastSoundAt = speaker.lastAt;
+    if (peak >= VOICE_PEAK) speaker.lastSoundAt = speaker.lastAt;
     clearTimeout(speaker.finalizer);
     if (speaker.ready) {
       this.feed(speaker, pcm);
       speaker.fedAt = speaker.lastAt;
     } else speaker.queued.push(pcm);
     this.pumpSilence(speaker);
+  }
+
+  /**
+   * A person's sound reached a bot. Only the first bot in the call feeds the speech to text, so its
+   * audio going quiet is the call going deaf; the others hearing it says the call itself is alive.
+   */
+  arrived(call, member, userId) {
+    const now = Date.now();
+    member.lastHeardAt = now;
+    member.lastHeardUser = userId;
+    const listen = call.listen;
+    listen.anyAt = now;
+    listen.anyUser = userId;
+    if (this.ear(call) !== member) return;
+    listen.lastAt = now;
+    listen.lastUser = userId;
+    if (!listen.stalledAt) return;
+    const seconds = Math.round((now - listen.stalledAt) / 1000);
+    listen.stalledAt = 0;
+    this.log({ type: "voice", channelId: call.channelId, text: `ascolto: la voce di ${this.personName(call, userId) || "una persona"} torna in arrivo dopo ${seconds} s di silenzio` });
+  }
+
+  /**
+   * A person's voice has not reached the ear for a while, or never did while another bot hears it:
+   * one row for the window, with the last sound and what the recogniser had at that moment.
+   */
+  watchListening(call, now) {
+    const ear = this.ear(call);
+    const listen = call.listen;
+    if (!ear || !this.people(call).length) return;
+    const others = [...call.members.values()].filter((member) => member !== ear && member.lastHeardAt);
+    const names = others.map((member) => member.agent.name).join(", ");
+    const who = (userId) => this.personName(call, userId) || "una persona";
+    const still = names ? `${names} riceve ancora audio` : "nessun bot riceve più audio";
+    if (!listen.lastAt) {
+      // The ear has never heard a person while another bot has: the ear is deaf, the call is not quiet.
+      if (!listen.anyAt || listen.deafAt || now - listen.anyAt <= this.listenStallMs) return;
+      listen.deafAt = listen.anyAt;
+      this.log({ type: "voice", channelId: call.channelId, text: `ascolto: il primo bot in chiamata non riceve la voce di ${who(listen.anyUser)}, mentre ${names ? `${names} ha ricevuto audio` : "nessun bot ha ricevuto audio"}; riconoscimento chiuso` });
+      this.moveEar(call, others, now);
+      return;
+    }
+    if (listen.stalledAt || now - listen.lastAt <= this.listenStallMs) return;
+    listen.stalledAt = listen.lastAt;
+    const seconds = Math.round((now - listen.lastAt) / 1000);
+    const at = new Date(listen.lastAt).toISOString().slice(11, 19);
+    const speaker = call.speakers.get(listen.lastUser);
+    const state = speaker?.open ? (speaker.inTurn ? "aperto con un turno in corso" : "aperto, nessun turno in corso") : "chiuso";
+    this.log({ type: "voice", channelId: call.channelId, text: `ascolto: nessuna voce in arrivo da ${seconds} s (ultima alle ${at}Z, ${who(listen.lastUser)}); riconoscimento ${state}; ${still}` });
+    this.moveEar(call, others, now);
+  }
+
+  /**
+   * The ear hears nothing while another bot still gets the person's audio: listening moves there and
+   * the recogniser is reopened, so a deaf first bot no longer costs the whole call its voice.
+   */
+  moveEar(call, others, now) {
+    const listen = call.listen;
+    const freshest = others
+      .filter((member) => member.lastHeardAt > listen.lastAt && now - member.lastHeardAt < LISTEN_RECENT_MS)
+      .sort((a, b) => b.lastHeardAt - a.lastHeardAt)[0];
+    if (!freshest) return false;
+    for (const speaker of [...call.speakers.values()]) this.closeSpeaker(call, speaker);
+    listen.earId = freshest.agent.id;
+    listen.lastAt = freshest.lastHeardAt;
+    listen.lastUser = freshest.lastHeardUser || "";
+    listen.anyAt = freshest.lastHeardAt;
+    listen.anyUser = freshest.lastHeardUser || "";
+    listen.stalledAt = 0;
+    listen.deafAt = 0;
+    this.log({ type: "voice", channelId: call.channelId, text: `ascolto: passa a ${freshest.agent.name}, che riceve ancora la voce; riconoscimento riaperto` });
+    return true;
   }
 
   /** While a person is silent the recogniser keeps hearing time pass, as silence, until it closes the turn. */
@@ -710,6 +799,7 @@ export class VoiceCalls {
     const now = Date.now();
     for (const call of [...this.calls.values()]) {
       for (const speaker of [...call.speakers.values()]) if (now - speaker.lastAt > IDLE_SPEAKER_MS && !speaker.inTurn) this.closeSpeaker(call, speaker);
+      this.watchListening(call, now);
       if (this.people(call).length) call.lastHumanAt = Math.max(call.lastHumanAt, now - 1);
       else if (now - call.lastHumanAt > EMPTY_CALL_MS) {
         for (const member of [...call.members.values()]) this.leave(member.agent).catch(() => {});
