@@ -17,7 +17,7 @@ export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "rem
  * changing, pausing or deleting one touches nothing else — so they are not
  * locked behind the computer, which only opens when the owner is the one asking.
  */
-export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, "read_attachment", "thread_open", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_settings"]);
+export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, "read_attachment", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_settings"]);
 
 export const TOOL_DEFS = [
   { name: "list_agents", description: "Read the current directory of agents visible to you: id, name, description, configured email, enabled status and desktop setting. In a conversation, conversation.reachable says who can receive a call here and conversation.engaged says who is already involved. An absent colleague cannot receive your tag; do not wait for them or move the task to another thread. A delivered mention is not acceptance of a task. Look up a colleague's registered details here instead of asking them or the owner. No credentials, inbox content or permission to send, create accounts or access another desktop is granted.", parameters: { type: "object", properties: {} } },
@@ -125,6 +125,12 @@ export const TOOL_DEFS = [
     description: "Tell the librarian something the whole company should know: a decision, a client's preference, who does what, a deadline. It queues immediate consolidation into the company brain, with you as its source. Your own memory stays remember.",
     parameters: { type: "object", properties: { text: { type: "string", description: "the fact, short and specific, with who decided and when if you know" } }, required: ["text"] },
   },
+  {
+    name: "voice_join",
+    description: "Join a Discord voice channel with your own bot and talk there live: you hear the people in it and answer with your own voice, in real time. Without channel_id you join the voice channel the person asking is in. Use it when someone asks you to come into a voice call; leave with voice_leave when asked or when the call is over.",
+    parameters: { type: "object", properties: { channel_id: { type: "string", description: "optional: the voice channel's id; default the one the person asking is in" } } },
+  },
+  { name: "voice_leave", description: "Leave the Discord voice channel you are talking in.", parameters: { type: "object", properties: {} } },
   {
     name: "thread_open",
     description: "Open a Discord thread through Cora, under this conversation's channel (beside this thread, when you are in one) or under channel_id from list_channels, for a topic that deserves its own conversation, such as an issue. It opens as you, and you can write in it at once with say({text, channel_id}); set a reminder about it with that channel_id so its result is posted there. Never use grog or another bot to open threads or write on Discord: you would speak as someone else.",
@@ -763,6 +769,18 @@ export async function executeTool(call, ctx) {
         if (sent?.voice || args.voice === true) receipt.voice = sent?.voice?.messages ? "sent" : `not sent: ${sent?.voice?.error || "unavailable"}`;
         const status = target === channelId ? "posted in this conversation. Your final reply is posted here too: if there is work left, keep working and write only what is new; if this message already says it all, end with just PASS" : `posted directly to ${target}; do not duplicate this report in your final reply`;
         return { text: `${status}\nCora delivery receipt: ${JSON.stringify(receipt)}` };
+      }
+      case "voice_join": {
+        if (!ctx.voiceJoin) return { text: "error: voice calls are not available here" };
+        try {
+          return { text: JSON.stringify(await ctx.voiceJoin({ channelId: String(args.channel_id || "") })) };
+        } catch (error) {
+          return { text: `error: ${error.message}` };
+        }
+      }
+      case "voice_leave": {
+        if (!ctx.voiceLeave) return { text: "error: voice calls are not available here" };
+        return { text: JSON.stringify(await ctx.voiceLeave()) };
       }
       case "thread_open": {
         if (!ctx.openThread) return { text: "error: threads cannot be opened here" };

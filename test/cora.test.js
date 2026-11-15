@@ -3983,6 +3983,51 @@ describe("agents in Discord", () => {
     assert.match(app.brain.systemPrompt(agent, { place: "" }), /Non usare mai grog né un altro bot/);
   });
 
+  test("voice calls: an agent joins the voice channel of the person asking, and only when Fish Audio is connected", async (t) => {
+    const offered = [];
+    const results = [];
+    replies.set("Marta", (body) => {
+      offered.push((body.tools || []).map((tool) => tool.function?.name));
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "tool") {
+        results.push(last.content);
+        return { content: "Sono in chiamata." };
+      }
+      return { content: "Non posso entrare in chiamata." };
+    });
+    t.after(() => replies.delete("Marta"));
+    discord.say({ content: "@Marta, vieni in vocale" });
+    await waitFor(() => offered.length >= 1, { what: "Marta's turn without Fish Audio" });
+    assert.ok(!offered[0].includes("voice_join") && !offered[0].includes("voice_leave"), "no voice tools without a Fish Audio key");
+    await quiet();
+
+    const original = app.brain.voiceCalls;
+    const joins = [];
+    app.brain.voiceCalls = {
+      enabled: true,
+      join: async (agent, options) => { joins.push({ agent: agent.name, channelId: options.channelId, requesterId: options.requesterId, allowed: options.allowedGuild(GUILD) }); return { channel_id: "voice-1", channel_name: "General", agents: [agent.name], people: ["Sam"], joined: true }; },
+      leave: async () => ({ left: true, channel_id: "voice-1", channel_name: "General" }),
+    };
+    t.after(() => { app.brain.voiceCalls = original; });
+    offered.length = 0;
+    replies.set("Marta", (body) => {
+      offered.push((body.tools || []).map((tool) => tool.function?.name));
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "tool") {
+        results.push(last.content);
+        return results.length === 1 ? { tool_calls: [{ function: { name: "voice_leave", arguments: {} } }] } : { content: "Fatto." };
+      }
+      return { tool_calls: [{ function: { name: "voice_join", arguments: {} } }] };
+    });
+    discord.say({ content: "@Marta, vieni in vocale" });
+    await waitFor(() => results.length >= 2, { what: "voice_join and voice_leave receipts" });
+    assert.ok(offered[0].includes("voice_join") && offered[0].includes("voice_leave"), "the tools are there once Fish Audio is connected");
+    assert.deepEqual(joins, [{ agent: "Marta", channelId: "", requesterId: OWNER, allowed: true }], "it joins where the person who asked is, in an allowed server");
+    assert.deepEqual(JSON.parse(results[0]), { channel_id: "voice-1", channel_name: "General", agents: ["Marta"], people: ["Sam"], joined: true });
+    assert.equal(JSON.parse(results[1]).left, true);
+    await quiet();
+  });
+
   test("an owner task shares a file through Cora and refuses a disabled recipient", async (t) => {
     const sender = app.store.createAgent({ name: "File sender", model: "ollama/test-model", tools: true, chattiness: 0 });
     const recipient = app.store.createAgent({ name: "File recipient", model: "ollama/test-model", tools: true, chattiness: 0 });

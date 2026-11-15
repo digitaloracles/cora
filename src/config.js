@@ -55,6 +55,8 @@ export const config = {
   deepseekApi: (setting("DEEPSEEK_API") || "https://api.deepseek.com").replace(/\/$/, ""),
   // Soniox: agents hear voice messages and answer in a voice of their own. ffmpeg makes the voice notes.
   sonioxKey: env.SONIOX_API_KEY || "",
+  // Fish Audio: live voice calls in Discord voice channels (realtime speech to text and streaming speech).
+  fishKey: env.FISH_AUDIO_API_KEY || "",
   sonioxApi: setting("SONIOX_API") || "https://api.soniox.com",
   githubApi: setting("GITHUB_API") || "https://api.github.com",
   githubWeb: setting("GITHUB_WEB") || "https://github.com",
