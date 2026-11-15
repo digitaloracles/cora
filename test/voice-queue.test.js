@@ -27,11 +27,16 @@ function call(works = []) {
 const asker = { userId: "900", name: "Seb", text: "Ada, controlla il rilascio di NOT-43" };
 
 test("a murmur, a greeting or a test of the line is not a request", () => {
-  for (const text of ["mm", "Mm-hmm.", "ok", "okay va bene", "Grazie mille", "sì", "ci sono", "sono qui", "ti sento", "pronto?", "mi sentite", "Ascolta.", "test"]) {
+  for (const text of ["mm", "Mm-hmm.", "ok", "okay va bene", "Grazie mille", "ci sono", "sono qui", "ti sento", "pronto?", "mi sentite", "Ascolta.", "test"]) {
     assert.equal(isNoise(text), true, `"${text}" is noise`);
   }
   for (const text of ["staccatevi", "Ada, controlla il rilascio di NOT-43", "Ascolta il rilascio di stamattina", "perché la voce è lenta?", "mi sentite anche ora che sono in macchina?"])
     assert.equal(isNoise(text), false, `"${text}" is a request`);
+});
+
+test("a refusal or a request to wait is never mistaken for a murmur", () => {
+  for (const text of ["no", "No.", "no aspetta", "non ancora", "fermati", "stop", "basta così"])
+    assert.equal(isNoise(text), false, `"${text}" changes what the agents do`);
 });
 
 test("the same job asked twice looks the same", () => {
@@ -65,18 +70,39 @@ test("a job whose asker was a murmur does not start: noise never reaches the req
   assert.deepEqual(spoken, [], "nobody answers a test of the line");
 });
 
-test("a short mm-hmm does not cut the agent, sustained speech over it does", async () => {
-  const { app, logs } = calls();
+test("a short murmur does not cut the agent who is talking", async () => {
+  const { app } = calls();
   const target = call();
-  const speaker = { userId: "900", name: "Seb", inTurn: true, bargeTimer: null };
+  const speaker = { userId: "900", name: "Seb", inTurn: true, bargeTimer: null, bargeAt: 0, lastSoundAt: Date.now() };
   target.speaking = { agentId: agent.id, name: "Ada", tts: { abort() {} }, speech: { stop() {} } };
   app.pendingBarge(target, speaker);
-  assert.ok(target.speaking, "the agent keeps talking on the first moment of a murmur");
-  await sleep(80);
-  assert.ok(target.speaking, "80 ms of speech does not cut it");
-  await sleep(750);
-  assert.equal(target.speaking, null, "a person still talking after the grace window cuts it");
+  await sleep(900);
+  assert.ok(target.speaking, "300 ms of sound and then silence is a murmur, not an interruption");
+  assert.equal(speaker.bargeAt, 0);
+});
+
+test("a person who keeps talking over the agent does cut it, once", async () => {
+  const { app, logs } = calls();
+  const target = call();
+  const speaker = { userId: "900", name: "Seb", inTurn: true, bargeTimer: null, bargeAt: 0, lastSoundAt: Date.now() };
+  target.speaking = { agentId: agent.id, name: "Ada", tts: { abort() {} }, speech: { stop() {} } };
+  app.pendingBarge(target, speaker);
+  const sound = setInterval(() => { speaker.lastSoundAt = Date.now(); }, 100);
+  await sleep(1000);
+  clearInterval(sound);
+  assert.equal(target.speaking, null, "one second of continuous speech stops the agent");
   assert.ok(logs.some((entry) => /interrompe/.test(entry.text)));
+  assert.equal(speaker.bargeAt, 0, "and the interruption is spent, not repeated");
+});
+
+test("a turn the recogniser leaves open, with no sound behind it, never cuts", async () => {
+  const { app } = calls();
+  const target = call();
+  const speaker = { userId: "900", name: "Seb", inTurn: true, bargeTimer: null, bargeAt: 0, lastSoundAt: Date.now() };
+  target.speaking = { agentId: agent.id, name: "Ada", tts: { abort() {} }, speech: { stop() {} } };
+  app.pendingBarge(target, speaker);
+  await sleep(1800);
+  assert.ok(target.speaking, "an open turn is not proof the person is still talking");
 });
 
 test("the voice speaks at the measured pace, and the pace can be chosen without a deploy", () => {

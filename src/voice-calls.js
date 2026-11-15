@@ -30,15 +30,21 @@ const REPLY_TIMEOUT_MS = 45000;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 // The words a person uses only to acknowledge, to test the line or to fill a silence: not a request.
-const FILLERS = new Set(["mm", "mmm", "mmh", "mhm", "hmm", "eh", "ah", "oh", "beh", "boh", "si", "no", "ok", "okay", "okei", "grazie", "mille", "ciao", "ecco", "allora", "pronto", "ascolta", "ascoltate", "ascoltami", "senti", "dimmi", "perfetto", "certo", "bene", "buono", "giusto", "esatto", "test", "ti", "mi", "ci", "sei", "sono", "qui", "eccomi", "sento", "sentite", "sentito", "presente", "anche", "ora", "che", "come", "va", "vabbe", "un", "il", "la", "di", "dunque", "hmm"]);
+const FILLERS = new Set(["mm", "mmm", "mmh", "mhm", "hmm", "eh", "ah", "oh", "beh", "boh", "ok", "okay", "okei", "grazie", "mille", "ciao", "ecco", "allora", "pronto", "ascolta", "ascoltate", "ascoltami", "senti", "dimmi", "perfetto", "certo", "bene", "buono", "giusto", "esatto", "test", "ti", "mi", "ci", "sei", "sono", "qui", "eccomi", "sento", "sentite", "sentito", "presente", "anche", "ora", "che", "come", "va", "vabbe", "un", "il", "la", "di", "dunque", "hmm"]);
 const BARGE_MS = 700;
+// The person must still be making sound this recently for the cut to be theirs and not a leftover turn.
+const BARGE_SILENCE_MS = 280;
 const WORK_DEDUPE_MS = 120000;
 const SPEECH_SPEED = 1.35;
+
+// A refusal or a request to wait changes what the agents do: never a murmur, whatever else it says.
+const MEANINGFUL = new Set(["no", "non", "aspetta", "stop", "fermo", "fermati", "smetti", "basta"]);
 
 /** What a person says only to acknowledge or to test the line: it is not a request and does not cut an agent. */
 export function isNoise(text) {
   const words = fold(text).match(/[\p{L}\p{N}]+/gu) || [];
   if (!words.length || words.length > 6) return false;
+  if (words.some((word) => MEANINGFUL.has(word))) return false;
   return words.every((word) => FILLERS.has(word));
 }
 
@@ -272,6 +278,7 @@ export class VoiceCalls {
       if (!speaker) return;
     }
     speaker.lastAt = Date.now();
+    if (peakOf(pcm) >= VOICE_PEAK) speaker.lastSoundAt = speaker.lastAt;
     clearTimeout(speaker.finalizer);
     if (speaker.ready) this.feed(speaker, pcm);
     else speaker.queued.push(pcm);
@@ -311,12 +318,15 @@ export class VoiceCalls {
       this.log({ type: "error", channelId: call.channelId, text: `voice: ${error.message}` });
       return null;
     }
-    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), finalizer: null, bargeTimer: null };
+    const speaker = { userId, name, ear: member.agent.id, channelId: call.channelId, stt, ready: false, open: true, queued: [], inTurn: false, lastAt: Date.now(), lastSoundAt: 0, finalizer: null, bargeTimer: null, bargeAt: 0 };
     call.speakers.set(userId, speaker);
-    stt.on("speech_start", () => { speaker.inTurn = true; });
+    stt.on("speech_start", () => { speaker.inTurn = true; this.pendingBarge(call, speaker); });
     stt.on("user_turn_taken", () => this.pendingBarge(call, speaker));
     stt.on("committed", (event) => {
       speaker.inTurn = false;
+      speaker.bargeAt = 0;
+      clearTimeout(speaker.bargeTimer);
+      speaker.bargeTimer = null;
       clearTimeout(speaker.finalizer);
       clearTimeout(speaker.bargeTimer);
       const text = String(event.text || "").trim();
@@ -354,11 +364,38 @@ export class VoiceCalls {
   pendingBarge(call, speaker) {
     if (!call.speaking && !call.thinking) return;
     clearTimeout(speaker.bargeTimer);
+    if (!speaker.bargeAt) speaker.bargeAt = Date.now();
     speaker.bargeTimer = setTimeout(() => {
       speaker.bargeTimer = null;
-      if (speaker.inTurn) this.bargeIn(call, speaker);
+      this.checkBarge(call, speaker);
     }, BARGE_MS);
     speaker.bargeTimer.unref?.();
+  }
+
+  /**
+   * The cut is proven by sound: the person must have been talking for BARGE_MS and still be talking now.
+   * The recogniser keeps its turn open after the words, so an open turn alone proves nothing.
+   */
+  checkBarge(call, speaker) {
+    if (!call.speaking && !call.thinking) return;
+    const since = speaker.bargeAt;
+    if (!since) return;
+    const talking = Date.now() - (speaker.lastSoundAt || 0) <= BARGE_SILENCE_MS;
+    if (talking && Date.now() - since >= BARGE_MS) {
+      speaker.bargeAt = 0;
+      this.bargeIn(call, speaker);
+      return;
+    }
+    // Still a murmur, or the sound stopped: look again only while the person keeps making sound.
+    if (talking && Date.now() - since < BARGE_MS) {
+      speaker.bargeTimer = setTimeout(() => {
+        speaker.bargeTimer = null;
+        this.checkBarge(call, speaker);
+      }, BARGE_MS - (Date.now() - since));
+      speaker.bargeTimer.unref?.();
+      return;
+    }
+    speaker.bargeAt = 0;
   }
 
   /** A person started talking over an agent: the agent stops, and what it was preparing is dropped. */
