@@ -182,7 +182,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
 });
 
 test("voice calls: a person talking over an agent stops its voice at once, and PASS says nothing", async (t) => {
-  const { calls, fish, links } = setup({ replies: { Radix: "Una risposta lunga che verrà interrotta." } });
+  const { calls, fish, links, log } = setup({ replies: { Radix: "Una risposta lunga che verrà interrotta." } });
   t.after(() => calls.stop());
   await calls.join(radix, { channelId: VOICE });
   const [link] = links;
@@ -206,6 +206,7 @@ test("voice calls: a person talking over an agent stops its voice at once, and P
   fish.stts[0].emit("committed", { text: "Niente, lascia stare.", user_turn: true });
   await wait(30);
   assert.equal(fish.ttss.length, 1, "PASS opens no voice");
+  assert.ok(log.some((entry) => /Radix non risponde \(PASS/.test(entry.text)), "but the activity log says the agent passed");
   fish.stts[0].emit("committed", { text: "mm-hm", user_turn: false, turn_kind: "backchannel" });
   await wait(10);
   assert.equal(call.history.length, 2, "a backchannel is not a turn");

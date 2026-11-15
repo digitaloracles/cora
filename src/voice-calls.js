@@ -354,7 +354,7 @@ export class VoiceCalls {
     if (call.thinking) call.thinking.controller.abort();
     if (call.speaking && !turn.agent) this.stopSpeaking(call);
     this.answer(call, agent).catch((error) => {
-      if (error.name !== "AbortError") this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: ${error.message}` });
+      if (error.name !== "AbortError" || error.message?.includes("timed out")) this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: ${error.message}` });
     });
   }
 
@@ -414,7 +414,11 @@ export class VoiceCalls {
     } finally {
       if (call.thinking === thinking) call.thinking = null;
     }
-    if (controller.signal.aborted || !text) return;
+    if (controller.signal.aborted) return;
+    if (!text) {
+      this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} non risponde (PASS, pensato in ${((Date.now() - started) / 1000).toFixed(1)} s)` });
+      return;
+    }
     const member = call.members.get(agent.id);
     if (!member || !this.calls.has(call.channelId)) return;
     await this.speak(call, member, text, Date.now() - started);
