@@ -7,6 +7,7 @@ import prism from "prism-media";
 export const DISCORD_RATE = 48000;
 const FRAME_SAMPLES = 960;
 const SILENCE_AFTER_MS = 1000;
+const DAVE_DEBUG = /\[DAVE\]/;
 
 /**
  * Speech at 24 kHz mono turned into Discord's 48 kHz stereo, chunk after chunk: the last sample of
@@ -118,6 +119,7 @@ export class VoiceLink extends EventEmitter {
       group: this.client.user.id,
       selfDeaf: false,
       selfMute: false,
+      debug: true,
       adapterCreator: (methods) => {
         adapter = methods;
         return { sendPayload: (payload) => this.client.gatewaySend(payload), destroy: () => { adapter = null; } };
@@ -162,6 +164,10 @@ export class VoiceLink extends EventEmitter {
   bindConnection(connection) {
     this.connection = connection;
     connection.on("error", (error) => this.log(`voice connection: ${error.message}`));
+    // Only the end-to-end encryption (DAVE) lines: a packet it cannot decrypt is dropped without any error.
+    connection.on("debug", (message) => {
+      if (DAVE_DEBUG.test(message)) this.emit("dave", String(message).slice(0, 300));
+    });
     connection.on("stateChange", (before, after) => {
       if (before.status !== after.status) this.emit("connection", before.status, after.status);
       if (after.status === VoiceConnectionStatus.Disconnected && !this.closed) {

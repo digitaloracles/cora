@@ -428,3 +428,73 @@ test("voice calls: the listen log names a speaking signal with no packets, anoth
   assert.equal(change.text, "voce Radix: connessione ready → disconnected");
   assert.equal(change.type, "voice");
 });
+
+test("voice calls: when another bot hears a person and the ear does not, the next bot becomes the ear", async (t) => {
+  const { calls, fish, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  const call = calls.calls.get(VOICE);
+  ear.emit("audio", SEB, speech16(8000));
+  other.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb heard by the ear");
+  assert.equal(calls.ear(call).agent.id, radix.id);
+  call.members.get(ada.id).voiced.get(SEB).first -= 4000;
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(calls.ear(call).agent.id, radix.id, "the ear heard the start of that speech: it is not deaf");
+
+  call.members.get(radix.id).voiced.get(SEB).last -= 10000;
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(calls.ear(call).agent.id, ada.id);
+  assert.match(log.at(-1).text, /^voice: il bot di Radix non riceve più la voce di Seb \(il bot di Ada la sente da 4 s\): ora ascolta il bot di Ada$/);
+  assert.equal(call.speakers.get(SEB).ear, ada.id, "the open stream is now fed by the new ear");
+  const fed = fish.stts[0].audio.length;
+  ear.emit("audio", SEB, speech16(8000));
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(fish.stts.length, 1, "the same stream goes on");
+  assert.equal(fish.stts[0].audio.length, fed + 1, "only the new ear feeds it");
+});
+
+test("voice calls: DAVE decryption failures on the ear are written once per burst, with session errors", async (t) => {
+  const { calls, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  const call = calls.calls.get(VOICE);
+  const texts = () => log.map((entry) => entry.text);
+  other.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)");
+  assert.ok(!texts().some((text) => /DAVE/.test(text)), "only the ear's bot reports DAVE");
+  ear.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)");
+  ear.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (2 consecutive fails)");
+  ear.emit("dave", "[NW] [DAVE] Executing transition (4)");
+  ear.emit("dave", "[NW] [DAVE] MLS commit errored from transition 4: boom");
+  assert.equal(log.filter((entry) => /DAVE non decifra/.test(entry.text)).length, 1);
+  assert.ok(texts().includes("DAVE sul bot di Radix: [NW] [DAVE] MLS commit errored from transition 4: boom"));
+  assert.ok(!texts().some((text) => /Executing transition/.test(text)), "ordinary transitions stay out of the log");
+  calls.checkDave(call, Date.now() + 11000);
+  assert.match(texts().at(-1), /^DAVE: 2 pacchetti non decifrati in 0 s, poi di nuovo regolare$/);
+  assert.equal(call.dave, null);
+});
+
+test("voice calls: a recogniser Fish closes, or one idle for long, is let go with a line in the log and reopens with the next sound", async (t) => {
+  const { calls, fish, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [ear] = links;
+  const call = calls.calls.get(VOICE);
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("providerError", Object.assign(new Error("x"), { code: "rate_limited", recoverable: true }));
+  assert.equal(log.at(-1).text, "voice: speech to text for Seb reported rate_limited (recoverable)");
+  fish.stts[0].emit("finish", {});
+  assert.equal(call.speakers.size, 0);
+  assert.equal(log.at(-1).text, "voice: speech to text for Seb closed by Fish; it reopens with the next sound");
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 2, "a new stream after Fish closed the first");
+  call.speakers.get(SEB).lastAt = Date.now() - 130000;
+  calls.sweep();
+  assert.equal(call.speakers.size, 0);
+  assert.ok(log.some((entry) => /^chiudo l'ascolto di Seb: nessun audio da 13\d s$/.test(entry.text)));
+});

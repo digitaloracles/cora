@@ -28,6 +28,9 @@ const SILENCE_PUMP_TICK_MS = 20;
 const SILENCE_PUMP_MAX_MS = 4000;
 const FINALIZE_AFTER_MS = 1500;
 const IDLE_SPEAKER_MS = 120000;
+const DAVE_QUIET_MS = 10000;
+const DEAF_EAR_MS = 3000;
+const VOICED_GAP_MS = 2000;
 const EMPTY_CALL_MS = 180000;
 // A person still in the channel, and the ear has had no audio from them for this long: logged once, until audio returns.
 const LISTEN_GAP_MS = 30000;
@@ -156,6 +159,7 @@ class Call {
     // Last decoded packet on each agent's link, whoever sent it.
     this.linkAudioAt = new Map();
     this.listenStall = new Map();
+    this.dave = null;
   }
 }
 
@@ -239,6 +243,7 @@ export class VoiceCalls {
       this.log({ type: "voice", agentId: agent.id, channelId: target, text: `voce ${agent.name}: connessione ${before} → ${after}` });
     });
     link.on("quiet", (userId) => this.quiet(call, member, userId));
+    link.on("dave", (message) => this.daveSaid(call, member, message));
     link.on("closed", (reason) => {
       if (call.members.get(agent.id)?.link === link) this.drop(call, agent.id, reason);
     });
@@ -289,7 +294,56 @@ export class VoiceCalls {
 
   /** The first agent in the call is the ear: one stream per person, never one per agent. */
   ear(call) {
-    return [...call.members.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0] || null;
+    const members = [...call.members.values()].sort((a, b) => a.joinedAt - b.joinedAt);
+    return members.find((member) => !member.deafSince) || members[0] || null;
+  }
+
+  /**
+   * Every bot in the call receives every person. When another bot hears a person speak for a few seconds
+   * and the ear heard nothing of it (lost packets, DAVE), the ear has gone deaf: the next bot takes over
+   * and feeds the same speech-to-text stream.
+   */
+  voiced(call, member, userId) {
+    const now = this.now();
+    member.voiced ||= new Map();
+    let run = member.voiced.get(userId);
+    if (!run || now - run.last > VOICED_GAP_MS) {
+      run = { first: now, last: now };
+      member.voiced.set(userId, run);
+    }
+    run.last = now;
+    const ear = this.ear(call);
+    if (!ear || ear === member || member.deafSince || now - run.first < DEAF_EAR_MS) return;
+    const heard = ear.voiced?.get(userId)?.last || 0;
+    if (heard >= run.first - 500) return;
+    ear.deafSince = now;
+    const next = this.ear(call);
+    if (next === ear) return;
+    for (const speaker of call.speakers.values()) if (speaker.ear === ear.agent.id) speaker.ear = next.agent.id;
+    const name = this.personName(call, userId) || userId;
+    this.log({ type: "error", agentId: ear.agent.id, channelId: call.channelId, text: `voice: il bot di ${ear.agent.name} non riceve più la voce di ${name} (il bot di ${member.agent.name} la sente da ${Math.round((now - run.first) / 1000)} s): ora ascolta il bot di ${next.agent.name}` });
+  }
+
+  /** DAVE drops packets it cannot decrypt without an error: failures are counted and written once per burst. */
+  daveSaid(call, member, message) {
+    if (this.ear(call) !== member) return;
+    const now = this.now();
+    if (/Failed to decrypt/i.test(message)) {
+      if (!call.dave) {
+        call.dave = { since: now, lastAt: now, failures: 0 };
+        this.log({ type: "error", agentId: member.agent.id, channelId: call.channelId, text: `voice: DAVE non decifra i pacchetti in arrivo sul bot di ${member.agent.name} (${message})` });
+      }
+      call.dave.failures += 1;
+      call.dave.lastAt = now;
+    } else if (/errored|Invalidating|reinitialized|reset|downgraded/i.test(message)) {
+      this.log({ type: "voice", agentId: member.agent.id, channelId: call.channelId, text: `DAVE sul bot di ${member.agent.name}: ${message}` });
+    }
+  }
+
+  checkDave(call, now = this.now()) {
+    if (!call.dave || now - call.dave.lastAt < DAVE_QUIET_MS) return;
+    this.log({ type: "voice", channelId: call.channelId, text: `DAVE: ${call.dave.failures} pacchetti non decifrati in ${Math.round((call.dave.lastAt - call.dave.since) / 1000)} s, poi di nuovo regolare` });
+    call.dave = null;
   }
 
   isOwnAgent(call, userId) {
@@ -298,7 +352,9 @@ export class VoiceCalls {
 
   heard(call, member, userId, pcm) {
     this.markSignal(call, member, userId, "audio");
-    if (this.ear(call) !== member || this.isOwnAgent(call, userId)) return;
+    if (this.isOwnAgent(call, userId)) return;
+    if (peakOf(pcm) >= VOICE_PEAK) this.voiced(call, member, userId);
+    if (this.ear(call) !== member) return;
     let speaker = call.speakers.get(userId);
     if (!speaker) {
       if (peakOf(pcm) < VOICE_PEAK) return;
@@ -387,6 +443,16 @@ export class VoiceCalls {
       speaker.early = null;
       if (event.user_turn === false || !text) return void early?.controller.abort();
       this.turn(call, { userId, name: speaker.name, text, agent: null }, early);
+    });
+    stt.on("providerError", (error) => this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} reported ${error.code || "an error"}${error.recoverable ? " (recoverable)" : ""}` }));
+    stt.on("finish", () => {
+      if (call.speakers.get(userId) !== speaker) return;
+      speaker.open = false;
+      clearTimeout(speaker.bargeTimer);
+      clearInterval(speaker.pump);
+      this.dropEarly(speaker);
+      call.speakers.delete(userId);
+      this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} closed by Fish; it reopens with the next sound` });
     });
     stt.on("failure", (error) => {
       speaker.open = false;
@@ -796,7 +862,12 @@ export class VoiceCalls {
   sweep() {
     const now = this.now();
     for (const call of [...this.calls.values()]) {
-      for (const speaker of [...call.speakers.values()]) if (now - speaker.lastAt > IDLE_SPEAKER_MS && !speaker.inTurn) this.closeSpeaker(call, speaker);
+      for (const speaker of [...call.speakers.values()]) {
+        if (now - speaker.lastAt <= IDLE_SPEAKER_MS || speaker.inTurn) continue;
+        this.closeSpeaker(call, speaker);
+        this.log({ type: "voice", channelId: call.channelId, text: `chiudo l'ascolto di ${speaker.name}: nessun audio da ${Math.round((now - speaker.lastAt) / 1000)} s` });
+      }
+      this.checkDave(call, now);
       if (this.people(call).length) call.lastHumanAt = Math.max(call.lastHumanAt, now - 1);
       else if (now - call.lastHumanAt > EMPTY_CALL_MS) {
         for (const member of [...call.members.values()]) this.leave(member.agent).catch(() => {});
