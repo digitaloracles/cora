@@ -2,10 +2,12 @@ import { EventEmitter } from "node:events";
 
 export const LISTENER_INTENTS = (1 << 0) | (1 << 9) | (1 << 15);
 export const PRESENCE_INTENTS = 1 << 0;
+/** Who is in which voice channel, and the voice server an agent's bot joins: what a voice call needs. */
+export const VOICE_STATE_INTENTS = 1 << 7;
 /** Direct messages reach a bot without the privileged content intent. */
-export const DIRECT_MESSAGE_INTENTS = PRESENCE_INTENTS | (1 << 12);
+export const DIRECT_MESSAGE_INTENTS = PRESENCE_INTENTS | VOICE_STATE_INTENTS | (1 << 12);
 /** An agent bot that may read message content listens to its channels too, so private ones are heard. */
-export const LISTENING_INTENTS = LISTENER_INTENTS | (1 << 12);
+export const LISTENING_INTENTS = LISTENER_INTENTS | VOICE_STATE_INTENTS | (1 << 12);
 const FATAL_CLOSE_CODES = new Map([
   [4004, "the bot token was rejected"],
   [4010, "invalid shard"],
@@ -15,6 +17,7 @@ const FATAL_CLOSE_CODES = new Map([
   [4014, "Message Content Intent is not enabled for the bot"],
 ]);
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
+export const VOICE_CHANNEL_TYPES = new Set([2, 13]);
 const THREAD_TYPES = new Set([10, 11, 12]);
 const WEBHOOK_NAME = "cora";
 const MAX_CONTENT = 1990;
@@ -196,6 +199,13 @@ export class Discord extends EventEmitter {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op, d }));
   }
 
+  /** A payload for the main gateway from outside, such as a voice channel join (op 4): false while it is down. */
+  gatewaySend(payload) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.state !== "ready") return false;
+    this.ws.send(JSON.stringify(payload));
+    return true;
+  }
+
   onPayload(ws, payload) {
     if (this.stopped || ws !== this.ws) return;
     if (payload.s !== null && payload.s !== undefined) this.seq = payload.s;
@@ -312,6 +322,7 @@ export class Discord extends EventEmitter {
           ownerId: data.owner_id,
           channels: new Map((data.channels || []).map((channel) => [channel.id, { ...channel, guild_id: data.id }])),
           threads: new Map((data.threads || []).map((thread) => [thread.id, { ...thread, guild_id: data.id }])),
+          voiceStates: new Map((data.voice_states || []).filter((state) => state.channel_id).map((state) => [state.user_id, { ...state, guild_id: data.id }])),
         });
         this.emit("guild", this.guilds.get(data.id));
         this.emit("status", this.status());
@@ -341,6 +352,18 @@ export class Discord extends EventEmitter {
       case "MESSAGE_CREATE":
         this.emit("message", data);
         break;
+      case "VOICE_STATE_UPDATE": {
+        const states = this.guilds.get(data.guild_id)?.voiceStates;
+        if (states) {
+          if (data.channel_id) states.set(data.user_id, data);
+          else states.delete(data.user_id);
+        }
+        this.emit("voiceState", data);
+        break;
+      }
+      case "VOICE_SERVER_UPDATE":
+        this.emit("voiceServer", data);
+        break;
       default:
         break;
     }
@@ -361,6 +384,36 @@ export class Discord extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /** Who is in a voice channel now, by user id, as this bot sees it. */
+  voiceMembers(channelId) {
+    for (const guild of this.guilds.values()) {
+      if (!guild.channels.has(channelId)) continue;
+      return [...(guild.voiceStates?.values() || [])].filter((state) => state.channel_id === channelId).map((state) => ({ userId: state.user_id, name: state.member?.nick || state.member?.user?.global_name || state.member?.user?.username || "", bot: Boolean(state.member?.user?.bot) }));
+    }
+    return [];
+  }
+
+  /** The voice channel a person is in, on the servers this bot is in. */
+  voiceChannelOf(userId) {
+    for (const guild of this.guilds.values()) {
+      const state = guild.voiceStates?.get(String(userId));
+      if (state?.channel_id) return { channelId: state.channel_id, guildId: guild.id };
+    }
+    return null;
+  }
+
+  listVoiceChannels(guildIds) {
+    const allowed = new Set(guildIds);
+    const out = [];
+    for (const guild of this.guilds.values()) {
+      if (!allowed.has(guild.id)) continue;
+      for (const channel of guild.channels.values()) {
+        if (VOICE_CHANNEL_TYPES.has(channel.type)) out.push({ id: channel.id, name: channel.name, guildId: guild.id, guildName: guild.name, members: this.voiceMembers(channel.id).length });
+      }
+    }
+    return out;
   }
 
   listChannels(guildIds) {

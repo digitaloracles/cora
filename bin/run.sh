@@ -19,6 +19,7 @@ for pair in \
   OLLAMA_API_KEY:OLLAMA_API_KEY \
   ORCAROUTER_API_KEY:ORCAROUTER_API_KEY \
   SONIOX_API_KEY:SONIOX_API_KEY \
+  FISH_AUDIO_API_KEY:FISH_AUDIO_API_KEY \
   DEEPSEEK_API_KEY:DEEPSEEK_API_KEY \
   BRAIN_DATABASE_URL:BRAIN_DATABASE_URL \
   VAPID_KEY:VAPID_KEY \
@@ -31,6 +32,8 @@ do
   candidates="CORA_$name CORO_$name"
   # doc's own key, when this machine already has one, serves until the panel stores Cora's.
   [ "$name" = TYPESAFE_API_KEY ] && candidates="$candidates $name"
+  # Fish Audio's key, when this machine keeps it under its own name.
+  [ "$name" = FISH_AUDIO_API_KEY ] && candidates="$candidates $name"
   for stored in $candidates; do
     if hush info "$stored" >/dev/null 2>&1; then
       set -- hush run --name "$stored" --env "$var" --redact -- "$@"

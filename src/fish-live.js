@@ -192,7 +192,7 @@ class FishSession extends EventEmitter {
 
   end() {
     if (["ending", "draining", "done", "failed"].includes(this.state)) return this.done;
-    this.send(this.kind === "stt" ? { type: "audio_done" } : { event: "close" });
+    this.send(this.kind === "stt" ? { type: "audio_done" } : { event: "stop" });
     this.state = "ending";
     clearInterval(this.keepalive);
     this.timer = setTimeout(() => this.fail(new FishLiveError("Fish session did not finish", { code: "finish_timeout" })), this.finishTimeoutMs);
@@ -251,12 +251,12 @@ export class FishLive {
     }, signal);
   }
 
-  openTts({ voice = "", language = "", sampleRate = 24000, signal } = {}) {
+  openTts({ voice = "", language = "", sampleRate = 24000, latency = "normal", signal } = {}) {
     if (![24000, 44100].includes(sampleRate)) throw new TypeError("Unsupported Fish TTS sample rate");
     if (typeof voice !== "string" || voice.length > 256) throw new TypeError("Invalid Fish voice");
     if (typeof language !== "string" || (language && !/^[a-zA-Z0-9_-]{1,35}$/.test(language))) throw new TypeError("Invalid Fish language");
     return this.open("tts", this.ttsUrl, this.ttsModel, {
-      event: "start", request: { text: "", format: "pcm", sample_rate: sampleRate, latency: "normal", ...(voice ? { reference_id: voice } : {}), ...(language ? { language } : {}) },
+      event: "start", request: { text: "", format: "pcm", sample_rate: sampleRate, latency: ["low", "normal", "balanced"].includes(latency) ? latency : "normal", ...(voice ? { reference_id: voice } : {}), ...(language ? { language } : {}) },
     }, signal);
   }
 

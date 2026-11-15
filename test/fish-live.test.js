@@ -74,7 +74,7 @@ test("Fish TTS streams text, flush and PCM audio before a clean finish", async (
   const pcm = Buffer.from([1, 2, 3, 4]);
   const { fish, state } = await fixture(t, (ws, event) => {
     if (event.event === "text") send(ws, { event: "audio", audio: pcm });
-    if (event.event === "close") send(ws, { event: "finish", reason: "stop" });
+    if (event.event === "stop") send(ws, { event: "finish", reason: "stop" });
   });
   const session = fish.openTts({ voice: "fixture-voice", language: "it" });
   t.after(() => session.close());
@@ -87,7 +87,7 @@ test("Fish TTS streams text, flush and PCM audio before a clean finish", async (
   await session.end();
   assert.equal(state.headers[0].model, "s2.1-pro");
   assert.deepEqual(state.events[0], { event: "start", request: { text: "", format: "pcm", sample_rate: 24000, latency: "normal", reference_id: "fixture-voice", language: "it" } });
-  assert.deepEqual(state.events.map((event) => event.event), ["start", "text", "text", "flush", "close"]);
+  assert.deepEqual(state.events.map((event) => event.event), ["start", "text", "text", "flush", "stop"]);
   assert.deepEqual(Buffer.concat(chunks), Buffer.concat([pcm, pcm]));
   assert.throws(() => session.sendText("stale"), { code: "not_ready" });
 });

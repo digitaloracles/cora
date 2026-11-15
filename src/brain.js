@@ -875,7 +875,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     const nativeImages = () => caps.vision ? [...attachments.values()].slice(-2).map((image) => image.data) : [];
     // The company brain's tools exist only where there is a brain to read.
     const onlyEncrypted = encryptedOnly(this.store, agent);
-    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (tool.name !== "read_attachment" || caps.vision) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_"))).concat(onlyEncrypted ? [] : this.connectors?.toolsFor(agent) || []) : [];
+    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (tool.name !== "read_attachment" || caps.vision) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_")) && (this.voiceCalls?.enabled || !tool.name.startsWith("voice_"))).concat(onlyEncrypted ? [] : this.connectors?.toolsFor(agent) || []) : [];
     const place = channel.place || "";
     const system = this.systemPrompt(agent, { place, computer: computer && caps.tools, withoutComputer: Boolean(agent.tools && !computer && caps.tools), people: channel.people || [], colleagues: await this.conversationDirectory(agent, channel.id) });
     let { goal, usage: goalCost } = task && goalRequest ? await this.goalFor(goalRequest, "", goalContext) : { goal: "", usage: null };
@@ -983,6 +983,9 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       // Who asked, when a person did: only then may an agent open a new artifact folder.
       artifacts: this.artifacts, artifactUserId: transportOf(channel.id) === "web" ? replyTo?.authorId || requester?.id || "" : "", vault: this.vault, connectors: this.connectors, requester, mailAuthorized: Boolean(computer || requestAuthorized), email: this.email, emailInvocation: channel.emailInvocation || null, traceId: trace.id, messageOwner: this.knowledge?.ownerMemory ? (text) => this.messagePersonFor?.(agent, text) || Promise.resolve(false) : this.messageOwner,
       openThread: this.openThread ? (options) => this.openThread(agent, channel.id, options) : null,
+      // A voice call joins where the person asking is, unless a channel is named.
+      voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true) }) : null,
+      voiceLeave: this.voiceCalls ? () => this.voiceCalls.leave(agent) : null,
       threadFor: this.threadFor ? (threadId) => this.threadFor(agent, threadId) : null,
       // The question goes where this conversation is, not to a separate place.
       ask: this.ask ? async (request) => {

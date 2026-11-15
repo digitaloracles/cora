@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { AgentTransfer } from "./agent-transfer.js";
 import { AgentBots } from "./agent-bots.js";
+import { FishLive } from "./fish-live.js";
+import { VoiceCalls } from "./voice-calls.js";
 import { Artifacts } from "./artifacts.js";
 import { Vault } from "./vault.js";
 import { GithubApps } from "./github-apps.js";
@@ -198,6 +200,18 @@ export function startCora(overrides = {}) {
   const keyConnectors = new KeyConnectors({ store, vault, google: googleConnector, log: activity });
   brain.connectors = keyConnectors;
   brain.vault = vault;
+  // Live voice calls in Discord voice channels: Fish Audio's key from the environment, or the vault's when it keeps one.
+  const fish = new FishLive({ key: cfg.fishKey });
+  const fishFromVault = () => {
+    if (cfg.fishKey) return;
+    const secret = ["FISH_AUDIO_CORA", "FISH_AUDIO_API_KEY"].map((name) => store.vaultSecret(name)).find(Boolean);
+    try { fish.setKey(secret ? vault.value(secret) : ""); } catch { fish.setKey(""); }
+  };
+  fishFromVault();
+  const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
+  voiceCalls.refreshKey = fishFromVault;
+  brain.voiceCalls = voiceCalls;
+  brain.allowedGuild = (guildId) => orchestrator.allowedGuild(guildId);
   // Each agent's own GitHub App: made from the panel, its hour-long tokens written on the agent's desktop.
   const github = new GithubApps({
     store, boxes, apiBase: cfg.githubApi, webBase: cfg.githubWeb, keyFor: tokenFor, storeSecret, sessionKey: cfg.sessionKey, instanceUrl, log: activity,
@@ -344,6 +358,7 @@ export function startCora(overrides = {}) {
     await librarian.stop();
     await subscriptions.usage.close();
     await subscriptions.close();
+    voiceCalls.stop();
     discord.stop();
     bots.stop();
     telegram.stop();
