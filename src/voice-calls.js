@@ -57,6 +57,21 @@ export function fishVoiceFor(agent, taken = []) {
   return pool[hash % pool.length];
 }
 
+/**
+ * A reply may end with a job the agent takes on: a line «LAVORO: …». That line is never spoken;
+ * it becomes a task the agent works on in its written conversation while the call goes on.
+ */
+export function splitWork(text) {
+  const raw = String(text || "");
+  const match = /^[ \t*_>-]*LAVORO(?:\s+per\s+([^\s:][^:\n]{0,40}?))?\s*:\s*/im.exec(raw);
+  if (!match) return { said: raw, task: "", for: "" };
+  const task = raw.slice(match.index + match[0].length).replace(/\s+/g, " ").trim().slice(0, 2000);
+  return { said: raw.slice(0, match.index), task, for: (match[1] || "").trim() };
+}
+
+// A line «ESCI» at the end of a reply: the agent says goodbye and leaves the call.
+const LEAVE_LINE = /^[ \t*_>-]*ESCI[.!]?[ \t]*$/im;
+
 /** What a voice says of a model's answer: plain words, a few sentences at most. */
 export function spokenReply(text, agentName = "") {
   let spoken = speakable(String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, " "));
@@ -82,13 +97,14 @@ class Call {
     this.speaking = null;
     this.thinking = null;
     this.pending = null;
+    this.works = [];
     this.lastHumanAt = Date.now();
     this.startedAt = Date.now();
   }
 }
 
 export class VoiceCalls {
-  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN }) {
+  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null }) {
     this.store = store;
     this.bots = bots;
     this.llm = llm;
@@ -98,6 +114,8 @@ export class VoiceCalls {
     this.language = language;
     this.makeLink = makeLink;
     this.agentChain = agentChain;
+    // Hands a job taken on in a call to the agent's written conversation, where it works with its tools.
+    this.dispatch = dispatch;
     this.calls = new Map();
     this.sweeper = setInterval(() => this.sweep(), 15000);
     this.sweeper.unref?.();
@@ -125,7 +143,7 @@ export class VoiceCalls {
    * An agent joins a voice channel with its own bot: the one named, or the one the person who
    * asked is in. Returns where it is.
    */
-  async join(agent, { channelId = "", requesterId = "", allowedGuild = () => true } = {}) {
+  async join(agent, { channelId = "", requesterId = "", allowedGuild = () => true, origin = "" } = {}) {
     if (!this.enabled) this.refreshKey?.();
     if (!this.enabled) throw new Error("Fish Audio is not connected: the owner adds its key (FISH_AUDIO_API_KEY or the vault secret FISH_AUDIO_CORA)");
     const client = this.bots?.client(agent.id);
@@ -137,7 +155,10 @@ export class VoiceCalls {
     if (!info || ![2, 13].includes(info.type)) throw new Error("that is not a voice channel this agent's bot can see");
     if (!allowedGuild(info.guildId)) throw new Error("that server is not one this Cora works in");
     const current = this.callOf(agent.id);
-    if (current?.channelId === target) return this.where(current, agent);
+    if (current?.channelId === target) {
+      if (origin) current.members.get(agent.id).origin = origin;
+      return this.where(current, agent);
+    }
     if (current) await this.leave(agent);
     let call = this.calls.get(target);
     if (!call) {
@@ -145,7 +166,7 @@ export class VoiceCalls {
       this.calls.set(target, call);
     }
     const link = this.makeLink({ client, guildId: info.guildId, channelId: target, log: (text) => this.log({ type: "error", agentId: agent.id, channelId: target, text }) });
-    const member = { agent, link, userId: client.user.id, voice: fishVoiceFor(agent, [...call.members.values()].map((entry) => entry.voice)), joinedAt: Date.now() };
+    const member = { agent, link, userId: client.user.id, voice: fishVoiceFor(agent, [...call.members.values()].map((entry) => entry.voice)), joinedAt: Date.now(), origin: String(origin || "") };
     call.members.set(agent.id, member);
     try {
       await link.open();
@@ -372,7 +393,14 @@ export class VoiceCalls {
         `Nella chiamata: ${[...people, ...others].join(", ") || "nessun altro per ora"}${others.length ? ` (${others.join(", ")} ${others.length === 1 ? "è un agente" : "sono agenti"} come te)` : ""}.`,
         `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, da una a tre frasi brevi.`,
         "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
-        "Parli solo per te. In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat.",
+        "Parli solo per te.",
+        ...(this.dispatch ? [
+          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' in una frase breve che ci lavori, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
+          "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
+          "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati.",
+        ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
+        ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
+        "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
         "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS.",
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
@@ -408,20 +436,52 @@ export class VoiceCalls {
     const thinking = { agentId: agent.id, controller };
     call.thinking = thinking;
     const started = Date.now();
+    // A job, or leaving, comes only from a person: what was asked, by whom, in the last human words.
+    const asker = [...call.history].reverse().find((entry) => !entry.agent);
+    const lastIsHuman = Boolean(call.history.at(-1) && !call.history.at(-1).agent);
     let text;
+    let reply;
+    let leaving = false;
     try {
-      text = spokenReply(await this.think(agent, this.prompt(call, agent), controller.signal), agent.name);
+      const raw = String(await this.think(agent, this.prompt(call, agent), controller.signal) || "");
+      leaving = lastIsHuman && LEAVE_LINE.test(raw);
+      reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
+      text = spokenReply(reply.said, agent.name);
     } finally {
       if (call.thinking === thinking) call.thinking = null;
     }
     if (controller.signal.aborted) return;
+    if (reply.task && this.dispatch && lastIsHuman && asker) {
+      this.startWork(call, agent, asker, reply.task, reply.for);
+      if (!text) text = this.language(agent) === "en" ? "On it." : "Ci lavoro.";
+    }
+    const member = call.members.get(agent.id);
     if (!text) {
+      if (leaving && member) return void await this.leave(agent);
       this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} non risponde (PASS, pensato in ${((Date.now() - started) / 1000).toFixed(1)} s)` });
       return;
     }
-    const member = call.members.get(agent.id);
     if (!member || !this.calls.has(call.channelId)) return;
     await this.speak(call, member, text, Date.now() - started);
+    // Asked by a person to leave: it says goodbye, then goes.
+    if (leaving && call.members.get(agent.id) === member) await this.leave(agent);
+  }
+
+
+  /** The job goes to the agent's written conversation as the person's own request: their permissions, the agent's tools. */
+  startWork(call, agent, asker, task, workerName = "") {
+    const member = call.members.get(agent.id);
+    if (!member) return;
+    const wanted = fold(workerName).trim();
+    const worker = (wanted && (this.store.agents?.() || []).find((entry) => entry.enabled !== false && fold(entry.name) === wanted)) || agent;
+    const work = { agentId: worker.id, agentName: worker.name, by: asker.name, byId: asker.userId, task, said: asker.text, at: Date.now(), channelId: member.origin || call.channelId };
+    call.works.push(work);
+    if (call.works.length > 20) call.works.shift();
+    const who = worker === agent ? `${agent.name} prende` : `${agent.name} passa a ${worker.name}`;
+    this.log({ type: "voice", agentId: worker.id, channelId: call.channelId, text: `${who} un lavoro dalla chiamata per ${asker.name}: ${task.slice(0, 300)}` });
+    Promise.resolve()
+      .then(() => this.dispatch({ agent: worker, from: agent, channelId: work.channelId, speakerId: asker.userId, speakerName: asker.name, said: asker.text, task, callName: call.name, callChannelId: call.channelId }))
+      .catch((error) => this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: work not started (${error.message})` }));
   }
 
   async speak(call, member, text, thoughtMs = 0) {

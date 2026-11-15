@@ -984,7 +984,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       artifacts: this.artifacts, artifactUserId: transportOf(channel.id) === "web" ? replyTo?.authorId || requester?.id || "" : "", vault: this.vault, connectors: this.connectors, requester, mailAuthorized: Boolean(computer || requestAuthorized), email: this.email, emailInvocation: channel.emailInvocation || null, traceId: trace.id, messageOwner: this.knowledge?.ownerMemory ? (text) => this.messagePersonFor?.(agent, text) || Promise.resolve(false) : this.messageOwner,
       openThread: this.openThread ? (options) => this.openThread(agent, channel.id, options) : null,
       // A voice call joins where the person asking is, unless a channel is named.
-      voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true) }) : null,
+      voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true), origin: channel.id }) : null,
       voiceLeave: this.voiceCalls ? () => this.voiceCalls.leave(agent) : null,
       threadFor: this.threadFor ? (threadId) => this.threadFor(agent, threadId) : null,
       // The question goes where this conversation is, not to a separate place.

@@ -4678,6 +4678,29 @@ describe("talking with the agents", () => {
     assert.deepEqual(posts("Pino"), []);
   });
 
+  test("a job asked in a voice call becomes the person's request to the agent, in the thread of its issue or where the agent was called from", async () => {
+    const VOICE_THREAD = "1599000000000000741";
+    discord.dispatch("THREAD_CREATE", { id: VOICE_THREAD, guild_id: GUILD, parent_id: CHANNEL, type: 11, name: "NOT-43 voce dal vivo" });
+    await sleep(150);
+    const prompts = [];
+    replies.set("Olga", (body) => { prompts.push(lastUserText(body)); return { content: "Fatto: controllato." }; });
+    const target = await app.orchestrator.fromCall({ agent: olga, from: pino, channelId: CHANNEL, speakerId: OWNER, speakerName: "Sam", said: "Pino, fate controllare a Olga i log di NOT-43", task: "Controlla i log della chiamata per NOT-43", callName: "Cora voice" });
+    assert.equal(target, VOICE_THREAD, "the issue's own thread, not the conversation the call started from");
+    await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Olga" && item.channelId === VOICE_THREAD && item.content === "Fatto: controllato."), { what: "Olga working in the NOT-43 thread" });
+    await quiet();
+    assert.ok(discord.state.webhookPosts.some((item) => item.channelId === VOICE_THREAD && item.content === "🎙️ Dalla chiamata «Cora voice», passato da Pino: Sam chiede a Olga: Controlla i log della chiamata per NOT-43"), "the people see the job arrive");
+    assert.match(prompts.at(-1), /Controlla i log della chiamata per NOT-43/);
+    assert.match(prompts.at(-1), /chiesto a voce nella chiamata «Cora voice», passato da Pino: «Pino, fate controllare a Olga i log di NOT-43»/);
+    assert.ok(!discord.state.webhookPosts.some((item) => item.username === "Pino" && item.channelId === VOICE_THREAD), "only the agent the job is for works on it");
+
+    replies.set("Olga", () => ({ content: "Riepilogo scritto." }));
+    const home = await app.orchestrator.fromCall({ agent: olga, channelId: CHANNEL, speakerId: OWNER, speakerName: "Sam", said: "Olga, scrivi il riepilogo", task: "Scrivi il riepilogo della giornata", callName: "Cora voice" });
+    assert.equal(home, CHANNEL, "without an issue the job goes where the agent was called from");
+    await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Olga" && item.channelId === CHANNEL && item.content === "Riepilogo scritto."), { what: "Olga working where she was called from" });
+    await quiet();
+    await assert.rejects(app.orchestrator.fromCall({ agent: olga, channelId: OTHER_CHANNEL, speakerId: OWNER, speakerName: "Sam", task: "Altro" }), /does not work in the conversation of this call/);
+  });
+
   test("a thread named after an issue keeps its topic: another thread's work is stopped and sent there, a question about it passes", async () => {
     const HANDOVER = "1599000000000000731";
     const PAGES = "1599000000000000732";
