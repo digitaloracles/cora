@@ -29,6 +29,8 @@ const SILENCE_PUMP_MAX_MS = 4000;
 const FINALIZE_AFTER_MS = 1500;
 const IDLE_SPEAKER_MS = 120000;
 const EMPTY_CALL_MS = 180000;
+// A person still in the channel, and the ear has had no audio from them for this long: logged once, until audio returns.
+const LISTEN_GAP_MS = 30000;
 const REPLY_TIMEOUT_MS = 45000;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -133,7 +135,7 @@ export function spokenReply(text, agentName = "") {
 }
 
 class Call {
-  constructor({ guildId, channelId, name }) {
+  constructor({ guildId, channelId, name, now = Date.now }) {
     this.guildId = guildId;
     this.channelId = channelId;
     this.name = name;
@@ -145,13 +147,20 @@ class Call {
     this.thinking = null;
     this.pending = null;
     this.works = [];
-    this.lastHumanAt = Date.now();
-    this.startedAt = Date.now();
+    const at = now();
+    this.lastHumanAt = at;
+    this.startedAt = at;
+    // Per person, the last time each agent actually received their audio or a speaking signal.
+    this.inbound = new Map();
+    this.speakingAt = new Map();
+    // Last decoded packet on each agent's link, whoever sent it.
+    this.linkAudioAt = new Map();
+    this.listenStall = new Map();
   }
 }
 
 export class VoiceCalls {
-  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null }) {
+  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null, listenGapMs = LISTEN_GAP_MS, now = Date.now }) {
     this.store = store;
     this.bots = bots;
     this.llm = llm;
@@ -161,6 +170,8 @@ export class VoiceCalls {
     this.language = language;
     this.makeLink = makeLink;
     this.agentChain = agentChain;
+    this.listenGapMs = listenGapMs;
+    this.now = now;
     // Hands a job taken on in a call to the agent's written conversation, where it works with its tools.
     this.dispatch = dispatch;
     this.calls = new Map();
@@ -209,7 +220,7 @@ export class VoiceCalls {
     if (current) await this.leave(agent);
     let call = this.calls.get(target);
     if (!call) {
-      call = new Call({ guildId: info.guildId, channelId: target, name: info.name });
+      call = new Call({ guildId: info.guildId, channelId: target, name: info.name, now: () => this.now() });
       this.calls.set(target, call);
     }
     const link = this.makeLink({ client, guildId: info.guildId, channelId: target, log: (text) => this.log({ type: "error", agentId: agent.id, channelId: target, text }) });
@@ -223,6 +234,10 @@ export class VoiceCalls {
       throw error;
     }
     link.on("audio", (userId, pcm) => this.heard(call, member, userId, pcm));
+    link.on("speaking", (userId) => this.markSignal(call, member, userId, "speaking"));
+    link.on("connection", (before, after) => {
+      this.log({ type: "voice", agentId: agent.id, channelId: target, text: `voce ${agent.name}: connessione ${before} → ${after}` });
+    });
     link.on("quiet", (userId) => this.quiet(call, member, userId));
     link.on("closed", (reason) => {
       if (call.members.get(agent.id)?.link === link) this.drop(call, agent.id, reason);
@@ -282,6 +297,7 @@ export class VoiceCalls {
   }
 
   heard(call, member, userId, pcm) {
+    this.markSignal(call, member, userId, "audio");
     if (this.ear(call) !== member || this.isOwnAgent(call, userId)) return;
     let speaker = call.speakers.get(userId);
     if (!speaker) {
@@ -705,15 +721,87 @@ export class VoiceCalls {
     }
   }
 
+  /** Last inbound audio and speaking signal from a person, per agent that received it. */
+  markSignal(call, member, userId, kind) {
+    const at = this.now();
+    if (kind === "audio") call.linkAudioAt.set(member.agent.id, at);
+    if (this.isOwnAgent(call, userId)) return;
+    const map = kind === "speaking" ? call.speakingAt : call.inbound;
+    const entry = map.get(userId) || { by: new Map() };
+    entry.by.set(member.agent.id, at);
+    map.set(userId, entry);
+  }
+
+  /**
+   * One line when a person is still in the channel and the ear stops receiving their audio,
+   * and one when it returns. The line carries the connection, so a later gap can be told apart
+   * from a mute, a dead pipe, or an ear that no longer hears while another agent does.
+   */
+  noteListening(call, now) {
+    const ear = this.ear(call);
+    if (!ear) return;
+    const present = new Set(this.people(call).map((person) => person.userId));
+    for (const userId of [...call.listenStall.keys()]) if (!present.has(userId)) call.listenStall.delete(userId);
+    for (const person of this.people(call)) {
+      const earAt = call.inbound.get(person.userId)?.by.get(ear.agent.id) || 0;
+      const quietFor = now - (earAt || call.startedAt);
+      const stall = call.listenStall.get(person.userId);
+      if (quietFor >= this.listenGapMs) {
+        if (stall) continue;
+        call.listenStall.set(person.userId, { since: earAt || call.startedAt });
+        const text = this.listenText("fermo", call, person, quietFor, ear, now);
+        this.log({ type: "voice", channelId: call.channelId, text });
+        console.log(text);
+      } else if (stall) {
+        call.listenStall.delete(person.userId);
+        const text = this.listenText("ripreso", call, person, now - stall.since, ear, now);
+        this.log({ type: "voice", channelId: call.channelId, text });
+        console.log(text);
+      }
+    }
+  }
+
+  listenText(kind, call, person, ms, ear, now) {
+    const health = typeof ear.link.listenHealth === "function" ? ear.link.listenHealth() : {};
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    const ping = (value) => (Number.isFinite(value) ? `${value} ms` : "assente");
+    const flags = [
+      `ear ${ear.agent.name}`,
+      `connessione ${health.status || "sconosciuta"}`,
+      `ping ws ${ping(health.ws)}`,
+      `ping udp ${ping(health.udp)}`,
+      `mute ${person.selfMute || person.mute ? "sì" : "no"}`,
+      `sordità ${person.selfDeaf || person.deaf ? "sì" : "no"}`,
+      `scartati ${health.drops || 0}`,
+    ];
+    const anyAt = call.linkAudioAt.get(ear.agent.id) || 0;
+    flags.push(anyAt ? `ultimo pacchetto ${Math.max(0, Math.round((now - anyAt) / 1000))} s fa` : "nessun pacchetto in ingresso");
+    const speaking = call.speakingAt.get(person.userId)?.by.get(ear.agent.id) || 0;
+    const earAudio = call.inbound.get(person.userId)?.by.get(ear.agent.id) || 0;
+    if (speaking > earAudio + 1000) flags.push("segnale di parola senza pacchetti");
+    for (const member of call.members.values()) {
+      if (member.agent.id === ear.agent.id) continue;
+      const heardAt = call.inbound.get(person.userId)?.by.get(member.agent.id) || 0;
+      if (heardAt > earAudio + 1000) flags.push(`${member.agent.name} riceve audio`);
+      const status = typeof member.link.listenHealth === "function" ? member.link.listenHealth().status : "";
+      if (status && status !== (health.status || "sconosciuta")) flags.push(`${member.agent.name} ${status}`);
+    }
+    const who = person.name || person.userId;
+    const detail = flags.join(", ");
+    if (kind === "fermo") return `ascolto fermo: ${who} nel canale «${call.name}» da ${seconds} s senza audio (${detail})`;
+    return `ascolto ripreso: ${who} nel canale «${call.name}» dopo ${seconds} s (${detail})`;
+  }
+
   /** Speakers gone quiet for long are closed; a call with no person left for a while ends. */
   sweep() {
-    const now = Date.now();
+    const now = this.now();
     for (const call of [...this.calls.values()]) {
       for (const speaker of [...call.speakers.values()]) if (now - speaker.lastAt > IDLE_SPEAKER_MS && !speaker.inTurn) this.closeSpeaker(call, speaker);
       if (this.people(call).length) call.lastHumanAt = Math.max(call.lastHumanAt, now - 1);
       else if (now - call.lastHumanAt > EMPTY_CALL_MS) {
         for (const member of [...call.members.values()]) this.leave(member.agent).catch(() => {});
       }
+      this.noteListening(call, now);
     }
   }
 

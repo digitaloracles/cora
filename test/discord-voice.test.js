@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import prism from "prism-media";
 import { OpusDecoder, VoiceLink } from "../src/discord-voice.js";
@@ -55,4 +55,38 @@ test("Voice receive reaches quiet after a damaged packet and subsequent audio", 
   assert.deepEqual(await quiet, ["seb"]);
   assert.deepEqual(audio, [{ userId: "seb", bytes: 1920 }, { userId: "seb", bytes: 1920 }]);
   assert.deepEqual(errors, []);
+});
+
+test("Voice receive records when audio arrived and how many packets were dropped", async () => {
+  const valid = await packet();
+  const input = new PassThrough({ objectMode: true });
+  const link = new VoiceLink({ client: { user: { id: "nico" } }, log: () => {} });
+  link.connection = { receiver: { subscriptions: new Map(), subscribe: () => input }, state: { status: "ready" }, ping: { ws: 12, udp: 34 } };
+  const done = once(link, "quiet");
+  link.hear("seb");
+  input.write(valid);
+  input.write(Buffer.from([0x03]));
+  input.end();
+  await done;
+  assert.ok(link.lastAudioAt.get("seb") > 0);
+  assert.equal(link.drops, 1);
+  const health = link.listenHealth();
+  assert.equal(health.status, "ready");
+  assert.equal(health.ws, 12);
+  assert.equal(health.udp, 34);
+  assert.equal(health.drops, 1);
+});
+
+test("Voice connection changes are reported once per status", () => {
+  const link = new VoiceLink({ client: { user: { id: "nico" } }, log: () => {} });
+  const seen = [];
+  link.on("connection", (before, after) => seen.push(`${before}->${after}`));
+  const connection = new EventEmitter();
+  connection.state = { status: "signalling" };
+  link.bindConnection(connection);
+  connection.state = { status: "ready" };
+  connection.emit("stateChange", { status: "signalling" }, { status: "ready" });
+  connection.emit("stateChange", { status: "ready" }, { status: "ready" });
+  assert.deepEqual(seen, ["signalling->ready"]);
+  assert.equal(link.listenHealth().status, "ready");
 });
