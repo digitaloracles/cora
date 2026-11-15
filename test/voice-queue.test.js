@@ -169,3 +169,10 @@ test("one changed word is a different job", () => {
   assert.equal(sameWork(workKey("controlla il rilascio di NOT-43"), workKey("controlla il rilascio di NOT-44")), false);
   assert.equal(sameWork(workKey("verifica il DNS di catania"), workKey("verifica il DNS di ragusa")), false);
 });
+
+test("a number that only starts the same is a different job", () => {
+  const same = (one, other) => sameWork(workKey(one), workKey(other));
+  assert.equal(same("controlla il rilascio di NOT-4", "controlla il rilascio di NOT-43"), false);
+  assert.equal(same("rilancia la build 12", "rilancia la build 123"), false);
+  assert.equal(same("controlla il rilascio di NOT-43", "controlla il rilascio di NOT-43, per favore"), true);
+});

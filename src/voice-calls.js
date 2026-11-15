@@ -56,9 +56,13 @@ export function workKey(task) {
 /** Two jobs are the same when one is the other with a few more words, or they share most of their words. */
 export function sameWork(one, other) {
   if (!one || !other) return false;
-  if (one === other || one.includes(other) || other.includes(one)) return true;
+  if (one === other) return true;
   const a = new Set(one.split(" ").filter(Boolean));
   const b = new Set(other.split(" ").filter(Boolean));
+  // A different number is a different job: NOT-4 is not NOT-43, build 12 is not build 123.
+  const numbers = (words) => [...words].filter((word) => /\d/.test(word)).sort().join(" ");
+  if (numbers(a) && numbers(b) && numbers(a) !== numbers(b)) return false;
+  if (one.includes(other) || other.includes(one)) return true;
   if (a.size < 3 || b.size < 3) return false;
   let shared = 0;
   for (const word of a) if (b.has(word)) shared += 1;
