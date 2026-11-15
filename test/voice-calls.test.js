@@ -171,7 +171,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
   assert.equal(fish.ttss.length, 2);
   assert.equal(fish.ttss[0].text, "Sto testando la chiamata.");
   assert.equal(fish.ttss[0].options.voice, fishVoiceFor(ada));
-  assert.equal(fish.ttss[0].options.speed, 1.2, "live calls request faster speech");
+  assert.equal(fish.ttss[0].options.speed, 1.7, "live calls request faster speech");
   assert.notEqual(fish.ttss[1].options.voice, fish.ttss[0].options.voice, "two agents never share a voice");
   assert.equal(links[1].speeches[0].bytes, 9600, "Ada's own bot speaks Ada's words");
   assert.equal(links[0].speeches[0].bytes, 9600, "Radix's bot speaks Radix's");
@@ -182,7 +182,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
   assert.equal(asked[0].model, "ollama/fast");
 });
 
-test("voice calls: a person talking over an agent stops its voice at once, and PASS says nothing", async (t) => {
+test("voice calls: a person who keeps talking over an agent stops its voice, and PASS says nothing", async (t) => {
   const { calls, fish, links, log } = setup({ replies: { Radix: "Una risposta lunga che verrà interrotta." } });
   t.after(() => calls.stop());
   await calls.join(radix, { channelId: VOICE });
@@ -195,6 +195,10 @@ test("voice calls: a person talking over an agent stops its voice at once, and P
   const call = calls.calls.get(VOICE);
   assert.equal(call.speaking?.name, "Radix");
   fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  for (let frame = 0; frame < 9; frame += 1) {
+    link.emit("audio", SEB, speech16(8000));
+    await wait(100);
+  }
   assert.equal(link.speeches[0].stopped, true, "the voice stops");
   assert.equal(fish.ttss[0].aborted, true, "and so does the synthesis");
   assert.equal(call.speaking, null);

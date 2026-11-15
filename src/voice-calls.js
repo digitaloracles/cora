@@ -35,7 +35,7 @@ const BARGE_MS = 700;
 // The person must still be making sound this recently for the cut to be theirs and not a leftover turn.
 const BARGE_SILENCE_MS = 280;
 const WORK_DEDUPE_MS = 120000;
-const SPEECH_SPEED = 1.35;
+const SPEECH_SPEED = 1.7;
 
 // A refusal or a request to wait changes what the agents do: never a murmur, whatever else it says.
 const MEANINGFUL = new Set(["no", "non", "aspetta", "stop", "fermo", "fermati", "smetti", "basta"]);
