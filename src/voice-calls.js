@@ -62,7 +62,7 @@ export function sameWork(one, other) {
   if (a.size < 3 || b.size < 3) return false;
   let shared = 0;
   for (const word of a) if (b.has(word)) shared += 1;
-  return shared / new Set([...a, ...b]).size >= 0.6;
+  return shared / new Set([...a, ...b]).size >= 0.75;
 }
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -447,7 +447,7 @@ export class VoiceCalls {
     } else call.chain += 1;
     this.log({ type: "voice", agentId: turn.agent?.id, channelId: call.channelId, text: `[voce] ${turn.agent?.name || turn.name}: ${turn.text.slice(0, 300)}` });
     // A murmur or a test of the line is not a request: it neither cuts the agent nor is answered, and starts no work.
-    if (!turn.agent && isNoise(turn.text)) {
+    if (!turn.agent && isNoise(turn.text) && !this.askedQuestion(call)) {
       this.log({ type: "voice", channelId: call.channelId, text: `[voce] ${turn.name}: ${turn.text.slice(0, 120)} (riscontro, ignorato)` });
       return;
     }
@@ -462,6 +462,15 @@ export class VoiceCalls {
     this.answer(call, agent).catch((error) => {
       if (error.name !== "AbortError" || error.message?.includes("timed out")) this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: ${error.message}` });
     });
+  }
+
+  /** A bare «ok» right after a question is the answer, not a murmur. */
+  askedQuestion(call) {
+    for (let index = call.history.length - 1; index >= 0; index -= 1) {
+      const entry = call.history[index];
+      if (entry.agent) return /[?]\s*$/.test(String(entry.text || "").trim());
+    }
+    return false;
   }
 
   prompt(call, agent) {

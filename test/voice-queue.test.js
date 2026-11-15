@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { VoiceCalls, isNoise, workKey, splitWork } from "../src/voice-calls.js";
+import { VoiceCalls, isNoise, workKey, sameWork, splitWork } from "../src/voice-calls.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -152,4 +152,20 @@ test("a job is not taken on when it was not a person asking", async () => {
   target.history.push({ agent, name: "Ada", text: "Dico io una cosa", agent: { id: "a2" } });
   await app.answer(target, agent);
   assert.deepEqual(sent, [], "an agent's own words start no job");
+});
+
+test("a bare «ok» after a question is the answer, not a murmur", () => {
+  const { app } = calls();
+  const target = call();
+  const spoken = [];
+  app.calls.set(target.channelId, target);
+  app.answer = async (cc, who) => spoken.push(who.name);
+  target.history.push({ agent, name: "Ada", text: "Lo rilascio adesso?", at: 1 });
+  app.turn(target, { userId: "900", name: "Seb", text: "ok", agent: null });
+  assert.deepEqual(spoken, ["Ada"], "a confirmation after a question reaches the agent");
+});
+
+test("one changed word is a different job", () => {
+  assert.equal(sameWork(workKey("controlla il rilascio di NOT-43"), workKey("controlla il rilascio di NOT-44")), false);
+  assert.equal(sameWork(workKey("verifica il DNS di catania"), workKey("verifica il DNS di ragusa")), false);
 });
