@@ -3,12 +3,12 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 export const FLUXKIT_GOOGLE_CLIENT_ID = "912240824457-9hjeo5a3tpqg21d8vb4kb8ub661hcljc.apps.googleusercontent.com";
 const GMAIL = "https://www.googleapis.com/auth/gmail.";
 /**
- * What a space asks Google for, as a comma list of parts: "send" (gmail.send only, what the
- * verified app shows), "mail" (also drafts with gmail.compose, and reading, labels and archive
- * with gmail.modify) and "drive" (the whole Google Drive). The person may leave some out on
- * Google's screen; at least one must be granted.
+ * What a space asks Google for, as a comma list of parts: "send" (gmail.send only), "mail"
+ * (gmail.modify alone: reading, labels, archive, trash, drafts and sending) and "drive" (the
+ * whole Google Drive). Each part asks for one scope, the narrowest that covers its features.
+ * The person may leave some out on Google's screen; at least one must be granted.
  */
-const ACCESS = { send: [`${GMAIL}send`], mail: [`${GMAIL}send`, `${GMAIL}compose`, `${GMAIL}modify`], drive: ["https://www.googleapis.com/auth/drive"] };
+const ACCESS = { send: [`${GMAIL}send`], mail: [`${GMAIL}modify`], drive: ["https://www.googleapis.com/auth/drive"] };
 /** The scopes a signed access asks for; null when it names a part the broker does not know. */
 export function accessScopes(access = "send") {
   const parts = String(access || "send").split(",");

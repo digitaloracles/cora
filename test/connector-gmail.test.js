@@ -3,7 +3,7 @@ import http from "node:http";
 import { test } from "node:test";
 import { GoogleConnectorBroker } from "../cloud/src/google-connector.js";
 import { createHash } from "node:crypto";
-import { GMAIL_SCOPES, GoogleConnector, htmlText } from "../src/connectors/google.js";
+import { capabilities, GMAIL_SCOPES, GoogleConnector, htmlText } from "../src/connectors/google.js";
 
 const b64 = (value) => Buffer.from(value).toString("base64url");
 const FULL = `${GMAIL_SCOPES.send} ${GMAIL_SCOPES.compose} ${GMAIL_SCOPES.modify}`;
@@ -189,12 +189,21 @@ test("the broker asks Google for send only, or for the whole mailbox when the sp
   const verifier = "v".repeat(43), challenge = createHash("sha256").update(verifier).digest("base64url");
   const scopeOf = (access) => new URL(broker.start({ space: "s", nonce: "n".repeat(43), challenge, ...(access ? { access } : {}) })).searchParams.get("scope");
   assert.equal(scopeOf(), `openid email ${GMAIL_SCOPES.send}`);
-  assert.equal(scopeOf("mail"), `openid email ${GMAIL_SCOPES.send} ${GMAIL_SCOPES.compose} ${GMAIL_SCOPES.modify}`);
+  assert.equal(scopeOf("mail"), `openid email ${GMAIL_SCOPES.modify}`);
   assert.throws(() => scopeOf("everything"), /Invalid connector request/);
   const mail = new URL(broker.start({ space: "s", nonce: "n".repeat(43), challenge, access: "mail" })).searchParams.get("state");
-  assert.equal((await broker.exchange({ state: mail, code: "c", verifier })).scope, `${GMAIL_SCOPES.send} ${GMAIL_SCOPES.modify}`);
+  assert.equal((await broker.exchange({ state: mail, code: "c", verifier })).scope, GMAIL_SCOPES.modify);
   const send = new URL(broker.start({ space: "s", nonce: "m".repeat(43), challenge })).searchParams.get("state");
   assert.equal((await broker.exchange({ state: send, code: "c", verifier })).scope, GMAIL_SCOPES.send);
+});
+
+test("gmail.modify alone, what the broker now asks for full mail, allows sending, drafts, reading and changes", () => {
+  assert.deepEqual(capabilities({ scope: `openid email ${GMAIL_SCOPES.modify}` }), { ...capabilities({ scope: FULL }) });
+  const modify = capabilities({ scope: GMAIL_SCOPES.modify });
+  for (const need of ["send", "draft", "read", "change"]) assert.equal(modify[need], true, need);
+  const send = capabilities({ scope: GMAIL_SCOPES.send });
+  assert.equal(send.send, true);
+  for (const need of ["draft", "read", "change"]) assert.equal(send[need], false, need);
 });
 
 test("a space set to mail access asks the broker for the whole mailbox, a default space for sending only", () => {
