@@ -63,6 +63,23 @@ export function speechParts(text) {
 }
 
 /** Length and a 0–255 loudness outline of a 16-bit PCM WAV, the shape Discord draws on a voice message. */
+export function pcmWav(pcm, sampleRate = 24000) {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVEfmt ", 8, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
 export function wavShape(wav, points = 128) {
   if (wav.length < 44 || wav.toString("ascii", 0, 4) !== "RIFF") return { duration: 0, waveform: Buffer.alloc(0) };
   let offset = 12, rate = 24000, channels = 1, bits = 16, data = null;
@@ -227,7 +244,16 @@ export class Voice {
       const mp3 = await this.synthesize(text, { voice, language, format: "mp3" });
       return { mp3, ogg: null, duration: 0, waveform: Buffer.alloc(0) };
     }
-    const wav = await this.synthesize(text, { voice, language, format: "wav" });
+    return this.noteFromWav(await this.synthesize(text, { voice, language, format: "wav" }));
+  }
+
+  /** A voice note from speech already made elsewhere (the call's voice): 16-bit mono PCM. */
+  async noteFromPcm(pcm, sampleRate = 24000) {
+    if (!(await this.hasEncoder())) throw new VoiceError("ffmpeg non disponibile");
+    return this.noteFromWav(pcmWav(pcm, sampleRate));
+  }
+
+  async noteFromWav(wav) {
     const { duration, waveform } = wavShape(wav);
     const [ogg, mp3] = await Promise.all([
       this.encode(wav, ["-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1", "-f", "ogg"]),

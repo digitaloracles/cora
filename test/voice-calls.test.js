@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
+import { VoiceCalls, namedAgent, fishVoiceFor, agentVoice, spokenReply, splitWork, voiceGain, FISH_CATALOG, FISH_VOICES } from "../src/voice-calls.js";
 import { Upsampler, toMono, peakOf } from "../src/discord-voice.js";
 
 const GUILD = "g1";
@@ -537,4 +537,150 @@ test("voice calls: a recogniser Fish closes, or one idle for long, is let go wit
   calls.sweep();
   assert.equal(call.speakers.size, 0);
   assert.ok(log.some((entry) => /^chiudo l'ascolto di Seb: nessun audio da 13\d s$/.test(entry.text)));
+});
+
+test("voice calls: an answer a person cut off is owed: a murmur resumes it, new words get it with the cut in mind", async (t) => {
+  const { calls, fish, links, log, asked } = setup({ replies: { Radix: "Una risposta lunga sui progetti." } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.hold = true;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Dammi un aggiornamento sui progetti.", user_turn: true });
+  await until(() => link.speeches[0]?.ended, "Radix speaking");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[0].stopped, "the cut", 2000);
+  clearInterval(talking);
+  const call = calls.calls.get(VOICE);
+  assert.ok(log.some((entry) => entry.text === "Seb interrompe Radix mentre diceva «Una risposta lunga sui progetti.»"));
+  assert.equal(call.cut.agentId, radix.id, "the answer is owed");
+
+  link.hold = false;
+  fish.stts[0].emit("committed", { text: "eh", user_turn: true });
+  await until(() => link.speeches.length === 2 && call.history.length === 3, "Radix resuming after a murmur");
+  assert.ok(log.some((entry) => entry.text === "Radix riprende la risposta interrotta"));
+  assert.ok(log.some((entry) => /^Radix ha parlato \(.*dopo un'interruzione/.test(entry.text)));
+  assert.match(asked.at(-1).system, /La persona ti ha interrotto mentre dicevi «Una risposta lunga sui progetti\.»/);
+  assert.match(asked.at(-1).system, /senza chiedere di ripetere/);
+  assert.equal(call.cut, null, "said in full, nothing is owed any more");
+
+  link.hold = true;
+  fish.stts[0].emit("committed", { text: "E il resto?", user_turn: true });
+  await until(() => link.speeches[2]?.ended, "Radix speaking again");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 2 });
+  const again = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[2].stopped, "the second cut", 2000);
+  clearInterval(again);
+  link.hold = false;
+  fish.stts[0].emit("committed", { text: "Ah no, aspetta, un po' di rispetto.", user_turn: true });
+  await until(() => link.speeches.length === 4, "Radix answering the new words");
+  assert.match(asked.at(-1).system, /La persona ti ha interrotto mentre dicevi/, "new words are answered knowing what was cut");
+  assert.match(asked.at(-1).prompt, /Seb: Dammi un aggiornamento sui progetti\.[\s\S]*Seb: Ah no, aspetta/);
+  await until(() => call.cut === null, "the cut settled");
+  fish.stts[0].emit("committed", { text: "Radix, che ore sono?", user_turn: true });
+  await until(() => link.speeches.length === 5, "Radix answering a fresh question");
+  assert.match(asked.at(-1).system, /Rispondi all'ultima richiesta e basta/);
+  assert.doesNotMatch(asked.at(-1).system, /ti ha interrotto/);
+});
+
+test("voice calls: a person sends several agents out: each one asked leaves, the one not asked stays", async (t) => {
+  const { calls, fish, links, asked, log } = setup({ replies: {
+    Radix: "Va bene, stacco.\nESCI",
+    Ada: (prompt) => (/anche tu Ada/.test(prompt) ? "Stacco anch'io.\nESCI" : "PASS"),
+  } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, stacca il vocale, anche tu Ada.", user_turn: true });
+  await until(() => !calls.calls.has(VOICE), "both leaving");
+  assert.deepEqual(fish.ttss.map((tts) => tts.text), ["Va bene, stacco.", "Stacco anch'io."], "who says goodbye goes");
+  assert.equal(links[1].closed, true, "Ada's bot left too");
+  assert.match(asked.find((entry) => entry.name === "Ada").system, /Radix è appena uscito perché una persona gliel'ha chiesto/);
+
+  const one = setup({ replies: { Radix: "Ciao Seb.\nESCI", Ada: (prompt) => (/anche tu Ada/.test(prompt) ? "Ciao.\nESCI" : "PASS") } });
+  t.after(() => one.calls.stop());
+  await one.calls.join(radix, { channelId: VOICE });
+  await one.calls.join(ada, { channelId: VOICE });
+  one.links[0].emit("audio", SEB, speech16(8000));
+  await until(() => one.fish.stts.length === 1, "Seb's stream");
+  one.fish.stts[0].emit("committed", { text: "Radix, staccati.", user_turn: true });
+  await until(() => one.links[0].closed, "Radix leaving");
+  await until(() => one.log.some((entry) => /Ada non risponde \(PASS/.test(entry.text)), "Ada passing");
+  assert.equal(one.calls.calls.get(VOICE)?.members.has(ada.id), true, "a request only for Radix leaves Ada in the call");
+  assert.equal(one.fish.ttss.length, 1);
+  assert.ok(!log.some((entry) => /voleva uscire/.test(entry.text)));
+});
+
+test("voice calls: a job one agent took is not opened again by a colleague", async (t) => {
+  const jobs = [];
+  const { calls, fish, links, log } = setup({ dispatch: async (work) => { jobs.push(work); return "thread"; }, replies: {
+    Ada: "Ci lavoro.\nLAVORO: In Cora, allineare le emoji del canale vocale e dei messaggi vocali",
+    Radix: "Ci penso io.\nLAVORO: In Cora, allineare le emoji del canale vocale e dei messaggi vocali (progetto Cora, rif. NOT-43)",
+  } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Ada, cambiate le emoji: vocale e messaggi vocali uguali.", user_turn: true });
+  await until(() => jobs.length === 1, "Ada's job");
+  await wait(30);
+  fish.stts[0].emit("committed", { text: "Radix, e le emoji?", user_turn: true });
+  await until(() => log.some((entry) => /^Ada ha già questo lavoro, aperto \d+ s fa: non lo riapro/.test(entry.text)), "the duplicate refused");
+  await wait(30);
+  assert.equal(jobs.length, 1, "one job, one agent");
+  assert.equal(jobs[0].agent.id, ada.id);
+});
+
+test("voice calls: an agent has one voice, the same in every call and in its voice messages", async (t) => {
+  const { calls, fish } = setup({ replies: { Radix: "Ci sono." } });
+  t.after(() => calls.stop());
+  const nico = { id: "ag_nico", name: "Nico", gender: "male", createdAt: "2026-01-02" };
+  const older = { ...radix, createdAt: "2026-01-01" };
+  const alone = agentVoice(older, [older]);
+  assert.equal(agentVoice(older, [older, nico]), alone, "a colleague made later never changes a voice");
+  assert.equal(alone, FISH_VOICES.male[0], "the voice chosen for the gender");
+  assert.equal(agentVoice(nico, [older, nico]), FISH_VOICES.male[1], "two men never sound alike");
+  assert.notEqual(agentVoice(nico, [older, nico]), agentVoice(older, [older, nico]));
+  assert.equal(agentVoice(nico, [{ ...older, voice: FISH_VOICES.male[0] }, nico]), FISH_VOICES.male[1], "a voice a colleague picked is not taken again");
+  assert.equal(agentVoice({ ...ada, createdAt: "2026-01-03" }, [older, nico]), FISH_VOICES.female[0]);
+  const men = ["Primo", "Nico", "Seeky", "Radix", "Buzz"].map((name, index) => ({ id: `ag_${name}`, name, gender: "male", createdAt: `2026-10-2${index}` }));
+  assert.equal(new Set(men.map((man) => agentVoice(man, men))).size, men.length, "five men, five voices: Nico and Radix never match");
+  assert.equal(agentVoice({ ...nico, voice: FISH_CATALOG[2].id }, [older, nico]), FISH_CATALOG[2].id, "a Fish voice picked in the panel");
+  assert.equal(agentVoice({ ...nico, voice: "Giulia" }, [older, nico]), FISH_VOICES.male[1], "a Soniox voice is not a Fish voice");
+  assert.equal(agentVoice({ ...older, fishVoice: "chosen" }, [older, nico]), "chosen");
+
+  await calls.join(radix, { channelId: VOICE });
+  const member = [...calls.calls.get(VOICE).members.values()][0];
+  assert.equal(member.voice, calls.voiceOf(radix), "in a call the agent speaks with its own voice, not one picked by who else is there");
+  await calls.join(ada, { channelId: VOICE });
+  assert.equal(member.voice, calls.voiceOf(radix));
+
+  const pcm = await calls.speech(radix, "Ciao Seb.", "it");
+  const note = fish.ttss.at(-1).options;
+  assert.equal(note.voice, member.voice, "a voice message speaks with the call's voice");
+  assert.equal(note.speed, calls.speechSpeed(radix), "and at the call's speed");
+  assert.equal(note.language, "it");
+  assert.equal(pcm.length, 9600);
+  assert.equal(fish.ttss.at(-1).text, "Ciao Seb.");
+});
+
+test("voice calls: a voice Fish makes quieter is raised to the others' loudness, across chunk boundaries, without wrapping", () => {
+  const quiet = FISH_CATALOG.find((voice) => voice.gain);
+  assert.equal(quiet.id, FISH_VOICES.female[0]);
+  const same = voiceGain(FISH_VOICES.male[0]);
+  const raw = Buffer.from([1, 2, 3, 4]);
+  assert.equal(same(raw), raw, "a voice at the right loudness is left untouched");
+  const louder = voiceGain(quiet.id);
+  const pcm = Buffer.alloc(6);
+  pcm.writeInt16LE(1000, 0);
+  pcm.writeInt16LE(-20000, 2);
+  pcm.writeInt16LE(30000, 4);
+  const out = Buffer.concat([louder(pcm.subarray(0, 3)), louder(pcm.subarray(3))]);
+  assert.equal(out.length, 6);
+  assert.deepEqual([out.readInt16LE(0), out.readInt16LE(2), out.readInt16LE(4)], [Math.round(1000 * quiet.gain), -32768, 32767]);
 });

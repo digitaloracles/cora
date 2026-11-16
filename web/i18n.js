@@ -1339,6 +1339,7 @@ export const EN = {
   "Solo l'owner dà e toglie i permessi.": "Only the owner gives and takes permissions.",
   "Permessi aggiornati": "Permissions updated",
   "Automatica: la prima voce di Soniox per la sua lingua e il suo genere.": "Automatic: Soniox's first voice for its language and gender.",
+  "Automatica: una voce Fish del suo genere, la stessa in chiamata e nei vocali.": "Automatic: a Fish voice of its gender, the same in voice calls and voice messages.",
   "Ascolta": "Listen",
   "Anteprima non riuscita": "The sample did not play",
   "Voce": "Voice",

@@ -9,11 +9,57 @@ import { speakable } from "./voice.js";
  * each other as the words they said, without a round trip through speech to text.
  */
 
-// Public Fish voices that speak Italian naturally: an agent without a chosen voice gets one of its gender.
+// The Fish voices an agent can be given in its Voice panel: Italian voices that are not clones of public figures.
+// The first of each gender is the one Seb chose on 16/11 (NOT-43); every male voice is in the pool, so men never share one.
+// gain brings a voice Fish makes quieter up to the loudness of the others.
+export const FISH_CATALOG = [
+  { id: "b525ef2064b549189d4ab19715da62c4", name: "Italian", gender: "male", description: "Maschile, misurata e professionale." },
+  { id: "12c4a1ac13a5400894585c0ad9bc046b", name: "Oracolo", gender: "female", description: "Femminile, morbida e gentile.", gain: 2.5 },
+  { id: "e103dbb3b9994a04a7feb84b4cf16e98", name: "Gianluca", gender: "male", description: "Maschile, calda e sincera, ritmo calmo." },
+  { id: "e2d4a9a392274479aba57d8c7226d8fd", name: "Voce Narrativa Chiara", gender: "male", description: "Maschile, calma e chiara." },
+  { id: "59ac2b0ad66641b5ab4666d3ed89e5d4", name: "Lorenzo", gender: "male", description: "Maschile, giovane, da assistente vocale." },
+  { id: "f4fb80fb198b4aa1abf4d275b8e4da79", name: "Voce Chiara e Motivazionale", gender: "male", description: "Maschile, chiara e calma." },
+  { id: "906b32c36ba047a3b095713a14a4ba68", name: "Voce Giovane Chiara", gender: "male", description: "Maschile, giovane, da spiegazioni tecniche." },
+  { id: "6edde7ee3b284cce80f0c06d8b0014e9", name: "Giorgia", gender: "female", description: "Femminile, chiara e sicura." },
+  { id: "d17f68089d2f4e7b81ee3ffbfeb13f2a", name: "Catera", gender: "female", description: "Femminile, calma e serena." },
+  { id: "ab43c9e43e4b4b65bf43735360718b95", name: "Assuntazza", gender: "female", description: "Femminile, calma e misurata." },
+  { id: "0e36e185d0654d5bac3d24331562a0cc", name: "Giulia", gender: "female", description: "Femminile, giovane, da assistente vocale." },
+  { id: "5fe29da74b3a4c20b3d6beb745f019a2", name: "Mio", gender: "female", description: "Femminile, morbida e rilassata.", gain: 2.5 },
+];
+// The automatic voices of each gender, in order: agents without a voice of their own take them in the order
+// they were made, so two agents of the same gender never sound alike (Seb, 16/11: Nico and Radix apart).
 export const FISH_VOICES = {
-  male: ["05ec491eed4b4e49b09b874b116a6d2d", "71b5cb1b95714840839cf2cd39534bde", "90bae7a6dfc843f9acad0c8259f93e7c"],
-  female: ["de56cf2236664adb863c0e34bed1f078", "ef02f46e6a7540759f9d767d7e22c2e5", "6d4fe655c7a14aabbb8e0e5d9fd62b41"],
+  male: [
+    "b525ef2064b549189d4ab19715da62c4",
+    "59ac2b0ad66641b5ab4666d3ed89e5d4",
+    "e2d4a9a392274479aba57d8c7226d8fd",
+    "e103dbb3b9994a04a7feb84b4cf16e98",
+    "906b32c36ba047a3b095713a14a4ba68",
+    "f4fb80fb198b4aa1abf4d275b8e4da79",
+  ],
+  female: ["12c4a1ac13a5400894585c0ad9bc046b"],
 };
+
+/** A voice Fish makes quieter than the others is raised to their loudness: 16-bit PCM in chunks, clipped at full scale. */
+export function voiceGain(voice) {
+  const gain = FISH_CATALOG.find((item) => item.id === voice)?.gain || 1;
+  if (gain === 1) return (pcm) => pcm;
+  let carry = null;
+  return (pcm) => {
+    const data = carry ? Buffer.concat([carry, pcm]) : pcm;
+    const even = data.length - (data.length % 2);
+    carry = even < data.length ? Buffer.from(data.subarray(even)) : null;
+    const out = Buffer.alloc(even);
+    for (let index = 0; index < even; index += 2) out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(data.readInt16LE(index) * gain))), index);
+    return out;
+  };
+}
+const FISH_IDS = new Set(FISH_CATALOG.map((voice) => voice.id));
+
+/** The Fish voice picked for an agent: its own setting, or the panel's choice when it is a Fish voice. */
+export function chosenVoice(agent) {
+  return agent?.fishVoice || (FISH_IDS.has(agent?.voice) ? agent.voice : "");
+}
 const SAMPLE_RATE = 48000;
 const HISTORY = 30;
 const MAX_REPLY = 280;
@@ -43,6 +89,8 @@ const BARGE_MS = 700;
 // The person must still be making sound this recently for the cut to be theirs and not a leftover turn.
 const BARGE_SILENCE_MS = 280;
 const WORK_DEDUPE_MS = 120000;
+// An answer a person cut off stays owed this long: the agent picks it up again instead of losing the request.
+const CUT_MEMORY_MS = 90000;
 const SPEECH_SPEED = 1.3;
 
 // A refusal or a request to wait changes what the agents do: never a murmur, whatever else it says.
@@ -98,7 +146,7 @@ export function namedAgent(text, agents) {
 
 /** A Fish voice for an agent that has not chosen one: stable, of its gender, different between agents where it can be. */
 export function fishVoiceFor(agent, taken = []) {
-  if (agent.fishVoice) return agent.fishVoice;
+  if (chosenVoice(agent)) return chosenVoice(agent);
   const pool = FISH_VOICES[agent.gender === "female" ? "female" : "male"];
   let hash = 0;
   for (const char of String(agent.id)) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -107,6 +155,23 @@ export function fishVoiceFor(agent, taken = []) {
     if (!taken.includes(voice)) return voice;
   }
   return pool[hash % pool.length];
+}
+
+/**
+ * One voice per agent everywhere, in calls and in voice messages. Agents of the same gender without a
+ * voice of their own take the gender's voices in the order they were made, skipping the ones colleagues
+ * picked in the panel: who else is in a call never changes an agent's voice, and two agents differ.
+ */
+export function agentVoice(agent, agents = []) {
+  if (chosenVoice(agent)) return chosenVoice(agent);
+  const kind = (entry) => (entry.gender === "female" ? "female" : "male");
+  const peers = agents.filter((entry) => entry.id !== agent.id && kind(entry) === kind(agent));
+  const picked = new Set(peers.map(chosenVoice).filter(Boolean));
+  const free = FISH_VOICES[kind(agent)].filter((voice) => !picked.has(voice));
+  const pool = free.length ? free : FISH_VOICES[kind(agent)];
+  const order = [...peers.filter((entry) => !chosenVoice(entry)), agent]
+    .sort((one, other) => String(one.createdAt || "").localeCompare(String(other.createdAt || "")) || String(one.id).localeCompare(String(other.id)));
+  return pool[order.findIndex((entry) => entry.id === agent.id) % pool.length];
 }
 
 /**
@@ -150,6 +215,8 @@ class Call {
     this.thinking = null;
     this.pending = null;
     this.works = [];
+    this.cut = null;
+    this.farewell = false;
     const at = now();
     this.lastHumanAt = at;
     this.startedAt = at;
@@ -228,7 +295,7 @@ export class VoiceCalls {
       this.calls.set(target, call);
     }
     const link = this.makeLink({ client, guildId: info.guildId, channelId: target, log: (text) => this.log({ type: "error", agentId: agent.id, channelId: target, text }) });
-    const member = { agent, link, userId: client.user.id, voice: fishVoiceFor(agent, [...call.members.values()].map((entry) => entry.voice)), joinedAt: Date.now(), origin: String(origin || "") };
+    const member = { agent, link, userId: client.user.id, voice: this.voiceOf(agent), joinedAt: Date.now(), origin: String(origin || "") };
     call.members.set(agent.id, member);
     try {
       await link.open();
@@ -552,11 +619,22 @@ export class VoiceCalls {
 
   /** A person started talking over an agent: the agent stops, and what it was preparing is dropped. */
   bargeIn(call, speaker) {
+    const agentId = call.speaking?.agentId || call.thinking?.agentId;
+    // The request the agent was answering stays owed: its next answer picks it up, unless the person changes subject.
+    if (agentId) call.cut = { agentId, said: call.speaking?.text || call.cut?.said || "", at: Date.now() };
     if (call.speaking) {
-      this.log({ type: "voice", channelId: call.channelId, text: `${speaker.name} interrompe ${call.speaking.name}` });
+      const said = call.speaking.text ? ` mentre diceva «${call.speaking.text.slice(0, 80)}»` : "";
+      this.log({ type: "voice", channelId: call.channelId, text: `${speaker.name} interrompe ${call.speaking.name}${said}` });
       this.stopSpeaking(call);
     }
     if (call.thinking) call.thinking.controller.abort();
+  }
+
+  /** The answer this agent owes because a person cut it off, while it is still fresh. */
+  pendingCut(call, agent = null) {
+    const cut = call.cut;
+    if (!cut || Date.now() - cut.at > CUT_MEMORY_MS || !call.members.has(cut.agentId)) return null;
+    return !agent || cut.agentId === agent.id ? cut : null;
   }
 
   stopSpeaking(call) {
@@ -601,7 +679,24 @@ export class VoiceCalls {
     // A murmur or a test of the line is not a request: it neither cuts the agent nor is answered, and starts no work.
     if (!turn.agent && isNoise(turn.text) && !this.askedQuestion(call)) {
       this.log({ type: "voice", channelId: call.channelId, text: `[voce] ${turn.name}: ${turn.text.slice(0, 120)} (riscontro, ignorato)` });
-      return void early?.controller.abort();
+      early?.controller.abort();
+      // A murmur after cutting an agent off is no new request: the agent resumes the answer it owes.
+      const cut = this.pendingCut(call);
+      if (cut && !call.speaking && !call.thinking) {
+        const agent = call.members.get(cut.agentId).agent;
+        this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} riprende la risposta interrotta` });
+        this.answer(call, agent).catch((error) => {
+          if (error.name !== "AbortError" || error.message?.includes("timed out")) this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: ${error.message}` });
+        });
+      }
+      return;
+    }
+    // While agents say goodbye to a request to leave, their words start no exchange among them.
+    if (turn.agent && call.farewell) return void early?.controller.abort();
+    if (turn.agent && turn.leaving) {
+      early?.controller.abort();
+      this.farewells(call, turn.agent).catch((error) => this.log({ type: "error", channelId: call.channelId, text: `voice: ${error.message}` }));
+      return;
     }
     for (const speaker of call.speakers.values()) {
       if (speaker.ready && speaker.open && turn.agent) try { speaker.stt.addContext([{ role: "assistant", text: turn.text.slice(0, 2000) }]); } catch {}
@@ -618,6 +713,26 @@ export class VoiceCalls {
     });
   }
 
+  /**
+   * A person asked an agent to leave and it went: each colleague still in the call hears it too, and leaves
+   * as well when the request was also for them (everyone, or them by name); otherwise it stays silent.
+   */
+  async farewells(call, gone) {
+    const request = [...call.history].reverse().find((entry) => !entry.agent);
+    if (!request) return;
+    call.farewell = true;
+    try {
+      for (const member of [...call.members.values()]) {
+        if (member.agent.id === gone.id || !call.members.has(member.agent.id) || !this.calls.has(call.channelId)) continue;
+        // A person spoke again: what they say now comes first.
+        if ([...call.history].reverse().find((entry) => !entry.agent) !== request) break;
+        await this.answer(call, member.agent, null, { farewell: gone });
+      }
+    } finally {
+      call.farewell = false;
+    }
+  }
+
   /** A bare «ok» right after a question is the answer, not a murmur. */
   askedQuestion(call) {
     for (let index = call.history.length - 1; index >= 0; index -= 1) {
@@ -627,12 +742,13 @@ export class VoiceCalls {
     return false;
   }
 
-  prompt(call, agent, extra = null, { insist = false } = {}) {
+  prompt(call, agent, extra = null, { insist = false, farewell = null } = {}) {
     // A person spoke last and this agent was picked to answer: they get words, never silence.
     const toMe = Boolean((extra || call.history.at(-1)) && !(extra || call.history.at(-1)).agent);
     const others = [...call.members.values()].filter((member) => member.agent.id !== agent.id).map((member) => member.agent.name);
     const people = this.people(call).map((person) => person.name).filter(Boolean);
     const language = this.language(agent);
+    const cut = this.pendingCut(call, agent);
     const system = [
       `Sei ${agent.name}.`,
       agentPersona(agent) ? `## Chi sei\n${agentPersona(agent).slice(0, 2500)}` : "",
@@ -647,7 +763,9 @@ export class VoiceCalls {
         toMe
           ? "Una persona ti sta parlando: rispondi sempre a voce, anche solo «sì, ci sono» o una frase breve. Qui PASS non è ammesso."
           : "Non riempire i silenzi e non confermare la tua presenza a un collega. Se non c'è niente da dire, PASS.",
-        "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
+        cut
+          ? `La persona ti ha interrotto mentre ${cut.said ? `dicevi «${cut.said.slice(0, 280)}»` : "preparavi la risposta"}: la sua richiesta è rimasta senza risposta. Se adesso non cambia discorso e non ti chiede di fermarti o di stare zitto, riprendi in breve da dove eri rimasto, senza ricominciare e senza chiedere di ripetere; se cambia discorso, rispondi alle parole nuove.`
+          : "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
         "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto).",
         ...(this.dispatch ? [
           "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, sempre con la sigla della issue a cui si riferisce, se ne ha una (es. NOT-43, REF-73), e con il nome del progetto. Cora lo porta nel thread di quella issue; se quella issue o quel progetto non ha un thread, gliene apre uno, e non lo scrive mai nel thread di un altro argomento. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
@@ -657,6 +775,7 @@ export class VoiceCalls {
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
         ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
         "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
+        ...(farewell ? [`${farewell.name} è appena uscito perché una persona gliel'ha chiesto. Se quella richiesta era anche per te (per tutti, oppure ti nomina), saluta in tre parole e aggiungi in fondo la riga «ESCI»; se era solo per ${farewell.name}, rispondi esattamente PASS.`] : []),
         ...(toMe ? [] : ["Se un collega ha già risposto, non aggiungere niente: PASS.", "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS."]),
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
@@ -688,7 +807,7 @@ export class VoiceCalls {
     return result.text;
   }
 
-  async answer(call, agent, early = null) {
+  async answer(call, agent, early = null, { farewell = null } = {}) {
     const controller = early?.controller || new AbortController();
     const thinking = { agentId: agent.id, controller };
     call.thinking = thinking;
@@ -697,12 +816,16 @@ export class VoiceCalls {
     // A job, or leaving, comes only from a person: what was asked, by whom, in the last human words.
     const asker = [...call.history].reverse().find((entry) => !entry.agent);
     const lastIsHuman = Boolean(call.history.at(-1) && !call.history.at(-1).agent);
+    // Leaving comes only from a person: their last words, or a colleague's goodbye to them.
+    const mayLeave = lastIsHuman || Boolean(farewell);
+    const resumed = Boolean(this.pendingCut(call, agent));
     let text;
     let reply;
     let leaving = false;
     try {
-      const raw = String(await (early ? early.reply : this.think(agent, this.prompt(call, agent), controller.signal)) || "");
-      leaving = lastIsHuman && LEAVE_LINE.test(raw);
+      const raw = String(await (early ? early.reply : this.think(agent, this.prompt(call, agent, null, { farewell }), controller.signal)) || "");
+      leaving = mayLeave && LEAVE_LINE.test(raw);
+      if (!mayLeave && LEAVE_LINE.test(raw)) this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} voleva uscire ma nessuna persona gliel'ha chiesto: resta` });
       reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
       text = spokenReply(reply.said, agent.name);
       // A person spoke to this agent and got PASS: it is asked once more, plainly, to answer.
@@ -727,7 +850,7 @@ export class VoiceCalls {
       return;
     }
     if (!member || !this.calls.has(call.channelId)) return;
-    await this.speak(call, member, text, Date.now() - started, ahead);
+    await this.speak(call, member, text, Date.now() - started, ahead, { leaving, resumed });
     // Asked by a person to leave: it says goodbye, then goes.
     if (leaving && call.members.get(agent.id) === member) await this.leave(agent);
   }
@@ -740,9 +863,11 @@ export class VoiceCalls {
     const wanted = fold(workerName).trim();
     const worker = (wanted && (this.store.agents?.() || []).find((entry) => entry.enabled !== false && fold(entry.name) === wanted)) || agent;
     const key = workKey(task);
-    const again = call.works.find((entry) => entry.agentId === worker.id && sameWork(entry.key, key) && Date.now() - entry.at < WORK_DEDUPE_MS);
+    // The same job is opened once per call, whoever took it first: a colleague does not take it again.
+    const again = call.works.find((entry) => sameWork(entry.key, key) && Date.now() - entry.at < WORK_DEDUPE_MS);
     if (again) {
-      this.log({ type: "voice", agentId: worker.id, channelId: call.channelId, text: `${worker.name} ha già questo lavoro, aperto ${Math.round((Date.now() - again.at) / 1000)} s fa: non lo riapro (${task.slice(0, 200)})` });
+      const holder = again.agentId === worker.id ? `${worker.name} ha già questo lavoro` : `${again.agentName} ha già questo lavoro`;
+      this.log({ type: "voice", agentId: worker.id, channelId: call.channelId, text: `${holder}, aperto ${Math.round((Date.now() - again.at) / 1000)} s fa: non lo riapro (${task.slice(0, 200)})` });
       return;
     }
     const work = { key, agentId: worker.id, agentName: worker.name, by: asker.name, byId: asker.userId, task, said: asker.text, at: Date.now(), channelId: member.origin || call.channelId };
@@ -755,13 +880,44 @@ export class VoiceCalls {
       .catch((error) => this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: work not started (${error.message})` }));
   }
 
+  voiceOf(agent) {
+    return agentVoice(agent, this.store?.agents?.() || []);
+  }
+
+  /** Voice messages speak with the call's voice when Fish is connected. */
+  get speaks() {
+    if (!this.fish?.enabled) this.refreshKey?.();
+    return Boolean(this.fish?.enabled);
+  }
+
+  /** A voice message said as the agent says it in a call: same Fish voice, same speed. 24 kHz mono PCM. */
+  async speech(agent, text, language = "") {
+    const voice = this.voiceOf(agent);
+    const tts = this.fish.openTts({ voice, language: language || this.language(agent), latency: "normal", speed: this.speechSpeed(agent) });
+    const chunks = [];
+    const louder = voiceGain(voice);
+    tts.on("audio", (pcm) => chunks.push(louder(pcm)));
+    try {
+      await tts.ready;
+      tts.sendText(text);
+      tts.flush();
+      await tts.end();
+    } catch (error) {
+      tts.abort?.();
+      throw new Error(`Fish: ${error.status || error.code || error.message}`);
+    }
+    const pcm = Buffer.concat(chunks);
+    if (pcm.length < 480) throw new Error("Fish: no audio");
+    return pcm;
+  }
+
   /** How fast the voice speaks: the agent's own, else the space's, else the measured default. */
   speechSpeed(agent) {
     const wanted = Number(agent?.voiceSpeed ?? this.store?.settings?.voiceSpeed ?? SPEECH_SPEED);
     return Number.isFinite(wanted) && wanted >= 0.5 && wanted <= 2 ? wanted : SPEECH_SPEED;
   }
 
-  async speak(call, member, text, thoughtMs = 0, aheadMs = null) {
+  async speak(call, member, text, thoughtMs = 0, aheadMs = null, { leaving = false, resumed = false } = {}) {
     this.stopSpeaking(call);
     const { agent, link } = member;
     const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: this.speechSpeed(agent) });
@@ -773,9 +929,10 @@ export class VoiceCalls {
     try {
       const speech = link.speak();
       speaking.speech = speech;
+      const louder = voiceGain(member.voice);
       tts.on("audio", (pcm) => {
         if (!firstAudio) firstAudio = Date.now() - started;
-        if (call.speaking === speaking) speech.write(pcm);
+        if (call.speaking === speaking) speech.write(louder(pcm));
       });
       await tts.ready;
       tts.sendText(text);
@@ -786,9 +943,10 @@ export class VoiceCalls {
       if (call.speaking !== speaking) return;
       call.speaking = null;
       this.setAgentSpeaking(call, false);
-      this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} ha parlato (pensato in ${(thoughtMs / 1000).toFixed(1)} s${aheadMs !== null ? `, iniziato ${(aheadMs / 1000).toFixed(1)} s prima della fine del turno` : ""}, prima voce dopo ${(firstAudio / 1000).toFixed(1)} s, ${how})` });
+      if (how === "played" && call.cut?.agentId === agent.id) call.cut = null;
+      this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} ha parlato (pensato in ${(thoughtMs / 1000).toFixed(1)} s${aheadMs !== null ? `, iniziato ${(aheadMs / 1000).toFixed(1)} s prima della fine del turno` : ""}${resumed ? ", dopo un'interruzione" : ""}, prima voce dopo ${(firstAudio / 1000).toFixed(1)} s, ${how})` });
       // Words that were fully said become a turn the others hear.
-      if (how === "played") this.turn(call, { userId: member.userId, name: agent.name, text, agent });
+      if (how === "played") this.turn(call, { userId: member.userId, name: agent.name, text, agent, ...(leaving ? { leaving: true } : {}) });
     } catch (error) {
       if (call.speaking === speaking) {
         call.speaking = null;

@@ -1751,15 +1751,19 @@ export class Orchestrator {
   }
 
   async speak(agent, state, text, language = "", { archive = false, traceId, ...options } = {}) {
-    if (!this.voice?.enabled) return { error: "Soniox is not connected: the owner adds its key in Settings → Connections" };
+    const callVoice = Boolean(this.callVoice?.speaks && (await this.voice?.hasEncoder?.()));
+    if (!this.voice?.enabled && !callVoice) return { error: "Soniox is not connected: the owner adds its key in Settings → Connections" };
     const parts = speechParts(text);
     if (!parts.length) return { error: "nothing in this message can be said aloud" };
     try {
       const tongue = (VOICE_LANGUAGES.includes(language) && language) || agent.voiceLanguage || this.store.settings.language || "it";
-      const voice = await this.voice.voiceFor(agent, tongue);
+      // The same voice as in a voice call: Fish when it is connected, Soniox otherwise.
+      const voice = callVoice ? "" : await this.voice.voiceFor(agent, tongue);
       const messages = [];
       for (const [index, part] of parts.entries()) {
-        const note = await this.voice.voiceNote(part, { voice, language: tongue });
+        const note = callVoice
+          ? await this.voice.noteFromPcm(await this.callVoice.speech(agent, part, tongue), 24000)
+          : await this.voice.voiceNote(part, { voice, language: tongue });
         const content = parts.length === 1 ? text : part;
         const metadata = { ...options, traceId, text: archive ? content : "", voiceOnly: archive, continuation: index > 0 };
         const sent = await this.postVoice(agent, state, note, metadata);

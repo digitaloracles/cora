@@ -210,6 +210,7 @@ export function startCora(overrides = {}) {
   fishFromVault();
   const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
   voiceCalls.refreshKey = fishFromVault;
+  orchestrator.callVoice = voiceCalls;
   brain.voiceCalls = voiceCalls;
   voiceCalls.dispatch = (work) => orchestrator.fromCall(work);
   brain.allowedGuild = (guildId) => orchestrator.allowedGuild(guildId);
@@ -231,7 +232,7 @@ export function startCora(overrides = {}) {
   // Cora's own app on Slack keeps its name and wears Cora's mark, served by this instance.
   const syncMainSlackApp = (options) => slackApps.sync({ key: "main", botToken: slack.botToken, name: "Cora", iconUrl: instanceUrl ? `${instanceUrl}/assets/icon-512.png` : "" }, options);
   const agentTransfer = new AgentTransfer({ store, knowledge, companyBrain, vault, keyConnectors, activity, timezone: cfg.timezone, allowLocal: cfg.agentImportAllowLocal === true });
-  web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer });
+  web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls });
 
   discord.on("message", (message) => {
     orchestrator.onMessage(message).catch((error) => activity({ type: "error", channelId: message.channel_id, text: error.message }));

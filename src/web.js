@@ -29,6 +29,7 @@ import { SHARED } from "./store.js";
 import { modelKeyBackend } from "./hermes-keys.js";
 import { BRAIN_KINDS } from "./company-brain.js";
 import { VOICE_LANGUAGES } from "./voice.js";
+import { FISH_CATALOG } from "./voice-calls.js";
 import { contextSources, writeContextFile } from "./context.js";
 import { brainsInUse, testRule } from "./rule-test.js";
 import { connectorCatalog, KEY_SERVICES } from "./connectors/index.js";
@@ -195,7 +196,7 @@ async function readJson(req, limit = 256 * 1024) {
   }
 }
 
-export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null }) {
+export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null }) {
   // Tries of a doc rule across the brains in use: they take a while, so the panel follows them.
   const ruleTests = new Map();
   const encrypted = encryptedSpaceFor(store, { llm, knowledge, artifacts, publicOrigin: config.publicHost ? `https://${config.publicHost}` : "" });
@@ -1097,9 +1098,23 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
 
     // The voices agents can speak with, and a sample of one, for the agent's Voice panel.
     if (path === "/api/voices" && method === "GET") {
+      // With Fish connected agents speak with a Fish voice in calls and in voice messages: those are the ones to pick.
+      if (voiceCalls?.speaks) return send(res, 200, { configured: true, provider: "fish", languages: VOICE_LANGUAGES, voices: FISH_CATALOG.map(({ id, name, gender, description }) => ({ id, name, gender, languages: ["it"], description })) });
       if (!voice?.enabled) return send(res, 200, { configured: false, languages: VOICE_LANGUAGES, voices: [] });
       try { return send(res, 200, { configured: true, languages: VOICE_LANGUAGES, voices: await voice.voices() }); }
       catch (error) { throw new HttpError(502, error.message); }
+    }
+    if (path === "/api/voices/preview" && method === "POST" && voiceCalls?.speaks) {
+      const body = await readJson(req, 4096);
+      const language = VOICE_LANGUAGES.includes(body.language) ? body.language : "it";
+      const picked = FISH_CATALOG.find((item) => item.id === body.voice);
+      if (!picked) throw new HttpError(400, "voce Fish sconosciuta");
+      const sample = String(body.text || "").trim().slice(0, 300) || (language === "en" ? "Hi, this is my voice. I answer like this when you talk to me." : "Ciao, questa è la mia voce. Ti rispondo così quando mi parli.");
+      try {
+        const { mp3 } = await voice.noteFromPcm(await voiceCalls.speech({ id: "preview", fishVoice: picked.id, voiceLanguage: language }, sample, language), 24000);
+        res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": mp3.length, "Cache-Control": "no-store" });
+        return res.end(mp3);
+      } catch (error) { throw new HttpError(502, error.message); }
     }
     if (path === "/api/voices/preview" && method === "POST") {
       if (!voice?.enabled) throw new HttpError(409, "collega Soniox in Impostazioni → Soniox");
