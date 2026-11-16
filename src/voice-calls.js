@@ -10,7 +10,7 @@ import { speakable } from "./voice.js";
  */
 
 // The Fish voices an agent can be given in its Voice panel: Italian voices that are not clones of public figures.
-// The first of each gender is the one Seb chose on 16/11 (NOT-43); the second male voice keeps two men apart.
+// The first of each gender is the one Seb chose on 16/11 (NOT-43); every male voice is in the pool, so men never share one.
 // gain brings a voice Fish makes quieter up to the loudness of the others.
 export const FISH_CATALOG = [
   { id: "b525ef2064b549189d4ab19715da62c4", name: "Italian", gender: "male", description: "Maschile, misurata e professionale." },
@@ -29,7 +29,14 @@ export const FISH_CATALOG = [
 // The automatic voices of each gender, in order: agents without a voice of their own take them in the order
 // they were made, so two agents of the same gender never sound alike (Seb, 16/11: Nico and Radix apart).
 export const FISH_VOICES = {
-  male: ["b525ef2064b549189d4ab19715da62c4", "59ac2b0ad66641b5ab4666d3ed89e5d4"],
+  male: [
+    "b525ef2064b549189d4ab19715da62c4",
+    "59ac2b0ad66641b5ab4666d3ed89e5d4",
+    "e2d4a9a392274479aba57d8c7226d8fd",
+    "e103dbb3b9994a04a7feb84b4cf16e98",
+    "906b32c36ba047a3b095713a14a4ba68",
+    "f4fb80fb198b4aa1abf4d275b8e4da79",
+  ],
   female: ["12c4a1ac13a5400894585c0ad9bc046b"],
 };
 
