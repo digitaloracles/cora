@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Brain } from "../src/brain.js";
-import { issueKeys, threadLeak, threadTopics } from "../src/thread-topics.js";
+import { issueKeys, threadLeak, threadTopics, sharesTopic } from "../src/thread-topics.js";
 
 const G = "1521874685690642564";
 const channels = [
@@ -80,4 +80,13 @@ test("archived thread metadata still isolates context when the live channel cach
   assert.doesNotMatch(brain.elsewhere(agent, here.id, brain.threadMap(agent, here.id)), /FOREIGN_WORK/);
   brain.store.value = () => ({ secrets: { name: "Ricerca segreti", parentId: "lab", thread: true } });
   assert.doesNotMatch(brain.elsewhere(agent, here.id, brain.threadMap(agent, here.id)), /FOREIGN_WORK/);
+});
+
+test("a job without an issue key speaks of a thread's topic only when it shares a word of its title", () => {
+  const title = "NOT-43 · voce e lavoro in chiamata";
+  assert.equal(sharesTopic("Controlla il registro della chiamata vocale", title), true);
+  assert.equal(sharesTopic("Guarda i log della voce di Seb", title), true);
+  assert.equal(sharesTopic("Verificare la disponibilità dei domini per musicfun", title), false);
+  assert.equal(sharesTopic("Procedere con il lavoro su REF-73", title), false, "plain words and other keys do not count");
+  assert.equal(sharesTopic("Controlla la chiamata", ""), false);
 });

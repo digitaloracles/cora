@@ -21,6 +21,18 @@ export function issueKeys(text) {
   return keys;
 }
 
+// Words of a thread title that say nothing about its topic.
+const PLAIN_WORDS = new Set(["lavoro", "lavori", "verifica", "controllo", "thread", "issue", "della", "delle", "dello", "degli", "nella", "nelle", "sulla", "sulle", "with", "from", "into", "about", "work", "check"]);
+const stems = (text) => String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(KEY_TEXT, " ")
+  .split(/[^a-z0-9]+/).filter((word) => word.length >= 4 && !PLAIN_WORDS.has(word)).map((word) => word.slice(0, 5));
+const KEY_TEXT = /\b[a-z][a-z0-9]{1,9}-\d{1,6}\b/gi;
+
+/** A job without an issue key that still speaks of the thread's topic: it shares a word of the thread's title. */
+export function sharesTopic(text, threadName) {
+  const topic = new Set(stems(threadName));
+  return Boolean(topic.size) && stems(text).some((word) => topic.has(word));
+}
+
 export function threadLink(thread) {
   return thread.guildId ? `https://discord.com/channels/${thread.guildId}/${thread.id}` : `#${thread.name}`;
 }
