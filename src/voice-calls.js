@@ -123,6 +123,18 @@ export function splitWork(text) {
 
 // A line «ESCI» at the end of a reply: the agent says goodbye and leaves the call.
 const LEAVE_LINE = /^[ \t*_>-]*ESCI[.!]?[ \t]*$/im;
+const HANGUP = /\b(?:stacc(?:a|ati|ate|atevi|arvi|arsi|o|hi|hiamo)?|uscite|esc(?:i|a|ite)|leave(?:\s+the\s+call)?|hang\s+up|chiud(?:i|ete)\s+(?:il\s+)?vocale|lascia(?:te)?\s+(?:la\s+|questa\s+)?chiamata)\b/u;
+const NOT_HANGUP = /\b(?:non|no|senza)\s+(?:ti\s+|vi\s+|mi\s+)?(?:stacc\w*|usc\w*|esc\w*|leave|hang\s+up|chiud\w*|lascia\w*)\b/u;
+const EVERYONE_OUT = /\b(?:tutti|tutte|voi|anche\s+tu|anche\s+voi|incluso|inclusi|pure\s+tu|pure\s+voi|ragazzi|staccate(?:vi)?|uscite)\b/u;
+
+/** Who a person just told to leave the call. Empty when nobody was asked to hang up. */
+export function leaveTargets(text, agents) {
+  const said = fold(text);
+  if (!said || NOT_HANGUP.test(said) || !HANGUP.test(said)) return [];
+  const named = agents.filter((agent) => namedAgent(text, [agent]));
+  if (named.length && !EVERYONE_OUT.test(said)) return named;
+  return [...agents];
+}
 
 /** What a voice says of a model's answer: plain words, a few sentences at most. */
 export function spokenReply(text, agentName = "") {
@@ -160,6 +172,11 @@ class Call {
     this.linkAudioAt = new Map();
     this.listenStall = new Map();
     this.dave = null;
+    // A line cut off by an overlap: said again once the person stops, unless a new request replaced it.
+    this.deferred = null;
+    this.overlapped = false;
+    // Agents the latest human turn told to leave the call.
+    this.depart = new Set();
   }
 }
 
@@ -276,6 +293,8 @@ export class VoiceCalls {
     const member = call.members.get(agentId);
     if (!member) return;
     call.members.delete(agentId);
+    if (call.deferred?.agentId === agentId) call.deferred = null;
+    call.depart?.delete(agentId);
     if (call.speaking?.agentId === agentId) this.stopSpeaking(call);
     if (call.thinking?.agentId === agentId) call.thinking.controller.abort();
     // The speakers were heard through this agent's bot: hand them to whoever stays.
@@ -487,7 +506,7 @@ export class VoiceCalls {
 
   /** A short "mm-hmm" does not cut an agent: it stops only if the person keeps talking over it. */
   pendingBarge(call, speaker) {
-    if (!call.speaking && !call.thinking) return;
+    if (!call.speaking && !call.thinking && !call.deferred && !call.overlapped) return;
     clearTimeout(speaker.bargeTimer);
     if (!speaker.bargeAt) speaker.bargeAt = Date.now();
     speaker.bargeTimer = setTimeout(() => {
@@ -500,27 +519,36 @@ export class VoiceCalls {
   /**
    * The cut is proven by sound: the person must have been talking for BARGE_MS and still be talking now.
    * The recogniser keeps its turn open after the words, so an open turn alone proves nothing.
+   * Stopping the voice does not throw the answer away: it is said again when the overlap ends,
+   * unless a new request has already taken its place.
    */
   checkBarge(call, speaker) {
-    if (!call.speaking && !call.thinking) return;
+    if (!call.speaking && !call.thinking && !call.deferred && !call.overlapped) return;
     const since = speaker.bargeAt;
     if (!since) return;
     const talking = Date.now() - (speaker.lastSoundAt || 0) <= BARGE_SILENCE_MS;
-    if (talking && Date.now() - since >= BARGE_MS) {
+    if (talking && !call.speaking && !call.thinking && !call.deferred) {
       speaker.bargeAt = 0;
-      this.bargeIn(call, speaker);
+      call.overlapped = false;
       return;
     }
-    // Still a murmur, or the sound stopped: look again only while the person keeps making sound.
-    if (talking && Date.now() - since < BARGE_MS) {
+    if (talking && (call.speaking || call.thinking) && Date.now() - since >= BARGE_MS) {
+      this.bargeIn(call, speaker);
+      speaker.bargeAt = Date.now();
+    }
+    if (talking) {
+      const elapsed = Date.now() - speaker.bargeAt;
+      const waitFor = (call.speaking || call.thinking) && elapsed < BARGE_MS ? BARGE_MS - elapsed : BARGE_SILENCE_MS;
       speaker.bargeTimer = setTimeout(() => {
         speaker.bargeTimer = null;
         this.checkBarge(call, speaker);
-      }, BARGE_MS - (Date.now() - since));
+      }, Math.max(20, waitFor));
       speaker.bargeTimer.unref?.();
       return;
     }
     speaker.bargeAt = 0;
+    call.overlapped = false;
+    this.flushDeferred(call);
   }
 
   /**
@@ -550,13 +578,34 @@ export class VoiceCalls {
       && early.history === call.history.length - 1 && early.last === call.history.at(-2) && early.works === call.works.length);
   }
 
-  /** A person started talking over an agent: the agent stops, and what it was preparing is dropped. */
+  /**
+   * A person started talking over an agent: the voice stops. The thought keeps going, and the line
+   * is held so it can be said when they stop. A second cut drops the replay; the job already started stays.
+   */
   bargeIn(call, speaker) {
-    if (call.speaking) {
-      this.log({ type: "voice", channelId: call.channelId, text: `${speaker.name} interrompe ${call.speaking.name}` });
-      this.stopSpeaking(call);
+    call.overlapped = true;
+    if (!call.speaking) return;
+    this.log({ type: "voice", channelId: call.channelId, text: `${speaker.name} interrompe ${call.speaking.name}` });
+    const cut = call.speaking;
+    this.stopSpeaking(call);
+    if (cut.text && !cut.replay && !call.depart.has(cut.agentId)) {
+      call.deferred = { agentId: cut.agentId, text: cut.text, leaving: false, history: call.history.length };
     }
-    if (call.thinking) call.thinking.controller.abort();
+  }
+
+  /** Say a line that an overlap cut off, once, if nothing newer was asked in the meantime. */
+  flushDeferred(call) {
+    const held = call.deferred;
+    if (!held || call.overlapped) return;
+    call.deferred = null;
+    if (held.history !== call.history.length) return;
+    const member = call.members.get(held.agentId);
+    if (!member || !this.calls.has(call.channelId)) return;
+    this.speak(call, member, held.text, 0, null, true).then(() => {
+      if (held.leaving && call.members.get(held.agentId) === member) return this.leave(member.agent);
+    }).catch((error) => {
+      if (error?.code !== "aborted" && error?.name !== "AbortError") this.log({ type: "error", agentId: held.agentId, channelId: call.channelId, text: `voice: ${error.message}` });
+    });
   }
 
   stopSpeaking(call) {
@@ -589,7 +638,7 @@ export class VoiceCalls {
     return last ? call.members.get(last.agent.id).agent : this.ear(call).agent;
   }
 
-  turn(call, turn, early = null) {
+  async turn(call, turn, early = null) {
     if (!this.calls.has(call.channelId)) return void early?.controller.abort();
     call.history.push({ ...turn, at: Date.now() });
     if (call.history.length > HISTORY) call.history.splice(0, call.history.length - HISTORY);
@@ -609,8 +658,21 @@ export class VoiceCalls {
     const agent = this.responder(call, turn);
     const ready = agent && this.earlyFits(call, early, turn, agent) ? early : null;
     if (early && !ready) early.controller.abort();
+    // A real request replaces a line held after an overlap. A hang-up also marks who must leave:
+    // whoever is not about to answer goes now, and the one who answers goes after the goodbye.
+    if (!turn.agent) {
+      const targets = leaveTargets(turn.text, [...call.members.values()].map((member) => member.agent));
+      call.depart = new Set(targets.map((item) => item.id));
+      call.deferred = null;
+      call.overlapped = false;
+      for (const id of [...call.depart]) {
+        if (id === agent?.id) continue;
+        const member = call.members.get(id);
+        if (member) await this.leave(member.agent);
+      }
+    }
     if (!agent) return;
-    // One answer at a time: what is being prepared for an older turn gives way to the newer one.
+    // One answer at a time: a newer committed turn replaces an older thought. An overlap alone does not.
     if (call.thinking) call.thinking.controller.abort();
     if (call.speaking && !turn.agent) this.stopSpeaking(call);
     this.answer(call, agent, ready).catch((error) => {
@@ -656,7 +718,7 @@ export class VoiceCalls {
           "Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase, senza riga LAVORO, e non tirare fuori impegni di altri progetti.",
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
         ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
-        "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
+        "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI». Se ha detto «anche tu» o di staccarvi tutti, quella riga vale anche per te: non restare collegato.",
         ...(toMe ? [] : ["Se un collega ha già risposto, non aggiungere niente: PASS.", "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS."]),
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
@@ -702,13 +764,13 @@ export class VoiceCalls {
     let leaving = false;
     try {
       const raw = String(await (early ? early.reply : this.think(agent, this.prompt(call, agent), controller.signal)) || "");
-      leaving = lastIsHuman && LEAVE_LINE.test(raw);
+      leaving = call.depart.has(agent.id) || (lastIsHuman && LEAVE_LINE.test(raw));
       reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
       text = spokenReply(reply.said, agent.name);
       // A person spoke to this agent and got PASS: it is asked once more, plainly, to answer.
       if (!text && !reply.task && !leaving && lastIsHuman && !controller.signal.aborted) {
         const again = String(await this.think(agent, this.prompt(call, agent, null, { insist: true }), controller.signal) || "");
-        leaving = LEAVE_LINE.test(again);
+        leaving = call.depart.has(agent.id) || LEAVE_LINE.test(again);
         reply = splitWork(again.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
         text = spokenReply(reply.said, agent.name);
       }
@@ -727,8 +789,13 @@ export class VoiceCalls {
       return;
     }
     if (!member || !this.calls.has(call.channelId)) return;
+    // Still being talked over: hold the line and say it when the overlap ends.
+    if (call.overlapped) {
+      if (!call.deferred) call.deferred = { agentId: agent.id, text, leaving, history: call.history.length };
+      return;
+    }
     await this.speak(call, member, text, Date.now() - started, ahead);
-    // Asked by a person to leave: it says goodbye, then goes.
+    // Asked by a person to leave: it says goodbye, then goes. The ESCI line is optional once the request was heard.
     if (leaving && call.members.get(agent.id) === member) await this.leave(agent);
   }
 
@@ -761,11 +828,11 @@ export class VoiceCalls {
     return Number.isFinite(wanted) && wanted >= 0.5 && wanted <= 2 ? wanted : SPEECH_SPEED;
   }
 
-  async speak(call, member, text, thoughtMs = 0, aheadMs = null) {
+  async speak(call, member, text, thoughtMs = 0, aheadMs = null, replay = false) {
     this.stopSpeaking(call);
     const { agent, link } = member;
     const tts = this.fish.openTts({ voice: member.voice, language: this.language(agent), latency: "balanced", speed: this.speechSpeed(agent) });
-    const speaking = { agentId: agent.id, name: agent.name, tts, speech: null, text };
+    const speaking = { agentId: agent.id, name: agent.name, tts, speech: null, text, replay };
     call.speaking = speaking;
     this.setAgentSpeaking(call, true);
     const started = Date.now();

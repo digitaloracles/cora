@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
+import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, splitWork, leaveTargets, FISH_VOICES } from "../src/voice-calls.js";
 import { Upsampler, toMono, peakOf } from "../src/discord-voice.js";
 
 const GUILD = "g1";
@@ -99,11 +99,17 @@ function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now
   const asked = [];
   const llm = {
     isAgentic: () => false,
-    chat: async ({ model, messages }) => {
+    chat: async ({ model, messages, signal }) => {
       const name = /^Sei (\w+)\./.exec(messages[0].content)[1];
       asked.push({ name, model, system: messages[0].content, prompt: messages[1].content });
       const reply = replies[name];
-      return { text: typeof reply === "function" ? reply(messages[1].content) : reply ?? "PASS" };
+      const spoken = typeof reply === "function" ? await reply(messages[1].content, { signal }) : reply ?? "PASS";
+      if (signal?.aborted) {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        throw error;
+      }
+      return { text: spoken };
     },
   };
   const links = [];
@@ -537,4 +543,140 @@ test("voice calls: a recogniser Fish closes, or one idle for long, is let go wit
   calls.sweep();
   assert.equal(call.speakers.size, 0);
   assert.ok(log.some((entry) => /^chiudo l'ascolto di Seb: nessun audio da 13\d s$/.test(entry.text)));
+});
+
+test("voice calls: a hang-up names who leaves, and a negation or a dismissal does not", () => {
+  assert.deepEqual(leaveTargets("Radix, staccati dalla chiamata.", [radix, ada]).map((agent) => agent.name), ["Radix"]);
+  assert.deepEqual(leaveTargets("niente, stacca il vocale, Radix, anche tu, incluso.", [radix, ada]).map((agent) => agent.name).sort(), ["Ada", "Radix"]);
+  assert.deepEqual(leaveTargets("staccatevi", [radix, ada]).map((agent) => agent.name).sort(), ["Ada", "Radix"]);
+  assert.deepEqual(leaveTargets("non staccare", [radix, ada]), []);
+  assert.deepEqual(leaveTargets("Niente, lascia stare.", [radix, ada]), []);
+});
+
+test("voice calls: asked to leave, an agent goes even without ESCI, and so does whoever was told anche tu", async (t) => {
+  const { calls, fish, links } = setup({ replies: { Radix: "Va bene, stacco. A dopo.", Ada: "Stacco anch'io. A dopo!" } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "niente, stacca il vocale, Radix, anche tu, incluso.", user_turn: true });
+  await until(() => !calls.calls.has(VOICE), "both agents left");
+  assert.equal(fish.ttss[0].text, "Va bene, stacco. A dopo.", "the goodbye is spoken");
+  assert.equal(links[0].closed, true, "Radix disconnected");
+  assert.equal(links[1].closed, true, "Ada was told anche tu and disconnected");
+  assert.equal(fish.ttss.length, 1, "the agent who was not answering does not stay to chat");
+});
+
+test("voice calls: staccati aimed at one agent leaves only that agent", async (t) => {
+  const { calls, fish, links } = setup({ replies: { Radix: "A dopo.", Ada: "Io resto." } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, staccati.", user_turn: true });
+  await until(() => links[0].closed, "Radix left");
+  await wait(80);
+  assert.equal(calls.calls.get(VOICE)?.members.has(ada.id), true, "Ada was not asked to leave");
+  assert.equal(links[1].closed, false);
+});
+
+test("voice calls: saying stacco without being asked does not drop the agent", async (t) => {
+  const { calls, fish, links } = setup({ replies: { Radix: "Stacco anch'io. A dopo!" } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, come va?", user_turn: true });
+  await until(() => fish.ttss.length === 1, "Radix spoke");
+  await wait(80);
+  assert.equal(links[0].closed, false);
+  assert.equal(calls.calls.get(VOICE)?.members.has(radix.id), true);
+});
+
+test("voice calls: talking over an agent stops the voice but keeps the job, and the line is said once they stop", async (t) => {
+  const jobs = [];
+  const { calls, fish, links } = setup({
+    dispatch: (job) => jobs.push(job),
+    replies: { Radix: "Ci penso.\nLAVORO: Controlla i 503 di NOT-43 nel Feed" },
+  });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.hold = true;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, controlla i 503.", user_turn: true });
+  await until(() => link.speeches[0]?.ended, "Radix speaking");
+  assert.equal(jobs.length, 1, "the job is taken before the voice can be cut");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[0].stopped, "the cut", 2000);
+  clearInterval(talking);
+  assert.equal(fish.ttss[0].aborted, true);
+  assert.equal(jobs.length, 1, "the interruption does not cancel the job");
+  assert.equal(jobs[0].task, "Controlla i 503 di NOT-43 nel Feed");
+  link.hold = false;
+  await until(() => fish.ttss.length === 2 && fish.ttss[1].text === "Ci penso.", "the line is said once Seb stops", 2000);
+  await until(() => calls.calls.get(VOICE).history.some((entry) => entry.text === "Ci penso."), "the replay is a turn");
+});
+
+test("voice calls: an overlap does not cancel an answer that is still being thought", async (t) => {
+  const jobs = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { calls, fish, links } = setup({
+    dispatch: (job) => jobs.push(job),
+    replies: {
+      Radix: async (_prompt, { signal }) => {
+        await gate;
+        if (signal?.aborted) {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          throw error;
+        }
+        return "Ci lavoro.\nLAVORO: Aggiorna i progetti di NOT-43";
+      },
+    },
+  });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.hold = true;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, aggiornami sui progetti.", user_turn: true });
+  fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await wait(800);
+  release();
+  clearInterval(talking);
+  await until(() => jobs.length === 1, "the job survived the overlap", 2000);
+  assert.equal(jobs[0].task, "Aggiorna i progetti di NOT-43");
+  link.hold = false;
+  await until(() => fish.ttss.some((tts) => tts.text.startsWith("Ci lavoro")), "the answer is spoken after the overlap", 2000);
+});
+
+test("voice calls: a new request replaces the line held after an interruption", async (t) => {
+  const { calls, fish, links } = setup({
+    replies: { Radix: (prompt) => /lascia stare/.test(prompt) ? "PASS" : "Una risposta lunga che verrà interrotta." },
+  });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.hold = true;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Raccontami tutto.", user_turn: true });
+  await until(() => link.speeches[0]?.ended, "Radix speaking");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[0].stopped, "the cut", 2000);
+  clearInterval(talking);
+  link.hold = false;
+  fish.stts[0].emit("committed", { text: "Niente, lascia stare.", user_turn: true });
+  await wait(900);
+  assert.equal(fish.ttss.length, 1, "the cut line is not said again once a new request arrived");
+  assert.equal(calls.calls.get(VOICE).history.at(-1).text, "Niente, lascia stare.");
 });
