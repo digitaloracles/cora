@@ -6,8 +6,9 @@ import { DRIVE_SCOPES, DRIVE_TOOLS } from "./google-drive.js";
  * Google: Gmail, Google Workspace and Google Drive accounts connected through Cora's
  * OAuth broker. Each account is authorised for chosen agents, who get one tool per
  * action. What an account allows depends on what its owner granted Google:
- * gmail.send sends; gmail.compose adds drafts; gmail.modify adds reading,
- * searching, labels, archive and trash; drive reads and changes Google Drive
+ * gmail.send sends; gmail.compose (granted by older connections) adds drafts;
+ * gmail.modify, the one scope the broker asks for full mail, also reads, searches,
+ * labels, archives and trashes; drive reads and changes Google Drive
  * (drive.readonly only reads it). A tool appears only when at least one of
  * the agent's accounts allows it. Cora takes the refresh token from the vault and
  * renews the access token; the agent never holds either.

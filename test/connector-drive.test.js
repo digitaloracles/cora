@@ -276,7 +276,7 @@ test("accounts are chosen by address, refused where Google did not grant the act
 
 test("the broker asks Google for Drive only when the space asks for it, alone or with the mailbox", async (t) => {
   assert.deepEqual(accessScopes("drive"), [DRIVE_SCOPES.full]);
-  assert.deepEqual(accessScopes("mail,drive"), [GMAIL_SCOPES.send, GMAIL_SCOPES.compose, GMAIL_SCOPES.modify, DRIVE_SCOPES.full]);
+  assert.deepEqual(accessScopes("mail,drive"), [GMAIL_SCOPES.modify, DRIVE_SCOPES.full]);
   assert.deepEqual(accessScopes("send,drive"), [GMAIL_SCOPES.send, DRIVE_SCOPES.full]);
   assert.equal(accessScopes("drive,everything"), null);
   assert.equal(accessScopes("drive,drive,drive,drive"), null);
@@ -292,7 +292,7 @@ test("the broker asks Google for Drive only when the space asks for it, alone or
   const broker = new GoogleConnectorBroker({ origin: "https://connect.example", key: "k".repeat(32), clientSecret: "s", spaceOrigin: () => "https://space.example", endpoints: { authorize: `${base}/authorize`, token: `${base}/token`, userinfo: `${base}/userinfo` } });
   const verifier = "v".repeat(43), challenge = createHash("sha256").update(verifier).digest("base64url");
   const start = (access, nonce = "n") => new URL(broker.start({ space: "s", nonce: nonce.repeat(43), challenge, access }));
-  assert.equal(start("mail,drive").searchParams.get("scope"), `openid email ${GMAIL_SCOPES.send} ${GMAIL_SCOPES.compose} ${GMAIL_SCOPES.modify} ${DRIVE_SCOPES.full}`);
+  assert.equal(start("mail,drive").searchParams.get("scope"), `openid email ${GMAIL_SCOPES.modify} ${DRIVE_SCOPES.full}`);
   assert.equal(start("drive").searchParams.get("scope"), `openid email ${DRIVE_SCOPES.full}`);
   assert.throws(() => start("mail,photos"), /Invalid connector request/);
   assert.equal((await broker.exchange({ state: start("send,drive").searchParams.get("state"), code: "c", verifier })).scope, `${GMAIL_SCOPES.send} ${DRIVE_SCOPES.full}`);

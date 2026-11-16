@@ -33,7 +33,7 @@ Google is `kind: "google"`: its card has its own flow in the panel (one card, se
 accounts, agents chosen per account), and `GoogleConnector` serves its tools, which
 `KeyConnectors` hands over to it. What the broker asks Google for is the space's
 `CORA_GOOGLE_CONNECTOR_ACCESS`, a comma list of parts: `send` (`gmail.send`, the default),
-`mail` (`gmail.send`, `gmail.compose`, `gmail.modify`) and `drive` (the whole Drive, `drive`),
+`mail` (`gmail.modify` alone, which also drafts and sends) and `drive` (the whole Drive, `drive`),
 e.g. `mail,drive`. Each account keeps the scopes it actually granted, and each action declares
 `needs` (send, draft, read, change for Gmail; drive, drive_write for Drive): an agent sees an
 action only when one of its accounts allows it. `drive.readonly` gives only the reading Drive
