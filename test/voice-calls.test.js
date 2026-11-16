@@ -538,3 +538,100 @@ test("voice calls: a recogniser Fish closes, or one idle for long, is let go wit
   assert.equal(call.speakers.size, 0);
   assert.ok(log.some((entry) => /^chiudo l'ascolto di Seb: nessun audio da 13\d s$/.test(entry.text)));
 });
+
+test("voice calls: an answer a person cut off is owed: a murmur resumes it, new words get it with the cut in mind", async (t) => {
+  const { calls, fish, links, log, asked } = setup({ replies: { Radix: "Una risposta lunga sui progetti." } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.hold = true;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Dammi un aggiornamento sui progetti.", user_turn: true });
+  await until(() => link.speeches[0]?.ended, "Radix speaking");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 1 });
+  const talking = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[0].stopped, "the cut", 2000);
+  clearInterval(talking);
+  const call = calls.calls.get(VOICE);
+  assert.ok(log.some((entry) => entry.text === "Seb interrompe Radix mentre diceva «Una risposta lunga sui progetti.»"));
+  assert.equal(call.cut.agentId, radix.id, "the answer is owed");
+
+  link.hold = false;
+  fish.stts[0].emit("committed", { text: "eh", user_turn: true });
+  await until(() => link.speeches.length === 2 && call.history.length === 3, "Radix resuming after a murmur");
+  assert.ok(log.some((entry) => entry.text === "Radix riprende la risposta interrotta"));
+  assert.ok(log.some((entry) => /^Radix ha parlato \(.*dopo un'interruzione/.test(entry.text)));
+  assert.match(asked.at(-1).system, /La persona ti ha interrotto mentre dicevi «Una risposta lunga sui progetti\.»/);
+  assert.match(asked.at(-1).system, /senza chiedere di ripetere/);
+  assert.equal(call.cut, null, "said in full, nothing is owed any more");
+
+  link.hold = true;
+  fish.stts[0].emit("committed", { text: "E il resto?", user_turn: true });
+  await until(() => link.speeches[2]?.ended, "Radix speaking again");
+  fish.stts[0].emit("user_turn_taken", { turn_index: 2 });
+  const again = setInterval(() => link.emit("audio", SEB, speech16(8000)), 20);
+  await until(() => link.speeches[2].stopped, "the second cut", 2000);
+  clearInterval(again);
+  link.hold = false;
+  fish.stts[0].emit("committed", { text: "Ah no, aspetta, un po' di rispetto.", user_turn: true });
+  await until(() => link.speeches.length === 4, "Radix answering the new words");
+  assert.match(asked.at(-1).system, /La persona ti ha interrotto mentre dicevi/, "new words are answered knowing what was cut");
+  assert.match(asked.at(-1).prompt, /Seb: Dammi un aggiornamento sui progetti\.[\s\S]*Seb: Ah no, aspetta/);
+  await until(() => call.cut === null, "the cut settled");
+  fish.stts[0].emit("committed", { text: "Radix, che ore sono?", user_turn: true });
+  await until(() => link.speeches.length === 5, "Radix answering a fresh question");
+  assert.match(asked.at(-1).system, /Rispondi all'ultima richiesta e basta/);
+  assert.doesNotMatch(asked.at(-1).system, /ti ha interrotto/);
+});
+
+test("voice calls: a person sends several agents out: each one asked leaves, the one not asked stays", async (t) => {
+  const { calls, fish, links, asked, log } = setup({ replies: {
+    Radix: "Va bene, stacco.\nESCI",
+    Ada: (prompt) => (/anche tu Ada/.test(prompt) ? "Stacco anch'io.\nESCI" : "PASS"),
+  } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, stacca il vocale, anche tu Ada.", user_turn: true });
+  await until(() => !calls.calls.has(VOICE), "both leaving");
+  assert.deepEqual(fish.ttss.map((tts) => tts.text), ["Va bene, stacco.", "Stacco anch'io."], "who says goodbye goes");
+  assert.equal(links[1].closed, true, "Ada's bot left too");
+  assert.match(asked.find((entry) => entry.name === "Ada").system, /Radix è appena uscito perché una persona gliel'ha chiesto/);
+
+  const one = setup({ replies: { Radix: "Ciao Seb.\nESCI", Ada: (prompt) => (/anche tu Ada/.test(prompt) ? "Ciao.\nESCI" : "PASS") } });
+  t.after(() => one.calls.stop());
+  await one.calls.join(radix, { channelId: VOICE });
+  await one.calls.join(ada, { channelId: VOICE });
+  one.links[0].emit("audio", SEB, speech16(8000));
+  await until(() => one.fish.stts.length === 1, "Seb's stream");
+  one.fish.stts[0].emit("committed", { text: "Radix, staccati.", user_turn: true });
+  await until(() => one.links[0].closed, "Radix leaving");
+  await until(() => one.log.some((entry) => /Ada non risponde \(PASS/.test(entry.text)), "Ada passing");
+  assert.equal(one.calls.calls.get(VOICE)?.members.has(ada.id), true, "a request only for Radix leaves Ada in the call");
+  assert.equal(one.fish.ttss.length, 1);
+  assert.ok(!log.some((entry) => /voleva uscire/.test(entry.text)));
+});
+
+test("voice calls: a job one agent took is not opened again by a colleague", async (t) => {
+  const jobs = [];
+  const { calls, fish, links, log } = setup({ dispatch: async (work) => { jobs.push(work); return "thread"; }, replies: {
+    Ada: "Ci lavoro.\nLAVORO: In Cora, allineare le emoji del canale vocale e dei messaggi vocali",
+    Radix: "Ci penso io.\nLAVORO: In Cora, allineare le emoji del canale vocale e dei messaggi vocali (progetto Cora, rif. NOT-43)",
+  } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Ada, cambiate le emoji: vocale e messaggi vocali uguali.", user_turn: true });
+  await until(() => jobs.length === 1, "Ada's job");
+  await wait(30);
+  fish.stts[0].emit("committed", { text: "Radix, e le emoji?", user_turn: true });
+  await until(() => log.some((entry) => /^Ada ha già questo lavoro, aperto \d+ s fa: non lo riapro/.test(entry.text)), "the duplicate refused");
+  await wait(30);
+  assert.equal(jobs.length, 1, "one job, one agent");
+  assert.equal(jobs[0].agent.id, ada.id);
+});
