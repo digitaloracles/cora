@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { VoiceCalls, namedAgent, fishVoiceFor, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
+import { VoiceCalls, namedAgent, fishVoiceFor, agentVoice, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
 import { Upsampler, toMono, peakOf } from "../src/discord-voice.js";
 
 const GUILD = "g1";
@@ -634,4 +634,29 @@ test("voice calls: a job one agent took is not opened again by a colleague", asy
   await wait(30);
   assert.equal(jobs.length, 1, "one job, one agent");
   assert.equal(jobs[0].agent.id, ada.id);
+});
+
+test("voice calls: an agent has one voice, the same in every call and in its voice messages", async (t) => {
+  const { calls, fish } = setup({ replies: { Radix: "Ci sono." } });
+  t.after(() => calls.stop());
+  const nico = { id: "ag_nico", name: "Nico", gender: "male", createdAt: "2026-01-02" };
+  const older = { ...radix, createdAt: "2026-01-01" };
+  const alone = agentVoice(older, [older]);
+  assert.equal(agentVoice(older, [older, nico]), alone, "a colleague made later never changes a voice");
+  assert.notEqual(agentVoice(nico, [older, nico]), alone, "two agents of the instance get different voices while the pool lasts");
+  assert.equal(agentVoice({ ...older, fishVoice: "chosen" }, [older, nico]), "chosen");
+
+  await calls.join(radix, { channelId: VOICE });
+  const member = [...calls.calls.get(VOICE).members.values()][0];
+  assert.equal(member.voice, calls.voiceOf(radix), "in a call the agent speaks with its own voice, not one picked by who else is there");
+  await calls.join(ada, { channelId: VOICE });
+  assert.equal(member.voice, calls.voiceOf(radix));
+
+  const pcm = await calls.speech(radix, "Ciao Seb.", "it");
+  const note = fish.ttss.at(-1).options;
+  assert.equal(note.voice, member.voice, "a voice message speaks with the call's voice");
+  assert.equal(note.speed, calls.speechSpeed(radix), "and at the call's speed");
+  assert.equal(note.language, "it");
+  assert.equal(pcm.length, 9600);
+  assert.equal(fish.ttss.at(-1).text, "Ciao Seb.");
 });

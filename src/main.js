@@ -210,6 +210,7 @@ export function startCora(overrides = {}) {
   fishFromVault();
   const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
   voiceCalls.refreshKey = fishFromVault;
+  orchestrator.callVoice = voiceCalls;
   brain.voiceCalls = voiceCalls;
   voiceCalls.dispatch = (work) => orchestrator.fromCall(work);
   brain.allowedGuild = (guildId) => orchestrator.allowedGuild(guildId);

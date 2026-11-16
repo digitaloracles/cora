@@ -112,6 +112,26 @@ export function fishVoiceFor(agent, taken = []) {
 }
 
 /**
+ * One voice per agent everywhere, in calls and in voice messages: the agents of the instance share
+ * the pool in the order they were made, so who else is in a call never changes an agent's voice.
+ */
+export function agentVoice(agent, agents = []) {
+  if (agent.fishVoice) return agent.fishVoice;
+  const kind = (entry) => (entry.gender === "female" ? "female" : "male");
+  const pool = FISH_VOICES[kind(agent)];
+  const order = [...agents.filter((entry) => entry.id !== agent.id && kind(entry) === kind(agent)), agent]
+    .sort((one, other) => String(one.createdAt || "").localeCompare(String(other.createdAt || "")) || String(one.id).localeCompare(String(other.id)));
+  let taken = [];
+  for (const entry of order) {
+    const voice = fishVoiceFor(entry, taken);
+    if (entry.id === agent.id) return voice;
+    taken.push(voice);
+    if (taken.length >= pool.length) taken = [];
+  }
+  return fishVoiceFor(agent);
+}
+
+/**
  * A reply may end with a job the agent takes on: a line «LAVORO: …». That line is never spoken;
  * it becomes a task the agent works on in its written conversation while the call goes on.
  */
@@ -232,7 +252,7 @@ export class VoiceCalls {
       this.calls.set(target, call);
     }
     const link = this.makeLink({ client, guildId: info.guildId, channelId: target, log: (text) => this.log({ type: "error", agentId: agent.id, channelId: target, text }) });
-    const member = { agent, link, userId: client.user.id, voice: fishVoiceFor(agent, [...call.members.values()].map((entry) => entry.voice)), joinedAt: Date.now(), origin: String(origin || "") };
+    const member = { agent, link, userId: client.user.id, voice: this.voiceOf(agent), joinedAt: Date.now(), origin: String(origin || "") };
     call.members.set(agent.id, member);
     try {
       await link.open();
@@ -815,6 +835,35 @@ export class VoiceCalls {
     Promise.resolve()
       .then(() => this.dispatch({ agent: worker, from: agent, channelId: work.channelId, speakerId: asker.userId, speakerName: asker.name, said: asker.text, task, callName: call.name, callChannelId: call.channelId }))
       .catch((error) => this.log({ type: "error", agentId: agent.id, channelId: call.channelId, text: `voice: work not started (${error.message})` }));
+  }
+
+  voiceOf(agent) {
+    return agentVoice(agent, this.store?.agents?.() || []);
+  }
+
+  /** Voice messages speak with the call's voice when Fish is connected. */
+  get speaks() {
+    if (!this.fish?.enabled) this.refreshKey?.();
+    return Boolean(this.fish?.enabled);
+  }
+
+  /** A voice message said as the agent says it in a call: same Fish voice, same speed. 24 kHz mono PCM. */
+  async speech(agent, text, language = "") {
+    const tts = this.fish.openTts({ voice: this.voiceOf(agent), language: language || this.language(agent), latency: "normal", speed: this.speechSpeed(agent) });
+    const chunks = [];
+    tts.on("audio", (pcm) => chunks.push(pcm));
+    try {
+      await tts.ready;
+      tts.sendText(text);
+      tts.flush();
+      await tts.end();
+    } catch (error) {
+      tts.abort?.();
+      throw new Error(`Fish: ${error.status || error.code || error.message}`);
+    }
+    const pcm = Buffer.concat(chunks);
+    if (pcm.length < 480) throw new Error("Fish: no audio");
+    return pcm;
   }
 
   /** How fast the voice speaks: the agent's own, else the space's, else the measured default. */
