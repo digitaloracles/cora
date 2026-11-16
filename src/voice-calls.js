@@ -811,9 +811,10 @@ export class VoiceCalls {
   }
 
   /**
-   * One line when a person is still in the channel and the ear stops receiving their audio,
-   * and one when it returns. The line carries the connection, so a later gap can be told apart
-   * from a mute, a dead pipe, or an ear that no longer hears while another agent does.
+   * One line when a person is still in the channel and the ear stops hearing their voice,
+   * and one when it returns. The gap counts the voice the ear decoded, not the packets it got:
+   * a silent microphone keeps sending packets, and a mute, a dead pipe or an ear that no longer
+   * hears while another agent does are told apart by the details on the line.
    */
   noteListening(call, now) {
     const ear = this.ear(call);
@@ -821,12 +822,12 @@ export class VoiceCalls {
     const present = new Set(this.people(call).map((person) => person.userId));
     for (const userId of [...call.listenStall.keys()]) if (!present.has(userId)) call.listenStall.delete(userId);
     for (const person of this.people(call)) {
-      const earAt = call.inbound.get(person.userId)?.by.get(ear.agent.id) || 0;
-      const quietFor = now - (earAt || call.startedAt);
+      const voiceAt = ear.voiced?.get(person.userId)?.last || 0;
+      const quietFor = now - (voiceAt || call.startedAt);
       const stall = call.listenStall.get(person.userId);
       if (quietFor >= this.listenGapMs) {
         if (stall) continue;
-        call.listenStall.set(person.userId, { since: earAt || call.startedAt });
+        call.listenStall.set(person.userId, { since: voiceAt || call.startedAt });
         const text = this.listenText("fermo", call, person, quietFor, ear, now);
         this.log({ type: "voice", channelId: call.channelId, text });
         console.log(text);
@@ -854,6 +855,8 @@ export class VoiceCalls {
     ];
     const anyAt = call.linkAudioAt.get(ear.agent.id) || 0;
     flags.push(anyAt ? `ultimo pacchetto ${Math.max(0, Math.round((now - anyAt) / 1000))} s fa` : "nessun pacchetto in ingresso");
+    const voiceAt = ear.voiced?.get(person.userId)?.last || 0;
+    flags.push(voiceAt ? `ultima voce ${Math.max(0, Math.round((now - voiceAt) / 1000))} s fa` : "nessuna voce");
     const speaking = call.speakingAt.get(person.userId)?.by.get(ear.agent.id) || 0;
     const earAudio = call.inbound.get(person.userId)?.by.get(ear.agent.id) || 0;
     if (speaking > earAudio + 1000) flags.push("segnale di parola senza pacchetti");

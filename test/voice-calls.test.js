@@ -420,6 +420,29 @@ test("voice calls: a listen gap is logged once when audio stops and again when i
   assert.match(muted[1].text, /mute sì/);
 });
 
+test("voice calls: a gap is logged when the packets keep coming but the ear hears no voice", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [ear] = links;
+  ear.listenHealth = () => ({ status: "ready", ws: 40, udp: null, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  for (let i = 0; i < 5; i += 1) { clock += 5000; ear.emit("audio", SEB, speech16(0)); }
+  calls.sweep();
+  const stalled = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(stalled.length, 1, "a silent microphone still sends packets, and that is a gap");
+  assert.match(stalled[0].text, /da 25 s senza audio/);
+  assert.match(stalled[0].text, /ultimo pacchetto 0 s fa/);
+  assert.match(stalled[0].text, /ultima voce 25 s fa/);
+  clock += 5000;
+  ear.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const resumed = log.filter((entry) => entry.text.startsWith("ascolto ripreso"));
+  assert.equal(resumed.length, 1);
+  assert.match(resumed[0].text, /dopo 30 s/);
+});
+
 test("voice calls: the listen log names a speaking signal with no packets, another agent still hearing, and a connection change", async (t) => {
   let clock = Date.now();
   const { calls, links, log } = setup({ listenGapMs: 20000, now: () => clock });
