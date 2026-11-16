@@ -7,6 +7,7 @@ import prism from "prism-media";
 export const DISCORD_RATE = 48000;
 const FRAME_SAMPLES = 960;
 const SILENCE_AFTER_MS = 1000;
+const DAVE_DEBUG = /\[DAVE\]/;
 
 /**
  * Speech at 24 kHz mono turned into Discord's 48 kHz stereo, chunk after chunk: the last sample of
@@ -91,6 +92,9 @@ export class VoiceLink extends EventEmitter {
     this.playing = null;
     this.closed = false;
     this.handlers = [];
+    this.drops = 0;
+    this.lastAudioAt = new Map();
+    this.lastSpeakingAt = new Map();
   }
 
   get userId() {
@@ -109,28 +113,18 @@ export class VoiceLink extends EventEmitter {
     this.client.on("voiceState", onState);
     this.client.on("voiceServer", onServer);
     this.handlers = [["voiceState", onState], ["voiceServer", onServer]];
-    this.connection = this.join({
+    this.bindConnection(this.join({
       channelId: this.channelId,
       guildId: this.guildId,
       group: this.client.user.id,
       selfDeaf: false,
       selfMute: false,
+      debug: true,
       adapterCreator: (methods) => {
         adapter = methods;
         return { sendPayload: (payload) => this.client.gatewaySend(payload), destroy: () => { adapter = null; } };
       },
-    });
-    this.connection.on("error", (error) => this.log(`voice connection: ${error.message}`));
-    this.connection.on("stateChange", (before, after) => {
-      if (after.status === VoiceConnectionStatus.Disconnected && !this.closed) {
-        // Moved or kicked: give Discord a moment to reconnect us, otherwise the call is over for this bot.
-        Promise.race([
-          entersState(this.connection, VoiceConnectionStatus.Signalling, 5000),
-          entersState(this.connection, VoiceConnectionStatus.Connecting, 5000),
-        ]).catch(() => this.close("disconnected"));
-      }
-      if (after.status === VoiceConnectionStatus.Destroyed && !this.closed) this.close("destroyed");
-    });
+    }));
     try {
       await entersState(this.connection, VoiceConnectionStatus.Ready, timeoutMs);
     } catch (error) {
@@ -140,8 +134,52 @@ export class VoiceLink extends EventEmitter {
     this.player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     this.player.on("error", (error) => this.log(`voice player: ${error.message}`));
     this.connection.subscribe(this.player);
-    this.connection.receiver.speaking.on("start", (userId) => this.hear(userId));
+    this.connection.receiver.speaking.on("start", (userId) => {
+      this.lastSpeakingAt.set(String(userId), Date.now());
+      this.emit("speaking", userId);
+      this.hear(userId);
+    });
     return this;
+  }
+
+  /** Connection state, ping and decode failures: enough to tell a dead pipe from a quiet person. */
+  listenHealth() {
+    const status = this.connection?.state?.status || (this.closed ? "closed" : "absent");
+    let ws = null;
+    let udp = null;
+    try {
+      const ping = this.connection?.ping;
+      if (Number.isFinite(ping?.ws)) ws = Math.round(ping.ws);
+      if (Number.isFinite(ping?.udp)) udp = Math.round(ping.udp);
+    } catch { /* ping exists only while the voice connection is ready */ }
+    return {
+      status,
+      ws,
+      udp,
+      subscriptions: this.connection?.receiver?.subscriptions?.size || 0,
+      drops: this.drops,
+    };
+  }
+
+  bindConnection(connection) {
+    this.connection = connection;
+    connection.on("error", (error) => this.log(`voice connection: ${error.message}`));
+    // Only the end-to-end encryption (DAVE) lines: a packet it cannot decrypt is dropped without any error.
+    connection.on("debug", (message) => {
+      if (DAVE_DEBUG.test(message)) this.emit("dave", String(message).slice(0, 300));
+    });
+    connection.on("stateChange", (before, after) => {
+      if (before.status !== after.status) this.emit("connection", before.status, after.status);
+      if (after.status === VoiceConnectionStatus.Disconnected && !this.closed) {
+        // Moved or kicked: give Discord a moment to reconnect us, otherwise the call is over for this bot.
+        Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+        ]).catch(() => this.close("disconnected"));
+      }
+      if (after.status === VoiceConnectionStatus.Destroyed && !this.closed) this.close("destroyed");
+    });
+    return connection;
   }
 
   hear(userId) {
@@ -151,8 +189,12 @@ export class VoiceLink extends EventEmitter {
     const decoder = new OpusDecoder({ rate: DISCORD_RATE, channels: 2, frameSize: FRAME_SAMPLES });
     opus.on("error", (error) => this.log(`voice receive ${userId}: ${error.message}`));
     decoder.on("error", (error) => this.log(`voice decode ${userId}: ${error.message}`));
+    decoder.on("packetDropped", () => { this.drops += 1; });
     opus.pipe(decoder);
-    decoder.on("data", (stereo) => this.emit("audio", userId, toMono(stereo)));
+    decoder.on("data", (stereo) => {
+      this.lastAudioAt.set(String(userId), Date.now());
+      this.emit("audio", userId, toMono(stereo));
+    });
     decoder.on("end", () => this.emit("quiet", userId));
   }
 

@@ -107,17 +107,17 @@ test("a turn the recogniser leaves open, with no sound behind it, never cuts", a
 
 test("the voice speaks at the measured pace, and the pace can be chosen without a deploy", () => {
   const { app } = calls();
-  assert.equal(app.speechSpeed(agent), 1.7);
+  assert.equal(app.speechSpeed(agent), 1.3);
   assert.equal(app.speechSpeed({ ...agent, voiceSpeed: 1.45 }), 1.45);
   app.store.settings.voiceSpeed = 1.2;
   assert.equal(app.speechSpeed({ id: "a3", name: "Nico" }), 1.2);
-  assert.equal(app.speechSpeed({ ...agent, voiceSpeed: 9 }), 1.7, "an impossible value falls back to the default");
+  assert.equal(app.speechSpeed({ ...agent, voiceSpeed: 9 }), 1.3, "an impossible value falls back to the default");
 });
 
 test("the call prompt keeps the agents from filler confirmations", () => {
   const { app } = calls();
   const prompt = app.prompt(call(), agent);
-  assert.match(prompt.system, /mai «ci sono»/);
+  assert.match(prompt.system, /Non riempire i silenzi e non confermare la tua presenza a un collega/);
   assert.match(prompt.system, /non si riapre/);
   assert.match(prompt.system, /ESCI/);
 });

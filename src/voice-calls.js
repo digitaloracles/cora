@@ -16,7 +16,7 @@ export const FISH_VOICES = {
 };
 const SAMPLE_RATE = 48000;
 const HISTORY = 30;
-const MAX_REPLY = 600;
+const MAX_REPLY = 280;
 // Agents may answer each other this many times in a row; then they wait for a person to speak.
 export const AGENT_CHAIN = 6;
 // Audio quieter than this is a stream of silence, not speech.
@@ -28,7 +28,12 @@ const SILENCE_PUMP_TICK_MS = 20;
 const SILENCE_PUMP_MAX_MS = 4000;
 const FINALIZE_AFTER_MS = 1500;
 const IDLE_SPEAKER_MS = 120000;
+const DAVE_QUIET_MS = 10000;
+const DEAF_EAR_MS = 3000;
+const VOICED_GAP_MS = 2000;
 const EMPTY_CALL_MS = 180000;
+// A person still in the channel, and the ear has had no audio from them for this long: logged once, until audio returns.
+const LISTEN_GAP_MS = 30000;
 const REPLY_TIMEOUT_MS = 45000;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -38,7 +43,7 @@ const BARGE_MS = 700;
 // The person must still be making sound this recently for the cut to be theirs and not a leftover turn.
 const BARGE_SILENCE_MS = 280;
 const WORK_DEDUPE_MS = 120000;
-const SPEECH_SPEED = 1.7;
+const SPEECH_SPEED = 1.3;
 
 // A refusal or a request to wait changes what the agents do: never a murmur, whatever else it says.
 const MEANINGFUL = new Set(["no", "non", "aspetta", "stop", "fermo", "fermati", "smetti", "basta"]);
@@ -133,7 +138,7 @@ export function spokenReply(text, agentName = "") {
 }
 
 class Call {
-  constructor({ guildId, channelId, name }) {
+  constructor({ guildId, channelId, name, now = Date.now }) {
     this.guildId = guildId;
     this.channelId = channelId;
     this.name = name;
@@ -145,13 +150,21 @@ class Call {
     this.thinking = null;
     this.pending = null;
     this.works = [];
-    this.lastHumanAt = Date.now();
-    this.startedAt = Date.now();
+    const at = now();
+    this.lastHumanAt = at;
+    this.startedAt = at;
+    // Per person, the last time each agent actually received their audio or a speaking signal.
+    this.inbound = new Map();
+    this.speakingAt = new Map();
+    // Last decoded packet on each agent's link, whoever sent it.
+    this.linkAudioAt = new Map();
+    this.listenStall = new Map();
+    this.dave = null;
   }
 }
 
 export class VoiceCalls {
-  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null }) {
+  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null, listenGapMs = LISTEN_GAP_MS, now = Date.now }) {
     this.store = store;
     this.bots = bots;
     this.llm = llm;
@@ -161,6 +174,8 @@ export class VoiceCalls {
     this.language = language;
     this.makeLink = makeLink;
     this.agentChain = agentChain;
+    this.listenGapMs = listenGapMs;
+    this.now = now;
     // Hands a job taken on in a call to the agent's written conversation, where it works with its tools.
     this.dispatch = dispatch;
     this.calls = new Map();
@@ -209,7 +224,7 @@ export class VoiceCalls {
     if (current) await this.leave(agent);
     let call = this.calls.get(target);
     if (!call) {
-      call = new Call({ guildId: info.guildId, channelId: target, name: info.name });
+      call = new Call({ guildId: info.guildId, channelId: target, name: info.name, now: () => this.now() });
       this.calls.set(target, call);
     }
     const link = this.makeLink({ client, guildId: info.guildId, channelId: target, log: (text) => this.log({ type: "error", agentId: agent.id, channelId: target, text }) });
@@ -223,7 +238,12 @@ export class VoiceCalls {
       throw error;
     }
     link.on("audio", (userId, pcm) => this.heard(call, member, userId, pcm));
+    link.on("speaking", (userId) => this.markSignal(call, member, userId, "speaking"));
+    link.on("connection", (before, after) => {
+      this.log({ type: "voice", agentId: agent.id, channelId: target, text: `voce ${agent.name}: connessione ${before} → ${after}` });
+    });
     link.on("quiet", (userId) => this.quiet(call, member, userId));
+    link.on("dave", (message) => this.daveSaid(call, member, message));
     link.on("closed", (reason) => {
       if (call.members.get(agent.id)?.link === link) this.drop(call, agent.id, reason);
     });
@@ -274,7 +294,56 @@ export class VoiceCalls {
 
   /** The first agent in the call is the ear: one stream per person, never one per agent. */
   ear(call) {
-    return [...call.members.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0] || null;
+    const members = [...call.members.values()].sort((a, b) => a.joinedAt - b.joinedAt);
+    return members.find((member) => !member.deafSince) || members[0] || null;
+  }
+
+  /**
+   * Every bot in the call receives every person. When another bot hears a person speak for a few seconds
+   * and the ear heard nothing of it (lost packets, DAVE), the ear has gone deaf: the next bot takes over
+   * and feeds the same speech-to-text stream.
+   */
+  voiced(call, member, userId) {
+    const now = this.now();
+    member.voiced ||= new Map();
+    let run = member.voiced.get(userId);
+    if (!run || now - run.last > VOICED_GAP_MS) {
+      run = { first: now, last: now };
+      member.voiced.set(userId, run);
+    }
+    run.last = now;
+    const ear = this.ear(call);
+    if (!ear || ear === member || member.deafSince || now - run.first < DEAF_EAR_MS) return;
+    const heard = ear.voiced?.get(userId)?.last || 0;
+    if (heard >= run.first - 500) return;
+    ear.deafSince = now;
+    const next = this.ear(call);
+    if (next === ear) return;
+    for (const speaker of call.speakers.values()) if (speaker.ear === ear.agent.id) speaker.ear = next.agent.id;
+    const name = this.personName(call, userId) || userId;
+    this.log({ type: "error", agentId: ear.agent.id, channelId: call.channelId, text: `voice: il bot di ${ear.agent.name} non riceve più la voce di ${name} (il bot di ${member.agent.name} la sente da ${Math.round((now - run.first) / 1000)} s): ora ascolta il bot di ${next.agent.name}` });
+  }
+
+  /** DAVE drops packets it cannot decrypt without an error: failures are counted and written once per burst. */
+  daveSaid(call, member, message) {
+    if (this.ear(call) !== member) return;
+    const now = this.now();
+    if (/Failed to decrypt/i.test(message)) {
+      if (!call.dave) {
+        call.dave = { since: now, lastAt: now, failures: 0 };
+        this.log({ type: "error", agentId: member.agent.id, channelId: call.channelId, text: `voice: DAVE non decifra i pacchetti in arrivo sul bot di ${member.agent.name} (${message})` });
+      }
+      call.dave.failures += 1;
+      call.dave.lastAt = now;
+    } else if (/errored|Invalidating|reinitialized|reset|downgraded/i.test(message)) {
+      this.log({ type: "voice", agentId: member.agent.id, channelId: call.channelId, text: `DAVE sul bot di ${member.agent.name}: ${message}` });
+    }
+  }
+
+  checkDave(call, now = this.now()) {
+    if (!call.dave || now - call.dave.lastAt < DAVE_QUIET_MS) return;
+    this.log({ type: "voice", channelId: call.channelId, text: `DAVE: ${call.dave.failures} pacchetti non decifrati in ${Math.round((call.dave.lastAt - call.dave.since) / 1000)} s, poi di nuovo regolare` });
+    call.dave = null;
   }
 
   isOwnAgent(call, userId) {
@@ -282,7 +351,10 @@ export class VoiceCalls {
   }
 
   heard(call, member, userId, pcm) {
-    if (this.ear(call) !== member || this.isOwnAgent(call, userId)) return;
+    this.markSignal(call, member, userId, "audio");
+    if (this.isOwnAgent(call, userId)) return;
+    if (peakOf(pcm) >= VOICE_PEAK) this.voiced(call, member, userId);
+    if (this.ear(call) !== member) return;
     let speaker = call.speakers.get(userId);
     if (!speaker) {
       if (peakOf(pcm) < VOICE_PEAK) return;
@@ -371,6 +443,16 @@ export class VoiceCalls {
       speaker.early = null;
       if (event.user_turn === false || !text) return void early?.controller.abort();
       this.turn(call, { userId, name: speaker.name, text, agent: null }, early);
+    });
+    stt.on("providerError", (error) => this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} reported ${error.code || "an error"}${error.recoverable ? " (recoverable)" : ""}` }));
+    stt.on("finish", () => {
+      if (call.speakers.get(userId) !== speaker) return;
+      speaker.open = false;
+      clearTimeout(speaker.bargeTimer);
+      clearInterval(speaker.pump);
+      this.dropEarly(speaker);
+      call.speakers.delete(userId);
+      this.log({ type: "error", channelId: call.channelId, text: `voice: speech to text for ${name} closed by Fish; it reopens with the next sound` });
     });
     stt.on("failure", (error) => {
       speaker.open = false;
@@ -545,7 +627,9 @@ export class VoiceCalls {
     return false;
   }
 
-  prompt(call, agent, extra = null) {
+  prompt(call, agent, extra = null, { insist = false } = {}) {
+    // A person spoke last and this agent was picked to answer: they get words, never silence.
+    const toMe = Boolean((extra || call.history.at(-1)) && !(extra || call.history.at(-1)).agent);
     const others = [...call.members.values()].filter((member) => member.agent.id !== agent.id).map((member) => member.agent.name);
     const people = this.people(call).map((person) => person.name).filter(Boolean);
     const language = this.language(agent);
@@ -557,23 +641,28 @@ export class VoiceCalls {
         `## Ora`,
         `Sei in una chiamata vocale dal vivo su Discord, nel canale «${call.name}».`,
         `Nella chiamata: ${[...people, ...others].join(", ") || "nessun altro per ora"}${others.length ? ` (${others.join(", ")} ${others.length === 1 ? "è un agente" : "sono agenti"} come te)` : ""}.`,
-        `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, da una a tre frasi brevi.`,
+        `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, una o due frasi brevi, al massimo una ventina di parole.`,
         "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
         "Parli solo per te.",
-        "Non confermare la tua presenza e non riempire i silenzi: mai «ci sono», «sono qui», «ti sento». Se non c'è niente da dire, PASS.",
+        toMe
+          ? "Una persona ti sta parlando: rispondi sempre a voce, anche solo «sì, ci sono» o una frase breve. Qui PASS non è ammesso."
+          : "Non riempire i silenzi e non confermare la tua presenza a un collega. Se non c'è niente da dire, PASS.",
         "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
+        "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto).",
         ...(this.dispatch ? [
-          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' in una frase breve che ci lavori, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
+          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, sempre con la sigla della issue a cui si riferisce, se ne ha una (es. NOT-43, REF-73), e con il nome del progetto. Cora lo porta nel thread di quella issue; se quella issue o quel progetto non ha un thread, gliene apre uno, e non lo scrive mai nel thread di un altro argomento. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
           "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
           "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.",
+          "Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase, senza riga LAVORO, e non tirare fuori impegni di altri progetti.",
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
         ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
         "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
-        "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS.",
+        ...(toMe ? [] : ["Se un collega ha già risposto, non aggiungere niente: PASS.", "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS."]),
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
     const lines = [...call.history, ...(extra ? [extra] : [])].map((entry) => entry.agent?.id === agent.id ? `Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
-    const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}\n\nLa tua risposta a voce:`;
+    const nudge = insist ? "\n\nHai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve." : "";
+    const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}${nudge}\n\nLa tua risposta a voce:`;
     return { system, prompt };
   }
 
@@ -616,6 +705,13 @@ export class VoiceCalls {
       leaving = lastIsHuman && LEAVE_LINE.test(raw);
       reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
       text = spokenReply(reply.said, agent.name);
+      // A person spoke to this agent and got PASS: it is asked once more, plainly, to answer.
+      if (!text && !reply.task && !leaving && lastIsHuman && !controller.signal.aborted) {
+        const again = String(await this.think(agent, this.prompt(call, agent, null, { insist: true }), controller.signal) || "");
+        leaving = LEAVE_LINE.test(again);
+        reply = splitWork(again.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
+        text = spokenReply(reply.said, agent.name);
+      }
     } finally {
       if (call.thinking === thinking) call.thinking = null;
     }
@@ -703,15 +799,95 @@ export class VoiceCalls {
     }
   }
 
+  /** Last inbound audio and speaking signal from a person, per agent that received it. */
+  markSignal(call, member, userId, kind) {
+    const at = this.now();
+    if (kind === "audio") call.linkAudioAt.set(member.agent.id, at);
+    if (this.isOwnAgent(call, userId)) return;
+    const map = kind === "speaking" ? call.speakingAt : call.inbound;
+    const entry = map.get(userId) || { by: new Map() };
+    entry.by.set(member.agent.id, at);
+    map.set(userId, entry);
+  }
+
+  /**
+   * One line when a person is still in the channel and the ear stops hearing their voice,
+   * and one when it returns. The gap counts the voice the ear decoded, not the packets it got:
+   * a silent microphone keeps sending packets, and a mute, a dead pipe or an ear that no longer
+   * hears while another agent does are told apart by the details on the line.
+   */
+  noteListening(call, now) {
+    const ear = this.ear(call);
+    if (!ear) return;
+    const present = new Set(this.people(call).map((person) => person.userId));
+    for (const userId of [...call.listenStall.keys()]) if (!present.has(userId)) call.listenStall.delete(userId);
+    for (const person of this.people(call)) {
+      const voiceAt = ear.voiced?.get(person.userId)?.last || 0;
+      const quietFor = now - (voiceAt || call.startedAt);
+      const stall = call.listenStall.get(person.userId);
+      if (quietFor >= this.listenGapMs) {
+        if (stall) continue;
+        call.listenStall.set(person.userId, { since: voiceAt || call.startedAt });
+        const text = this.listenText("fermo", call, person, quietFor, ear, now);
+        this.log({ type: "voice", channelId: call.channelId, text });
+        console.log(text);
+      } else if (stall) {
+        call.listenStall.delete(person.userId);
+        const text = this.listenText("ripreso", call, person, now - stall.since, ear, now);
+        this.log({ type: "voice", channelId: call.channelId, text });
+        console.log(text);
+      }
+    }
+  }
+
+  listenText(kind, call, person, ms, ear, now) {
+    const health = typeof ear.link.listenHealth === "function" ? ear.link.listenHealth() : {};
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    const ping = (value) => (Number.isFinite(value) ? `${value} ms` : "assente");
+    const flags = [
+      `ear ${ear.agent.name}`,
+      `connessione ${health.status || "sconosciuta"}`,
+      `ping ws ${ping(health.ws)}`,
+      `ping udp ${ping(health.udp)}`,
+      `mute ${person.selfMute || person.mute ? "sì" : "no"}`,
+      `sordità ${person.selfDeaf || person.deaf ? "sì" : "no"}`,
+      `scartati ${health.drops || 0}`,
+    ];
+    const anyAt = call.linkAudioAt.get(ear.agent.id) || 0;
+    flags.push(anyAt ? `ultimo pacchetto ${Math.max(0, Math.round((now - anyAt) / 1000))} s fa` : "nessun pacchetto in ingresso");
+    const voiceAt = ear.voiced?.get(person.userId)?.last || 0;
+    flags.push(voiceAt ? `ultima voce ${Math.max(0, Math.round((now - voiceAt) / 1000))} s fa` : "nessuna voce");
+    const speaking = call.speakingAt.get(person.userId)?.by.get(ear.agent.id) || 0;
+    const earAudio = call.inbound.get(person.userId)?.by.get(ear.agent.id) || 0;
+    if (speaking > earAudio + 1000) flags.push("segnale di parola senza pacchetti");
+    for (const member of call.members.values()) {
+      if (member.agent.id === ear.agent.id) continue;
+      const heardAt = call.inbound.get(person.userId)?.by.get(member.agent.id) || 0;
+      if (heardAt > earAudio + 1000) flags.push(`${member.agent.name} riceve audio`);
+      const status = typeof member.link.listenHealth === "function" ? member.link.listenHealth().status : "";
+      if (status && status !== (health.status || "sconosciuta")) flags.push(`${member.agent.name} ${status}`);
+    }
+    const who = person.name || person.userId;
+    const detail = flags.join(", ");
+    if (kind === "fermo") return `ascolto fermo: ${who} nel canale «${call.name}» da ${seconds} s senza audio (${detail})`;
+    return `ascolto ripreso: ${who} nel canale «${call.name}» dopo ${seconds} s (${detail})`;
+  }
+
   /** Speakers gone quiet for long are closed; a call with no person left for a while ends. */
   sweep() {
-    const now = Date.now();
+    const now = this.now();
     for (const call of [...this.calls.values()]) {
-      for (const speaker of [...call.speakers.values()]) if (now - speaker.lastAt > IDLE_SPEAKER_MS && !speaker.inTurn) this.closeSpeaker(call, speaker);
+      for (const speaker of [...call.speakers.values()]) {
+        if (now - speaker.lastAt <= IDLE_SPEAKER_MS || speaker.inTurn) continue;
+        this.closeSpeaker(call, speaker);
+        this.log({ type: "voice", channelId: call.channelId, text: `chiudo l'ascolto di ${speaker.name}: nessun audio da ${Math.round((now - speaker.lastAt) / 1000)} s` });
+      }
+      this.checkDave(call, now);
       if (this.people(call).length) call.lastHumanAt = Math.max(call.lastHumanAt, now - 1);
       else if (now - call.lastHumanAt > EMPTY_CALL_MS) {
         for (const member of [...call.members.values()]) this.leave(member.agent).catch(() => {});
       }
+      this.noteListening(call, now);
     }
   }
 

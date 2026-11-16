@@ -91,7 +91,7 @@ class FakeTts extends EventEmitter {
   abort() { this.aborted = true; }
 }
 
-function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
+function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now } = {}) {
   const people = [{ userId: SEB, name: "Seb", bot: false }];
   const members = () => [...people, ...[...calls.calls.values()].flatMap((call) => [...call.members.values()].map((member) => ({ userId: member.userId, name: member.agent.name, bot: true })))];
   const clients = { [radix.id]: fakeClient("bot-radix", members), [ada.id]: fakeClient("bot-ada", members) };
@@ -111,6 +111,7 @@ function setup({ replies = {}, agentChain = 6, dispatch = null } = {}) {
   const calls = new VoiceCalls({
     store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch,
     log: (entry) => log.push(entry), makeLink: (options) => { const link = new FakeLink(options); links.push(link); return link; },
+    listenGapMs, now,
   });
   return { calls, fish, llm, asked, links, log, people, clients };
 }
@@ -177,7 +178,7 @@ test("voice calls: a person names an agent, it answers by voice, and agents answ
   assert.equal(fish.ttss.length, 2);
   assert.equal(fish.ttss[0].text, "Sto testando la chiamata.");
   assert.equal(fish.ttss[0].options.voice, fishVoiceFor(ada));
-  assert.equal(fish.ttss[0].options.speed, 1.7, "live calls request faster speech");
+  assert.equal(fish.ttss[0].options.speed, 1.3, "live calls request the default pace");
   assert.notEqual(fish.ttss[1].options.voice, fish.ttss[0].options.voice, "two agents never share a voice");
   assert.equal(links[1].speeches[0].bytes, 9600, "Ada's own bot speaks Ada's words");
   assert.equal(links[0].speeches[0].bytes, 9600, "Radix's bot speaks Radix's");
@@ -220,6 +221,23 @@ test("voice calls: a person who keeps talking over an agent stops its voice, and
   fish.stts[0].emit("committed", { text: "mm-hm", user_turn: false, turn_kind: "backchannel" });
   await wait(10);
   assert.equal(call.history.length, 2, "a backchannel is not a turn");
+});
+
+test("voice calls: a person who speaks to an agent always gets words, never PASS", async (t) => {
+  const { calls, fish, links, asked, log } = setup({ replies: { Radix: (prompt) => (/Hai risposto PASS/.test(prompt) ? "Sì, ci sono." : "PASS") } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, ci sei?", user_turn: true });
+  await until(() => link.speeches.length === 1, "Radix answering");
+  assert.equal(fish.ttss[0].text, "Sì, ci sono.");
+  assert.match(asked[0].system, /Una persona ti sta parlando: rispondi sempre/);
+  assert.doesNotMatch(asked[0].system, /mai «ci sono»/);
+  assert.doesNotMatch(asked[0].system, /rispondi esattamente PASS/);
+  assert.equal(asked.length, 2, "one PASS, then asked once more");
+  assert.ok(!log.some((entry) => /non risponde \(PASS/.test(entry.text)));
 });
 
 test("voice calls: an agent takes on a job and keeps talking; a job for a colleague goes to them; only a person starts one", async (t) => {
@@ -363,4 +381,160 @@ test("voice calls: the answer starts when the turn is expected to end, and is ke
   stt.emit("committed", { text: "Radix, ferma tutto il Feed adesso.", user_turn: true });
   await until(() => asked.length === 5, "different final words are thought again");
   assert.match(asked[4].prompt, /Seb: Radix, ferma tutto il Feed adesso\./);
+});
+
+test("voice calls: a listen gap is logged once when audio stops and again when it returns", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log, people } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.listenHealth = () => ({ status: "ready", ws: 40, udp: null, drops: 2 });
+  other.listenHealth = () => ({ status: "ready", ws: 40, udp: 15, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  clock += 19000;
+  calls.sweep();
+  assert.equal(log.filter((entry) => entry.text.startsWith("ascolto fermo")).length, 0, "a pause under the gap stays quiet");
+  clock += 2000;
+  calls.sweep();
+  const stalled = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(stalled.length, 1);
+  assert.equal(stalled[0].type, "voice");
+  assert.match(stalled[0].text, /ascolto fermo: Seb nel canale «General» da 21 s senza audio/);
+  assert.match(stalled[0].text, /ear Radix, connessione ready, ping ws 40 ms, ping udp assente, mute no, sordità no, scartati 2, ultimo pacchetto 21 s fa/);
+  calls.sweep();
+  assert.equal(log.filter((entry) => entry.text.startsWith("ascolto fermo")).length, 1, "the gap is logged once until audio returns");
+  clock += 29000;
+  ear.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const resumed = log.filter((entry) => entry.text.startsWith("ascolto ripreso"));
+  assert.equal(resumed.length, 1);
+  assert.match(resumed[0].text, /ascolto ripreso: Seb nel canale «General» dopo 50 s/);
+  assert.match(resumed[0].text, /ultimo pacchetto 0 s fa/);
+  people[0].selfMute = true;
+  clock += 21000;
+  calls.sweep();
+  const muted = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(muted.length, 2);
+  assert.match(muted[1].text, /mute sì/);
+});
+
+test("voice calls: a gap is logged when the packets keep coming but the ear hears no voice", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [ear] = links;
+  ear.listenHealth = () => ({ status: "ready", ws: 40, udp: null, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  for (let i = 0; i < 5; i += 1) { clock += 5000; ear.emit("audio", SEB, speech16(0)); }
+  calls.sweep();
+  const stalled = log.filter((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.equal(stalled.length, 1, "a silent microphone still sends packets, and that is a gap");
+  assert.match(stalled[0].text, /da 25 s senza audio/);
+  assert.match(stalled[0].text, /ultimo pacchetto 0 s fa/);
+  assert.match(stalled[0].text, /ultima voce 25 s fa/);
+  clock += 5000;
+  ear.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const resumed = log.filter((entry) => entry.text.startsWith("ascolto ripreso"));
+  assert.equal(resumed.length, 1);
+  assert.match(resumed[0].text, /dopo 30 s/);
+});
+
+test("voice calls: the listen log names a speaking signal with no packets, another agent still hearing, and a connection change", async (t) => {
+  let clock = Date.now();
+  const { calls, links, log } = setup({ listenGapMs: 20000, now: () => clock });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  ear.listenHealth = () => ({ status: "disconnected", ws: null, udp: null, drops: 0 });
+  other.listenHealth = () => ({ status: "ready", ws: 12, udp: 12, drops: 0 });
+  ear.emit("audio", SEB, speech16(8000));
+  clock += 25000;
+  ear.emit("speaking", SEB);
+  other.emit("audio", SEB, speech16(8000));
+  calls.sweep();
+  const stalled = log.find((entry) => entry.text.startsWith("ascolto fermo"));
+  assert.ok(stalled, "the ear's silence is a gap even when someone else still hears");
+  assert.match(stalled.text, /connessione disconnected/);
+  assert.match(stalled.text, /segnale di parola senza pacchetti/);
+  assert.match(stalled.text, /Ada riceve audio/);
+  assert.match(stalled.text, /Ada ready/);
+  ear.emit("connection", "ready", "disconnected");
+  const change = log.find((entry) => entry.text.includes("connessione ready"));
+  assert.equal(change.text, "voce Radix: connessione ready → disconnected");
+  assert.equal(change.type, "voice");
+});
+
+test("voice calls: when another bot hears a person and the ear does not, the next bot becomes the ear", async (t) => {
+  const { calls, fish, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  const call = calls.calls.get(VOICE);
+  ear.emit("audio", SEB, speech16(8000));
+  other.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb heard by the ear");
+  assert.equal(calls.ear(call).agent.id, radix.id);
+  call.members.get(ada.id).voiced.get(SEB).first -= 4000;
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(calls.ear(call).agent.id, radix.id, "the ear heard the start of that speech: it is not deaf");
+
+  call.members.get(radix.id).voiced.get(SEB).last -= 10000;
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(calls.ear(call).agent.id, ada.id);
+  assert.match(log.at(-1).text, /^voice: il bot di Radix non riceve più la voce di Seb \(il bot di Ada la sente da 4 s\): ora ascolta il bot di Ada$/);
+  assert.equal(call.speakers.get(SEB).ear, ada.id, "the open stream is now fed by the new ear");
+  const fed = fish.stts[0].audio.length;
+  ear.emit("audio", SEB, speech16(8000));
+  other.emit("audio", SEB, speech16(8000));
+  assert.equal(fish.stts.length, 1, "the same stream goes on");
+  assert.equal(fish.stts[0].audio.length, fed + 1, "only the new ear feeds it");
+});
+
+test("voice calls: DAVE decryption failures on the ear are written once per burst, with session errors", async (t) => {
+  const { calls, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  await calls.join(ada, { channelId: VOICE });
+  const [ear, other] = links;
+  const call = calls.calls.get(VOICE);
+  const texts = () => log.map((entry) => entry.text);
+  other.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)");
+  assert.ok(!texts().some((text) => /DAVE/.test(text)), "only the ear's bot reports DAVE");
+  ear.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)");
+  ear.emit("dave", "[NW] [DAVE] Failed to decrypt a packet (2 consecutive fails)");
+  ear.emit("dave", "[NW] [DAVE] Executing transition (4)");
+  ear.emit("dave", "[NW] [DAVE] MLS commit errored from transition 4: boom");
+  assert.equal(log.filter((entry) => /DAVE non decifra/.test(entry.text)).length, 1);
+  assert.ok(texts().includes("DAVE sul bot di Radix: [NW] [DAVE] MLS commit errored from transition 4: boom"));
+  assert.ok(!texts().some((text) => /Executing transition/.test(text)), "ordinary transitions stay out of the log");
+  calls.checkDave(call, Date.now() + 11000);
+  assert.match(texts().at(-1), /^DAVE: 2 pacchetti non decifrati in 0 s, poi di nuovo regolare$/);
+  assert.equal(call.dave, null);
+});
+
+test("voice calls: a recogniser Fish closes, or one idle for long, is let go with a line in the log and reopens with the next sound", async (t) => {
+  const { calls, fish, links, log } = setup();
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [ear] = links;
+  const call = calls.calls.get(VOICE);
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("providerError", Object.assign(new Error("x"), { code: "rate_limited", recoverable: true }));
+  assert.equal(log.at(-1).text, "voice: speech to text for Seb reported rate_limited (recoverable)");
+  fish.stts[0].emit("finish", {});
+  assert.equal(call.speakers.size, 0);
+  assert.equal(log.at(-1).text, "voice: speech to text for Seb closed by Fish; it reopens with the next sound");
+  ear.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 2, "a new stream after Fish closed the first");
+  call.speakers.get(SEB).lastAt = Date.now() - 130000;
+  calls.sweep();
+  assert.equal(call.speakers.size, 0);
+  assert.ok(log.some((entry) => /^chiudo l'ascolto di Seb: nessun audio da 13\d s$/.test(entry.text)));
 });

@@ -13,7 +13,7 @@ import { asksToStop } from "./brain.js";
 import { VOICE_MESSAGE } from "./discord.js";
 import { AUDIO_LIMIT_BYTES, VOICE_LANGUAGES, speechParts } from "./voice.js";
 import { imageMime } from "./images.js";
-import { issueKeys } from "./thread-topics.js";
+import { issueKeys, sharesTopic, topicPlace } from "./thread-topics.js";
 
 const HUMAN_DEBOUNCE_MS = 1200;
 // After a restart, unanswered human messages this recent are picked up again.
@@ -1260,11 +1260,18 @@ export class Orchestrator {
     // Where the agent was called from, else the voice channel's own chat when the agent works there.
     let target = [channelId, callChannelId].find((id) => id && transportOf(id) === "discord" && listens(id)) || "";
     if (!target) throw new Error(`${agent.name} does not work in the conversation of this call`);
-    const keys = issueKeys(`${task} ${said}`);
-    const map = keys.length && this.brain.threadMap ? this.brain.threadMap(agent, target) : { topic: [], others: new Map() };
-    if (!keys.some((key) => map.topic.includes(key))) {
-      const thread = keys.flatMap((key) => map.others.get(key) || []).find((candidate) => listens(candidate.id));
+    const words = `${task} ${said}`;
+    const keys = issueKeys(words);
+    const map = this.brain.threadMap ? this.brain.threadMap(agent, target) : { topic: [], others: new Map() };
+    // A thread keeps only its own topic: its issue, or without a key a word of its title. A channel keeps a job no thread claims.
+    const belongs = keys.length ? keys.some((key) => map.topic.includes(key)) : !map.current || sharesTopic(words, map.current.name);
+    if (!belongs || !map.current) {
+      const here = this.channelMeta(target);
+      const thread = keys.flatMap((key) => map.others.get(key) || []).find((candidate) => listens(candidate.id))
+        || (keys.length ? null : topicPlace(this.channels.listFor(agent).filter((place) => listens(place.id)), here, words));
       if (thread) target = thread.id;
+      // Never in another topic's thread: the job gets a thread of its own, beside it.
+      else if (!belongs) target = await this.callThread(agent, target, keys[0] && !task.includes(keys[0]) ? `${keys[0]} · ${task}` : task, listens);
     }
     const channel = this.channelMeta(target);
     if (channel.guildId && !this.allowedGuild(channel.guildId)) throw new Error("that server is not one this Cora works in");
@@ -1285,6 +1292,19 @@ export class Orchestrator {
     };
     await this.ingest(state, item);
     return target;
+  }
+
+  /** A new thread for a job from a call, beside the topic thread it does not belong to; its parent channel if no thread opens. */
+  async callThread(agent, currentId, title, listens) {
+    const name = String(title).replace(/\s+/g, " ").trim().slice(0, 90);
+    try {
+      return (await this.openThread(agent, currentId, { name })).id;
+    } catch (error) {
+      const parentId = this.channelMeta(currentId).parentId;
+      this.log({ type: "error", agentId: agent.id, channelId: currentId, text: `voice: no thread for «${name}» (${error.message})` });
+      if (parentId && listens(parentId)) return parentId;
+      throw new Error(`no place for «${name}» outside the thread of another issue`);
+    }
   }
 
   async notice(channelId, text) {
