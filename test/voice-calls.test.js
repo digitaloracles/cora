@@ -644,10 +644,12 @@ test("voice calls: an agent has one voice, the same in every call and in its voi
   const alone = agentVoice(older, [older]);
   assert.equal(agentVoice(older, [older, nico]), alone, "a colleague made later never changes a voice");
   assert.equal(alone, FISH_VOICES.male[0], "the voice chosen for the gender");
-  assert.equal(agentVoice(nico, [older, nico]), FISH_VOICES.male[0], "every agent of a gender speaks with the voice chosen for it");
+  assert.equal(agentVoice(nico, [older, nico]), FISH_VOICES.male[1], "two men never sound alike");
+  assert.notEqual(agentVoice(nico, [older, nico]), agentVoice(older, [older, nico]));
+  assert.equal(agentVoice(nico, [{ ...older, voice: FISH_VOICES.male[0] }, nico]), FISH_VOICES.male[1], "a voice a colleague picked is not taken again");
   assert.equal(agentVoice({ ...ada, createdAt: "2026-01-03" }, [older, nico]), FISH_VOICES.female[0]);
   assert.equal(agentVoice({ ...nico, voice: FISH_CATALOG[2].id }, [older, nico]), FISH_CATALOG[2].id, "a Fish voice picked in the panel");
-  assert.equal(agentVoice({ ...nico, voice: "Giulia" }, [older, nico]), FISH_VOICES.male[0], "a Soniox voice is not a Fish voice");
+  assert.equal(agentVoice({ ...nico, voice: "Giulia" }, [older, nico]), FISH_VOICES.male[1], "a Soniox voice is not a Fish voice");
   assert.equal(agentVoice({ ...older, fishVoice: "chosen" }, [older, nico]), "chosen");
 
   await calls.join(radix, { channelId: VOICE });

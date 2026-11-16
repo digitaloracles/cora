@@ -10,7 +10,7 @@ import { speakable } from "./voice.js";
  */
 
 // The Fish voices an agent can be given in its Voice panel: Italian voices that are not clones of public figures.
-// The first of each gender is the one Seb chose on 16/11 (NOT-43); it speaks in calls and in voice messages alike.
+// The first of each gender is the one Seb chose on 16/11 (NOT-43); the second male voice keeps two men apart.
 // gain brings a voice Fish makes quieter up to the loudness of the others.
 export const FISH_CATALOG = [
   { id: "b525ef2064b549189d4ab19715da62c4", name: "Italian", gender: "male", description: "Maschile, misurata e professionale." },
@@ -26,9 +26,10 @@ export const FISH_CATALOG = [
   { id: "0e36e185d0654d5bac3d24331562a0cc", name: "Giulia", gender: "female", description: "Femminile, giovane, da assistente vocale." },
   { id: "5fe29da74b3a4c20b3d6beb745f019a2", name: "Mio", gender: "female", description: "Femminile, morbida e rilassata.", gain: 2.5 },
 ];
-// The automatic voice of each gender: every agent without a voice of its own speaks with it.
+// The automatic voices of each gender, in order: agents without a voice of their own take them in the order
+// they were made, so two agents of the same gender never sound alike (Seb, 16/11: Nico and Radix apart).
 export const FISH_VOICES = {
-  male: ["b525ef2064b549189d4ab19715da62c4"],
+  male: ["b525ef2064b549189d4ab19715da62c4", "59ac2b0ad66641b5ab4666d3ed89e5d4"],
   female: ["12c4a1ac13a5400894585c0ad9bc046b"],
 };
 
@@ -150,23 +151,20 @@ export function fishVoiceFor(agent, taken = []) {
 }
 
 /**
- * One voice per agent everywhere, in calls and in voice messages: the agents of the instance share
- * the pool in the order they were made, so who else is in a call never changes an agent's voice.
+ * One voice per agent everywhere, in calls and in voice messages. Agents of the same gender without a
+ * voice of their own take the gender's voices in the order they were made, skipping the ones colleagues
+ * picked in the panel: who else is in a call never changes an agent's voice, and two agents differ.
  */
 export function agentVoice(agent, agents = []) {
   if (chosenVoice(agent)) return chosenVoice(agent);
   const kind = (entry) => (entry.gender === "female" ? "female" : "male");
-  const pool = FISH_VOICES[kind(agent)];
-  const order = [...agents.filter((entry) => entry.id !== agent.id && kind(entry) === kind(agent)), agent]
+  const peers = agents.filter((entry) => entry.id !== agent.id && kind(entry) === kind(agent));
+  const picked = new Set(peers.map(chosenVoice).filter(Boolean));
+  const free = FISH_VOICES[kind(agent)].filter((voice) => !picked.has(voice));
+  const pool = free.length ? free : FISH_VOICES[kind(agent)];
+  const order = [...peers.filter((entry) => !chosenVoice(entry)), agent]
     .sort((one, other) => String(one.createdAt || "").localeCompare(String(other.createdAt || "")) || String(one.id).localeCompare(String(other.id)));
-  let taken = [];
-  for (const entry of order) {
-    const voice = fishVoiceFor(entry, taken);
-    if (entry.id === agent.id) return voice;
-    taken.push(voice);
-    if (taken.length >= pool.length) taken = [];
-  }
-  return fishVoiceFor(agent);
+  return pool[order.findIndex((entry) => entry.id === agent.id) % pool.length];
 }
 
 /**
