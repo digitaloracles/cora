@@ -1,6 +1,6 @@
 [Unit]
 Description=Cora
-Documentation=https://github.com/turinglabsorg/cora
+Documentation=https://github.com/digitaloracles/cora
 After=network-online.target
 Wants=network-online.target
 

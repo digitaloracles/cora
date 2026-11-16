@@ -57,7 +57,7 @@ function vapidHeader(endpoint, keys, subject) {
 
 /** Notifications to the owner's devices that installed the panel and allowed them. */
 export class Push {
-  constructor({ store, secret = "", subject = "https://github.com/turinglabsorg/cora", log }) {
+  constructor({ store, secret = "", subject = "https://github.com/digitaloracles/cora", log }) {
     this.store = store;
     this.keys = secret ? vapidKeys(secret) : null;
     this.subject = subject;
