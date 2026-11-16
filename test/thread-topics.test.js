@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Brain } from "../src/brain.js";
-import { issueKeys, threadLeak, threadTopics, sharesTopic } from "../src/thread-topics.js";
+import { issueKeys, threadLeak, threadTopics, sharesTopic, topicPlace } from "../src/thread-topics.js";
 
 const G = "1521874685690642564";
 const channels = [
@@ -89,4 +89,21 @@ test("a job without an issue key speaks of a thread's topic only when it shares 
   assert.equal(sharesTopic("Verificare la disponibilità dei domini per musicfun", title), false);
   assert.equal(sharesTopic("Procedere con il lavoro su REF-73", title), false, "plain words and other keys do not count");
   assert.equal(sharesTopic("Controlla la chiamata", ""), false);
+});
+
+test("a job without a key finds the place whose title speaks of it, never a generic one", () => {
+  const places = [
+    { id: "10", name: "NOT-43 · voce e lavoro in chiamata", guildId: G, thread: true, parentId: "1" },
+    { id: "11", name: "Google Drive · verifica integrazione", guildId: G, thread: true, parentId: "1" },
+    { id: "12", name: "ragusapass", guildId: G, thread: false },
+    { id: "13", name: "Controllare se Claire e Sarax hanno accesso al locale, verificando i permessi effettivi", guildId: G, thread: true, parentId: "1" },
+    { id: "14", name: "Google Drive", guildId: "other", thread: true, parentId: "9" },
+  ];
+  const here = places[0];
+  assert.equal(topicPlace(places, here, "Verificare che l'integrazione con Google Drive funzioni, provando l'accesso e una lettura reale")?.id, "11");
+  assert.equal(topicPlace(places, here, "Verificare che Claire e Sarax abbiano accesso al locale podcast (non 843), controllando i permessi effettivi")?.id, "13", "a correction of a job goes to the job's thread");
+  assert.equal(topicPlace(places, here, "Controlla il login di RagusaPass su Safari")?.id, "12", "a one-word channel named after the project");
+  assert.equal(topicPlace(places, here, "Verificare e riportare l'esito con le prove reali"), null, "words every job uses tie it to nothing");
+  assert.equal(topicPlace(places, here, "Controlla il registro della voce in chiamata"), null, "the place it was asked in is not a candidate");
+  assert.equal(topicPlace(places, { id: "x", guildId: "none" }, "Google Drive"), null, "only the same server");
 });

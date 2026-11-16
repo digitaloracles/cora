@@ -23,14 +23,33 @@ export function issueKeys(text) {
 
 // Words of a thread title that say nothing about its topic.
 const PLAIN_WORDS = new Set(["lavoro", "lavori", "verifica", "controllo", "thread", "issue", "della", "delle", "dello", "degli", "nella", "nelle", "sulla", "sulle", "with", "from", "into", "about", "work", "check"]);
+// Stems of the words any job uses, whatever its topic: they never tie a job to a place.
+const PLAIN_STEMS = new Set(["verif", "contr", "ripor", "esito", "prove", "prova", "provan", "funzi", "siste", "guard", "hanno", "abbia", "quest", "quell", "perch", "anche", "sempr", "prima", "ancor", "tutto", "tutti", "tutte", "effet", "reale", "reali", "cerca", "fatto", "fare", "dopo", "come", "cosa", "dove", "quand", "sono", "esser", "deve", "devi", "ogni", "solo", "molto", "manda", "scriv", "repor", "verify", "make", "that", "this", "have", "shoul", "pleas"]);
 const stems = (text) => String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(KEY_TEXT, " ")
-  .split(/[^a-z0-9]+/).filter((word) => word.length >= 4 && !PLAIN_WORDS.has(word)).map((word) => word.slice(0, 5));
+  .split(/[^a-z0-9]+/).filter((word) => word.length >= 4 && !PLAIN_WORDS.has(word)).map((word) => word.slice(0, 5)).filter((stem) => !PLAIN_STEMS.has(stem));
 const KEY_TEXT = /\b[a-z][a-z0-9]{1,9}-\d{1,6}\b/gi;
 
 /** A job without an issue key that still speaks of the thread's topic: it shares a word of the thread's title. */
 export function sharesTopic(text, threadName) {
   const topic = new Set(stems(threadName));
   return Boolean(topic.size) && stems(text).some((word) => topic.has(word));
+}
+
+/**
+ * The place of the same server whose title speaks of a job without an issue key: it shares two words
+ * of the title, or every word of a short one (a channel named after a project). The closest wins.
+ */
+export function topicPlace(places, here, text) {
+  const words = new Set(stems(text));
+  let best = null;
+  for (const place of places || []) {
+    if (!place?.id || place.id === here?.id || !here?.guildId || place.guildId !== here.guildId) continue;
+    const title = [...new Set(stems(place.name))];
+    const shared = title.filter((word) => words.has(word)).length;
+    if (!shared || (shared < 2 && shared < title.length)) continue;
+    if (!best || shared > best.shared || (shared === best.shared && place.thread && !best.place.thread)) best = { place, shared };
+  }
+  return best?.place || null;
 }
 
 export function threadLink(thread) {

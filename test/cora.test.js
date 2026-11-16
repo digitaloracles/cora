@@ -4708,7 +4708,7 @@ describe("talking with the agents", () => {
     const issue = await app.orchestrator.fromCall({ agent: olga, channelId: VOICE_THREAD, speakerId: OWNER, speakerName: "Sam", said: "Olga, vai avanti con REF-73", task: "Procedere con REF-73: via libera di Sam", callName: "Cora voice" });
     assert.notEqual(issue, VOICE_THREAD, "another issue never lands in the NOT-43 thread");
     const opened = discord.state.threads?.find?.((thread) => thread.id === issue) || app.orchestrator.channelMeta(issue);
-    assert.match(opened.name, /^REF-73 · Procedere con REF-73/);
+    assert.match(opened.name, /^Procedere con REF-73/, "the key is already in the title");
     assert.equal(app.orchestrator.channelMeta(issue).parentId, CHANNEL, "opened beside the thread, under its channel");
     await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Olga" && item.channelId === issue), { what: "Olga working in the REF-73 thread" });
     await quiet();
@@ -4717,7 +4717,23 @@ describe("talking with the agents", () => {
     assert.match(app.orchestrator.channelMeta(plain).name, /^Verificare la disponibilità dei domini per musicfun/);
     await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Olga" && item.channelId === plain), { what: "Olga working in the domains thread" });
     await quiet();
-    assert.ok(!discord.state.webhookPosts.some((item) => item.channelId === VOICE_THREAD && /REF-73|domini/.test(item.content)), "nothing of the other jobs is written in the NOT-43 thread");
+    // The same topic again, in other words: the thread already opened for it, never a second one or the NOT-43 thread.
+    const again = await app.orchestrator.fromCall({ agent: olga, channelId: VOICE_THREAD, speakerId: OWNER, speakerName: "Sam", said: "No, i domini di musicfun su .fm", task: "Verificare i domini .fm per musicfun", callName: "Cora voice" });
+    assert.equal(again, plain, "a correction goes to the thread of the job it corrects");
+    await waitFor(() => discord.state.webhookPosts.filter((item) => item.username === "Olga" && item.channelId === plain).length >= 2, { what: "Olga working on the correction" });
+    await quiet();
+    // Called from a channel, a job whose topic has a thread goes there; a job no thread speaks of stays in the channel.
+    const fromChannel = await app.orchestrator.fromCall({ agent: olga, channelId: CHANNEL, speakerId: OWNER, speakerName: "Sam", said: "Olga, la disponibilità dei domini musicfun?", task: "Controlla la disponibilità dei domini musicfun", callName: "Cora voice" });
+    assert.equal(fromChannel, plain, "the topic's thread, not the channel");
+    await waitFor(() => discord.state.webhookPosts.filter((item) => item.username === "Olga" && item.channelId === plain).length >= 3, { what: "Olga working in the domains thread from the channel" });
+    await quiet();
+    // A key without a thread, asked from a channel: a thread of its own.
+    const keyed = await app.orchestrator.fromCall({ agent: olga, channelId: CHANNEL, speakerId: OWNER, speakerName: "Sam", said: "Olga, guarda REF-93", task: "Indagare i 503 su /map", callName: "Cora voice" });
+    assert.ok(![CHANNEL, VOICE_THREAD, issue, plain].includes(keyed));
+    assert.match(app.orchestrator.channelMeta(keyed).name, /^REF-93 · Indagare i 503/);
+    await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Olga" && item.channelId === keyed), { what: "Olga working in the REF-93 thread" });
+    await quiet();
+    assert.ok(!discord.state.webhookPosts.some((item) => item.channelId === VOICE_THREAD && /REF-73|REF-93|domini/.test(item.content)), "nothing of the other jobs is written in the NOT-43 thread");
   });
 
   test("a thread named after an issue keeps its topic: another thread's work is stopped and sent there, a question about it passes", async () => {
