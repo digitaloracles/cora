@@ -2,7 +2,7 @@
  * The cloud's pages, rendered on the server. Every value that comes from
  * people or providers goes through esc().
  */
-const REPO = "https://github.com/turinglabsorg/cora";
+const REPO = "https://github.com/digitaloracles/cora";
 /** The cloud's own address: pages shown on a space's name still load from here. */
 let BASE = "";
 /** Changes with the CSS and JS, so a deploy is never hidden behind the browser's cache. */

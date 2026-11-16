@@ -105,7 +105,7 @@ export class Discord extends EventEmitter {
   async request(method, path, { body, form, auth = true } = {}) {
     const safePath = path.replace(/\/webhooks\/(\d+)\/[^/?]+/, "/webhooks/$1/***");
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const headers = { "User-Agent": "DiscordBot (https://github.com/turinglabsorg/cora, 0.1)" };
+      const headers = { "User-Agent": "DiscordBot (https://github.com/digitaloracles/cora, 0.1)" };
       if (auth) headers.Authorization = `Bot ${this.token}`;
       const options = { method, headers };
       if (form) options.body = form;

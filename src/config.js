@@ -76,7 +76,7 @@ export const config = {
   codexModelsFile: setting("CODEX_MODELS") || "",
   hushBin: setting("HUSH_BIN") || "hush",
   vapidKey: env.VAPID_KEY || "",
-  publicUrl: setting("PUBLIC_URL") || "https://github.com/turinglabsorg/cora",
+  publicUrl: setting("PUBLIC_URL") || "https://github.com/digitaloracles/cora",
   sshAuthorizedKeys: setting("SSH_AUTHORIZED_KEYS") || join(homedir(), ".ssh", "authorized_keys"),
   sshJump: setting("SSH_JUMP") || `${userInfo().username}@${hostname().replace(/\.local$/i, "").toLowerCase()}`,
   ownerInstructions: setting("OWNER_INSTRUCTIONS") || join(homedir(), ".agents", "AGENTS.md"),
