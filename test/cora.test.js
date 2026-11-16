@@ -531,6 +531,7 @@ before(async () => {
     const system = String(body.messages[0]?.content || "");
     if (/^Scrivi la condizione di completamento/.test(system)) return { content: goals ? goals(body) : "NESSUNO" };
     if (/^Giudichi se un compito è finito/.test(system)) return { content: checks ? checks(body) : JSON.stringify({ met: true, reason: "" }) };
+    if (/^Controlli un agente mentre lavora/.test(system)) return { content: checks ? checks(body) : JSON.stringify({ blocked: false, reason: "" }) };
     if (/^Valuti i progressi di UN SOLO agente/.test(system)) return { content: progressReviews ? await progressReviews(body) : JSON.stringify({ loop: false, reason: "New progress.", evidence: [] }) };
     if (/^Valuti il disingaggio/.test(system)) return { content: JSON.stringify({ leave: departures ? await departures(body) : [] }) };
     if (/^Valuti l'intenzione/.test(system)) {
@@ -4887,6 +4888,34 @@ describe("talking with the agents", () => {
     assert.equal(app.store.value(`agentProgressPause:task-productive-review:${olga.id}`, null), null);
   });
 
+  test("a progress judge with no verdict lets work continue and pauses only after three checks in a row", async (t) => {
+    const originalShell = app.boxes.shell, originalEvery = app.brain.progressEvery;
+    let commands = 0, calls = 0, reviews = 0, limit = 25;
+    app.brain.progressEvery = 12;
+    app.boxes.shell = async () => ({ code: 0, output: `state ${++commands}` });
+    progressReviews = () => { reviews++; return "The judge could not answer as JSON."; };
+    replies.set("Olga", () => ++calls <= limit ? { tool_calls: [{ function: { name: "shell", arguments: { command: `unique-step-${calls}` } } }] } : { content: "DONE" });
+    t.after(() => { app.boxes.shell = originalShell; app.brain.progressEvery = originalEvery; progressReviews = null; });
+    const run = (id) => app.brain.loop({ agent: olga, mode: "chat", channel: { id, place: "isolated task" }, user: "Inspect and repair the requested service.", computer: true, task: true, maxSteps: 60, deadline: Date.now() + 30000, images: [] });
+    const continued = await run("judge-misses-continue");
+    assert.equal(reviews, 2); assert.equal(commands, 25); assert.equal(continued.stopped, false);
+    assert.equal(app.store.value(`agentProgressPause:judge-misses-continue:${olga.id}`, null), null);
+    assert.equal(app.store.value(`agentProgressJudgeMisses:judge-misses-continue:${olga.id}`).count, 2);
+    assert.ok(app.store.trace(continued.traceId).steps.some((entry) => entry.type === "note" && /senza verdetto \(2\/3\)/.test(entry.text)));
+    progressReviews = (body) => { reviews++; return JSON.stringify({ loop: false, reason: "Work advances.", evidence: [] }); };
+    calls = 0; commands = 0; reviews = 0; limit = 13;
+    await run("judge-misses-continue");
+    assert.equal(reviews, 1);
+    assert.equal(app.store.value(`agentProgressJudgeMisses:judge-misses-continue:${olga.id}`, null), null, "a verdict clears the misses");
+    progressReviews = () => { reviews++; return "still no JSON"; };
+    calls = 0; commands = 0; reviews = 0; limit = 50;
+    const paused = await run("judge-misses-pause");
+    assert.equal(reviews, 3); assert.equal(commands, 36); assert.equal(paused.stopped, true);
+    const pause = app.store.value(`agentProgressPause:judge-misses-pause:${olga.id}`);
+    assert.equal(pause.reason, "judge_unavailable");
+    assert.match(pause.message, /3 controlli di fila/);
+  });
+
   test("productive handoffs continue beyond eight turns and progress posts do not impose a cap", async () => {
     const THREAD = "1599000000000000833";
     discord.dispatch("THREAD_CREATE", { id: THREAD, guild_id: GUILD, parent_id: CHANNEL, type: 11, name: "Productive handoffs" });
@@ -8172,22 +8201,23 @@ describe("thread goal lifecycle", () => {
     app.boxes.shell = async (id, command) => { executed.push(command); return { code: 0, output: "The correct company cannot be inferred. The owner must identify it." }; };
     goals = () => "le risposte autorizzate sono inviate oppure è richiesto il dato proprietario mancante";
     let reviews = 0;
-    checks = (body) => { reviews++; assert.match(body.messages[1].content, /Controllo durante l'esecuzione/); return JSON.stringify({ met: false, blocked: true, reason: "Il proprietario deve identificare la società corretta." }); };
+    checks = (body) => { reviews++; assert.match(body.messages[0].content, /^Controlli un agente mentre lavora/); assert.match(body.messages[1].content, /Controllo durante l'esecuzione/); return JSON.stringify({ blocked: true, reason: "Il proprietario deve identificare la società corretta." }); };
     let step = 0;
     replies.set("Iris", () => {
       step++;
-      if (step <= 3) return { tool_calls: [{ function: { name: "shell", arguments: { command: `lookup-company-${step}` } } }] };
-      if (step === 4) return { tool_calls: [{ function: { name: "ask_owner", arguments: { question: "A quale società si riferisce questa pratica?" } } }] };
+      if (step <= 5) return { tool_calls: [{ function: { name: "shell", arguments: { command: `lookup-company-${step}` } } }] };
+      if (step === 6) return { tool_calls: [{ function: { name: "ask_owner", arguments: { question: "A quale società si riferisce questa pratica?" } } }] };
       return { content: "Attendo il dato necessario per completare le risposte." };
     });
     try {
       const result = await app.brain.chatTurn({ agent: iris, history: [{ id: "approval", at: Date.now(), kind: "owner", authorName: "Sam", content: "Invia le risposte approvate" }], channel: { id: CHANNEL, name: "test" }, forced: true, computer: true });
       assert.equal(result.asked, true);
-      assert.deepEqual(executed, ["lookup-company-1", "lookup-company-2"]);
-      assert.equal(reviews, 1);
+      assert.deepEqual(executed, ["lookup-company-1", "lookup-company-2", "lookup-company-3", "lookup-company-4"], "a single blocked verdict only warns");
+      assert.equal(reviews, 2);
       const trace = app.store.trace(result.traceId);
-      assert.ok(trace.steps.some((entry) => entry.type === "note" && /Verifica progressi/.test(entry.text)));
-      assert.ok(trace.steps.some((entry) => entry.name === "shell" && /lookup-company-3/.test(JSON.stringify(entry.args)) && !entry.ok));
+      assert.ok(trace.steps.some((entry) => entry.type === "note" && /Verifica progressi: possibile dipendenza esterna/.test(entry.text)));
+      assert.ok(trace.steps.some((entry) => entry.type === "note" && /Verifica progressi: dipendenza esterna/.test(entry.text)));
+      assert.ok(trace.steps.some((entry) => entry.name === "shell" && /lookup-company-5/.test(JSON.stringify(entry.args)) && !entry.ok));
     } finally { app.boxes.shell = shell; app.brain.progressEvery = every; }
   });
 

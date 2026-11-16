@@ -1,6 +1,8 @@
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { assessProgress, progressWindows } from "../src/agent-progress.js";
+import { assessProgress, judgeOrder, progressWindows, resetJudgeHealth } from "../src/agent-progress.js";
+
+beforeEach(resetJudgeHealth);
 
 const agent = { id: "worker", name: "Worker" };
 const settings = { decisionModel: "ollama/judge", decisionBackups: [{ model: "ollama/backup", subscriptionId: "sub_backup", credentialId: "" }], language: "en" };
@@ -96,4 +98,34 @@ test("non-JSON replies are recorded as invalid verdicts before trying the backup
   const verdict = await check(llm);
   assert.equal(verdict.available, true);
   assert.deepEqual(verdict.attempts.map((item) => item.status), ["invalid_verdict", "accepted"]);
+});
+
+test("a judge without account or quota is tried after the judges that can answer, until its cooldown ends", async () => {
+  const three = { ...settings, decisionBackups: [{ model: "ollama/second" }, { model: "ollama/third" }] };
+  const failing = new Map([["ollama/judge", "429 quota exhausted"], ["ollama/second", "subscription da collegare"]]);
+  const llm = fixture(({ model }) => { if (failing.has(model)) throw new Error(failing.get(model)); return { loop: false, reason: "Work advances.", evidence: [] }; });
+  const first = await check(llm, { settings: three });
+  assert.deepEqual(first.attempts.map((item) => [item.model, item.status]), [["ollama/judge", "rate_limit"], ["ollama/second", "authentication"], ["ollama/third", "accepted"]]);
+  llm.calls.length = 0;
+  const second = await check(llm, { settings: three });
+  assert.equal(second.available, true);
+  assert.deepEqual(llm.calls.map((item) => item.model), ["ollama/third"], "the live judge answers first");
+  failing.clear();
+  const later = Date.now() + 31 * 60 * 1000;
+  assert.deepEqual(judgeOrder([{ model: "ollama/judge" }, { model: "ollama/second" }, { model: "ollama/third" }], later).map((item) => item.model), ["ollama/judge", "ollama/second", "ollama/third"], "cooldowns end");
+});
+
+test("cooling judges remain reserves and a verdict restores their place", async () => {
+  const primaryDown = fixture(({ model }) => { if (model === "ollama/judge") throw new Error("rate limit"); return { loop: false, reason: "ok", evidence: [] }; });
+  await check(primaryDown);
+  const recovered = fixture(() => ({ loop: false, reason: "ok", evidence: [] }));
+  await check(recovered);
+  assert.deepEqual(recovered.calls.map((item) => item.model), ["ollama/backup"]);
+  const onlyCooling = fixture(({ model }) => { if (model === "ollama/backup") throw new Error("timeout-free failure"); return { loop: false, reason: "ok", evidence: [] }; });
+  const verdict = await check(onlyCooling);
+  assert.equal(verdict.available, true, "a judge in cooldown is still tried when the others fail");
+  assert.deepEqual(onlyCooling.calls.map((item) => item.model), ["ollama/backup", "ollama/judge"]);
+  const again = fixture(() => ({ loop: false, reason: "ok", evidence: [] }));
+  await check(again);
+  assert.deepEqual(again.calls.map((item) => item.model), ["ollama/judge"], "an accepted verdict clears the cooldown");
 });
