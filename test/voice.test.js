@@ -260,9 +260,9 @@ test("with Fish connected a voice message speaks with the agent's call voice, at
       opened.push(tts);
       return tts;
     },
+    async transcribe() { return { text: "Ada, domani alle nove?", language: "it" }; },
   };
   replies.set("Ada", () => ({ content: "Sì Sam, alle nove." }));
-  soniox.state.transcripts.push("Ada, domani alle nove?");
   const spokenBefore = soniox.state.speech.length;
   discord.say({ content: "", flags: 1 << 13, attachments: [discord.attachment("voice-message.ogg", RECORDING, "audio/ogg")] });
 
@@ -279,6 +279,79 @@ test("with Fish connected a voice message speaks with the agent's call voice, at
   await quiet();
 });
 
+/** Fish connected as the call's voice: it speaks a fixed tone and hears what `heard` holds. */
+function connectFish(app, heard) {
+  const uploads = [];
+  app.brain.voiceCalls.fish = {
+    enabled: true,
+    openTts() {
+      const tts = { handlers: [], ready: Promise.resolve(), on(event, fn) { if (event === "audio") this.handlers.push(fn); return this; },
+        sendText() {}, flush() {}, async end() { for (const fn of this.handlers) fn(Buffer.alloc(24000 * 2 * 0.5)); }, abort() {} };
+      return tts;
+    },
+    async transcribe(bytes, options) { uploads.push({ bytes: bytes.length, ...options }); return { text: heard.shift() || "", language: "it" }; },
+  };
+  return uploads;
+}
+
+test("with Fish connected Discord and Telegram voice messages are heard by Fish, never by Soniox", async (t) => {
+  const { app, discord, telegram, soniox, replies, prompts, botTokens, call, quiet } = await world(t);
+  const heard = ["Ada, domani alle nove?", "Ada, mi ricordi di chiamare Luca?"];
+  const uploads = connectFish(app, heard);
+  const ADA = "600000000000000079";
+  botTokens.CORA_BOT_ADA = "ada-token";
+  discord.state.botUsers.set("ada-token", { id: ADA, username: "Ada" });
+  const ada = (await call("/api/agents", { method: "POST", body: { name: "Ada", model: "ollama/test-model", chattiness: 0, tools: false, gender: "female", voiceLanguage: "it" } })).data;
+  await waitFor(() => app.bots.client(ada.id), { what: "Ada's bot online" });
+  replies.set("Ada", () => ({ content: "Va bene." }));
+
+  discord.say({ content: "", flags: 1 << 13, attachments: [discord.attachment("voice-message.ogg", RECORDING, "audio/ogg")] });
+  await waitFor(() => discord.state.botPosts.find((post) => post.token === "ada-token" && post.flags === 1 << 13), { what: "Ada's Discord voice message" });
+  await quiet();
+  assert.match(prompts.filter((item) => item.name === "Ada").at(-1).text, /Sam ★: \[messaggio vocale: «Ada, domani alle nove\?»\]/);
+
+  const MAIN_TG = "1111111:AAmainmainmainmainmainmainmainmainmain";
+  telegram.addBot(MAIN_TG, { id: 1111111, username: "cora_main_bot", first_name: "Cora" });
+  await call("/api/telegram/token", { method: "PUT", body: { token: MAIN_TG } });
+  await call("/api/settings", { method: "PUT", body: { transport: "telegram", telegramChatIds: [TG_GROUP] } });
+  await waitFor(() => app.telegram.state === "ready", { what: "Telegram polling" });
+  const seb = { id: Number(TG_OWNER), first_name: "Seb", is_bot: false };
+  telegram.push({ chat: { id: Number(TG_GROUP), type: "supergroup", title: "La banda" }, from: seb, voice: { file_id: telegram.file("voice-fish", RECORDING), duration: 3, mime_type: "audio/ogg", file_size: RECORDING.length } });
+  await waitFor(() => telegram.state.sent.find((item) => item.method === "sendVoice"), { what: "Ada's Telegram voice note" });
+  await quiet();
+  assert.match(prompts.filter((item) => item.name === "Ada").at(-1).text, /Seb ★: \[messaggio vocale: «Ada, mi ricordi di chiamare Luca\?»\]/);
+
+  assert.equal(uploads.length, 2, "Fish heard both recordings");
+  assert.deepEqual(uploads.map((item) => item.filename), ["voice-message.ogg", "voice.ogg"]);
+  assert.ok(uploads.every((item) => item.bytes >= RECORDING.length));
+  assert.equal(soniox.state.uploads.length, 0, "no recording went to Soniox");
+  assert.equal(soniox.state.transcriptions.length, 0, "Soniox transcribed nothing");
+  assert.equal(soniox.state.speech.length, 0, "Soniox said nothing");
+});
+
+test("with Fish connected a Slack audio clip is heard by Fish, never by Soniox", async (t) => {
+  const { app, slack, soniox, replies, prompts, call, quiet } = await world(t);
+  const uploads = connectFish(app, ["Silvia, mi prepari il preventivo per domani?"]);
+  slack.addApp({ botToken: "xoxb-main-000000000001", appToken: "xapp-main-000000000001", id: "U0000000100", name: "cora", channels: [SLACK_CHANNEL] });
+  await call("/api/slack/token", { method: "PUT", body: { botToken: "xoxb-main-000000000001", appToken: "xapp-main-000000000001" } });
+  await call("/api/settings", { method: "PUT", body: { transport: "slack", slackChannelIds: [SLACK_CHANNEL] } });
+  await waitFor(() => app.slack.state === "ready", { what: "the Slack socket" });
+  const silvia = (await call("/api/agents", { method: "POST", body: { name: "Silvia", model: "ollama/test-model", chattiness: 0, tools: false, gender: "female" } })).data;
+  slack.addApp({ botToken: "xoxb-silvia-00000000001", appToken: "xapp-silvia-00000000001", id: "U0000000101", name: "silvia", channels: [SLACK_CHANNEL] });
+  await call(`/api/agents/${silvia.id}/slack-bot`, { method: "PUT", body: { botToken: "xoxb-silvia-00000000001", appToken: "xapp-silvia-00000000001" } });
+  await waitFor(() => app.skBots.client(silvia.id)?.state === "ready", { what: "Silvia's app" });
+  replies.set("Silvia", () => ({ content: "Va bene, lo preparo." }));
+  slack.say({ text: "", files: [slack.file("audio_message.m4a", RECORDING, "audio/mp4", { subtype: "slack_audio" })] });
+  const clip = await waitFor(() => slack.state.posts.find((post) => post.file), { what: "Silvia's audio clip" });
+  assert.equal(clip.app, "silvia");
+  await quiet();
+  assert.match(prompts.find((item) => item.name === "Silvia").text, /Sam ★: \[messaggio vocale: «Silvia, mi prepari il preventivo per domani\?»\]/);
+  assert.equal(uploads.length, 1, "two apps heard it, Fish transcribed it once");
+  assert.equal(uploads[0].filename, "audio_message.m4a");
+  assert.equal(soniox.state.uploads.length, 0, "no recording went to Soniox");
+  assert.equal(soniox.state.speech.length, 0, "Soniox said nothing");
+});
+
 test("with Fish connected the Voice panel offers Fish voices, previews one, and the one picked speaks in calls and voice messages", async (t) => {
   const { app, discord, soniox, replies, botTokens, call, quiet } = await world(t);
   const opened = [];
@@ -290,6 +363,7 @@ test("with Fish connected the Voice panel offers Fish voices, previews one, and 
       opened.push(tts);
       return tts;
     },
+    async transcribe() { return { text: "Ada, ci sei?", language: "it" }; },
   };
   const voices = (await call("/api/voices")).data;
   assert.equal(voices.provider, "fish");
@@ -313,7 +387,6 @@ test("with Fish connected the Voice panel offers Fish voices, previews one, and 
   await waitFor(() => app.bots.client(ada.id), { what: "Ada's bot online" });
   assert.equal(app.brain.voiceCalls.voiceOf(app.store.agents().find((agent) => agent.id === ada.id)), picked.id, "the call voice is the one picked");
   replies.set("Ada", () => ({ content: "Eccomi." }));
-  soniox.state.transcripts.push("Ada, ci sei?");
   discord.say({ content: "", flags: 1 << 13, attachments: [discord.attachment("voice-message.ogg", RECORDING, "audio/ogg")] });
   await waitFor(() => discord.state.botPosts.find((post) => post.token === "ada-token" && post.flags === 1 << 13), { what: "Ada's voice message" });
   assert.equal(opened.at(-1).options.voice, picked.id, "the voice message is said with the voice picked");

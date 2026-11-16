@@ -890,6 +890,11 @@ export class VoiceCalls {
     return Boolean(this.fish?.enabled);
   }
 
+  /** Voice messages are heard by Fish too when it is connected: the same ears as in a call. */
+  transcribe(bytes, options) {
+    return this.fish.transcribe(bytes, options);
+  }
+
   /** A voice message said as the agent says it in a call: same Fish voice, same speed. 24 kHz mono PCM. */
   async speech(agent, text, language = "") {
     const voice = this.voiceOf(agent);
