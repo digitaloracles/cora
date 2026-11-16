@@ -117,7 +117,7 @@ test("the voice speaks at the measured pace, and the pace can be chosen without 
 test("the call prompt keeps the agents from filler confirmations", () => {
   const { app } = calls();
   const prompt = app.prompt(call(), agent);
-  assert.match(prompt.system, /mai «ci sono»/);
+  assert.match(prompt.system, /Non riempire i silenzi e non confermare la tua presenza a un collega/);
   assert.match(prompt.system, /non si riapre/);
   assert.match(prompt.system, /ESCI/);
 });

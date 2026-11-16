@@ -627,7 +627,9 @@ export class VoiceCalls {
     return false;
   }
 
-  prompt(call, agent, extra = null) {
+  prompt(call, agent, extra = null, { insist = false } = {}) {
+    // A person spoke last and this agent was picked to answer: they get words, never silence.
+    const toMe = Boolean((extra || call.history.at(-1)) && !(extra || call.history.at(-1)).agent);
     const others = [...call.members.values()].filter((member) => member.agent.id !== agent.id).map((member) => member.agent.name);
     const people = this.people(call).map((person) => person.name).filter(Boolean);
     const language = this.language(agent);
@@ -642,9 +644,11 @@ export class VoiceCalls {
         `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, una o due frasi brevi, al massimo una ventina di parole.`,
         "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
         "Parli solo per te.",
-        "Non confermare la tua presenza e non riempire i silenzi: mai «ci sono», «sono qui», «ti sento». Se non c'è niente da dire, PASS.",
+        toMe
+          ? "Una persona ti sta parlando: rispondi sempre a voce, anche solo «sì, ci sono» o una frase breve. Qui PASS non è ammesso."
+          : "Non riempire i silenzi e non confermare la tua presenza a un collega. Se non c'è niente da dire, PASS.",
         "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
-        "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto). Se un collega ha già risposto, non aggiungere niente: PASS.",
+        "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto).",
         ...(this.dispatch ? [
           "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, con la sigla della issue se c'è (es. NOT-43). Cora lo porta nel thread di quella issue, altrimenti nella conversazione da cui sei entrato in chiamata. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
           "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
@@ -653,11 +657,12 @@ export class VoiceCalls {
         ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
         ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
         "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
-        "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS.",
+        ...(toMe ? [] : ["Se un collega ha già risposto, non aggiungere niente: PASS.", "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS."]),
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
     const lines = [...call.history, ...(extra ? [extra] : [])].map((entry) => entry.agent?.id === agent.id ? `Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
-    const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}\n\nLa tua risposta a voce:`;
+    const nudge = insist ? "\n\nHai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve." : "";
+    const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}${nudge}\n\nLa tua risposta a voce:`;
     return { system, prompt };
   }
 
@@ -700,6 +705,13 @@ export class VoiceCalls {
       leaving = lastIsHuman && LEAVE_LINE.test(raw);
       reply = splitWork(raw.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
       text = spokenReply(reply.said, agent.name);
+      // A person spoke to this agent and got PASS: it is asked once more, plainly, to answer.
+      if (!text && !reply.task && !leaving && lastIsHuman && !controller.signal.aborted) {
+        const again = String(await this.think(agent, this.prompt(call, agent, null, { insist: true }), controller.signal) || "");
+        leaving = LEAVE_LINE.test(again);
+        reply = splitWork(again.replace(new RegExp(LEAVE_LINE.source, "gim"), ""));
+        text = spokenReply(reply.said, agent.name);
+      }
     } finally {
       if (call.thinking === thinking) call.thinking = null;
     }

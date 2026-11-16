@@ -223,6 +223,23 @@ test("voice calls: a person who keeps talking over an agent stops its voice, and
   assert.equal(call.history.length, 2, "a backchannel is not a turn");
 });
 
+test("voice calls: a person who speaks to an agent always gets words, never PASS", async (t) => {
+  const { calls, fish, links, asked, log } = setup({ replies: { Radix: (prompt) => (/Hai risposto PASS/.test(prompt) ? "Sì, ci sono." : "PASS") } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE });
+  const [link] = links;
+  link.emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, ci sei?", user_turn: true });
+  await until(() => link.speeches.length === 1, "Radix answering");
+  assert.equal(fish.ttss[0].text, "Sì, ci sono.");
+  assert.match(asked[0].system, /Una persona ti sta parlando: rispondi sempre/);
+  assert.doesNotMatch(asked[0].system, /mai «ci sono»/);
+  assert.doesNotMatch(asked[0].system, /rispondi esattamente PASS/);
+  assert.equal(asked.length, 2, "one PASS, then asked once more");
+  assert.ok(!log.some((entry) => /non risponde \(PASS/.test(entry.text)));
+});
+
 test("voice calls: an agent takes on a job and keeps talking; a job for a colleague goes to them; only a person starts one", async (t) => {
   const jobs = [];
   let radixReply = "Sì, ci lavoro subito.\nLAVORO: Controlla i 503 di REF-93 nel Feed production";
