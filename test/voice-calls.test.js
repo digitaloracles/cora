@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { VoiceCalls, namedAgent, fishVoiceFor, agentVoice, spokenReply, splitWork, FISH_VOICES } from "../src/voice-calls.js";
+import { VoiceCalls, namedAgent, fishVoiceFor, agentVoice, spokenReply, splitWork, voiceGain, FISH_CATALOG, FISH_VOICES } from "../src/voice-calls.js";
 import { Upsampler, toMono, peakOf } from "../src/discord-voice.js";
 
 const GUILD = "g1";
@@ -643,7 +643,11 @@ test("voice calls: an agent has one voice, the same in every call and in its voi
   const older = { ...radix, createdAt: "2026-01-01" };
   const alone = agentVoice(older, [older]);
   assert.equal(agentVoice(older, [older, nico]), alone, "a colleague made later never changes a voice");
-  assert.notEqual(agentVoice(nico, [older, nico]), alone, "two agents of the instance get different voices while the pool lasts");
+  assert.equal(alone, FISH_VOICES.male[0], "the voice chosen for the gender");
+  assert.equal(agentVoice(nico, [older, nico]), FISH_VOICES.male[0], "every agent of a gender speaks with the voice chosen for it");
+  assert.equal(agentVoice({ ...ada, createdAt: "2026-01-03" }, [older, nico]), FISH_VOICES.female[0]);
+  assert.equal(agentVoice({ ...nico, voice: FISH_CATALOG[2].id }, [older, nico]), FISH_CATALOG[2].id, "a Fish voice picked in the panel");
+  assert.equal(agentVoice({ ...nico, voice: "Giulia" }, [older, nico]), FISH_VOICES.male[0], "a Soniox voice is not a Fish voice");
   assert.equal(agentVoice({ ...older, fishVoice: "chosen" }, [older, nico]), "chosen");
 
   await calls.join(radix, { channelId: VOICE });
@@ -659,4 +663,20 @@ test("voice calls: an agent has one voice, the same in every call and in its voi
   assert.equal(note.language, "it");
   assert.equal(pcm.length, 9600);
   assert.equal(fish.ttss.at(-1).text, "Ciao Seb.");
+});
+
+test("voice calls: a voice Fish makes quieter is raised to the others' loudness, across chunk boundaries, without wrapping", () => {
+  const quiet = FISH_CATALOG.find((voice) => voice.gain);
+  assert.equal(quiet.id, FISH_VOICES.female[0]);
+  const same = voiceGain(FISH_VOICES.male[0]);
+  const raw = Buffer.from([1, 2, 3, 4]);
+  assert.equal(same(raw), raw, "a voice at the right loudness is left untouched");
+  const louder = voiceGain(quiet.id);
+  const pcm = Buffer.alloc(6);
+  pcm.writeInt16LE(1000, 0);
+  pcm.writeInt16LE(-20000, 2);
+  pcm.writeInt16LE(30000, 4);
+  const out = Buffer.concat([louder(pcm.subarray(0, 3)), louder(pcm.subarray(3))]);
+  assert.equal(out.length, 6);
+  assert.deepEqual([out.readInt16LE(0), out.readInt16LE(2), out.readInt16LE(4)], [Math.round(1000 * quiet.gain), -32768, 32767]);
 });

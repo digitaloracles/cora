@@ -4,7 +4,7 @@ import { childEnv } from "../src/cli.js";
 import { startCora } from "../src/main.js";
 import { Store } from "../src/store.js";
 import { Voice, accentOf, speakable, speechParts, wavShape } from "../src/voice.js";
-import { FISH_VOICES } from "../src/voice-calls.js";
+import { FISH_CATALOG, FISH_VOICES } from "../src/voice-calls.js";
 const FISH_FEMALE = FISH_VOICES.female;
 import { CHANNEL, GUILD, MAIN_TOKEN, SLACK_CHANNEL, TG_GROUP, TG_OWNER, fakeDiscord, fakeDocker, fakeOllama, fakeSlack, fakeSoniox, fakeTelegram, sleep, tempHome, toneWav, waitFor } from "./helpers.js";
 
@@ -172,7 +172,8 @@ async function world(t) {
   const cookie = login.headers.get("set-cookie").split(";")[0];
   const call = async (path, { method = "GET", body } = {}) => {
     const response = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, "X-Cora": "1", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-    return { status: response.status, data: await response.json() };
+    const type = response.headers.get("content-type") || "";
+    return { status: response.status, type, data: type.startsWith("audio/") ? Buffer.from(await response.arrayBuffer()) : await response.json() };
   };
   const quiet = () => waitFor(() => app.orchestrator.quiet(), { what: "agents to stop talking", timeout: 30000 });
   return { app, discord, telegram, slack, soniox, replies, prompts, botTokens, call, quiet, delivery };
@@ -275,6 +276,47 @@ test("with Fish connected a voice message speaks with the agent's call voice, at
   assert.ok(FISH_FEMALE.includes(tts.options.voice));
   assert.equal(tts.options.speed, app.brain.voiceCalls.speechSpeed(ada));
   assert.equal(tts.options.language, "it");
+  await quiet();
+});
+
+test("with Fish connected the Voice panel offers Fish voices, previews one, and the one picked speaks in calls and voice messages", async (t) => {
+  const { app, discord, soniox, replies, botTokens, call, quiet } = await world(t);
+  const opened = [];
+  app.brain.voiceCalls.fish = {
+    enabled: true,
+    openTts(options) {
+      const tts = { options, text: "", handlers: [], ready: Promise.resolve(), on(event, fn) { if (event === "audio") this.handlers.push(fn); return this; },
+        sendText(text) { this.text += text; }, flush() {}, async end() { for (const fn of this.handlers) fn(Buffer.alloc(24000 * 2 * 0.5)); }, abort() {} };
+      opened.push(tts);
+      return tts;
+    },
+  };
+  const voices = (await call("/api/voices")).data;
+  assert.equal(voices.provider, "fish");
+  assert.deepEqual(voices.voices.map((voice) => voice.id), FISH_CATALOG.map((voice) => voice.id));
+  assert.ok(voices.voices.every((voice) => voice.name && ["male", "female"].includes(voice.gender)));
+  const picked = FISH_CATALOG.find((voice) => voice.gender === "female" && !FISH_FEMALE.includes(voice.id));
+  const spokenBefore = soniox.state.speech.length;
+  const preview = await call("/api/voices/preview", { method: "POST", body: { voice: picked.id, language: "it" } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.type, "audio/mpeg");
+  assert.ok(preview.data.length > 1000, "an MP3 of the Fish speech");
+  assert.equal(opened.at(-1).options.voice, picked.id, "the preview is said with the voice picked");
+  assert.equal(soniox.state.speech.length, spokenBefore, "Soniox does not speak the preview");
+  assert.equal((await call("/api/voices/preview", { method: "POST", body: { voice: "Giulia", language: "it" } })).status, 400, "a Soniox voice is not a Fish voice");
+
+  const ADA = "600000000000000079";
+  botTokens.CORA_BOT_ADA = "ada-token";
+  discord.state.botUsers.set("ada-token", { id: ADA, username: "Ada" });
+  const ada = (await call("/api/agents", { method: "POST", body: { name: "Ada", model: "ollama/test-model", chattiness: 0, tools: false, gender: "female", voice: picked.id, voiceLanguage: "it" } })).data;
+  assert.equal(ada.voice, picked.id);
+  await waitFor(() => app.bots.client(ada.id), { what: "Ada's bot online" });
+  assert.equal(app.brain.voiceCalls.voiceOf(app.store.agents().find((agent) => agent.id === ada.id)), picked.id, "the call voice is the one picked");
+  replies.set("Ada", () => ({ content: "Eccomi." }));
+  soniox.state.transcripts.push("Ada, ci sei?");
+  discord.say({ content: "", flags: 1 << 13, attachments: [discord.attachment("voice-message.ogg", RECORDING, "audio/ogg")] });
+  await waitFor(() => discord.state.botPosts.find((post) => post.token === "ada-token" && post.flags === 1 << 13), { what: "Ada's voice message" });
+  assert.equal(opened.at(-1).options.voice, picked.id, "the voice message is said with the voice picked");
   await quiet();
 });
 

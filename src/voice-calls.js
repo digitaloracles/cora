@@ -9,11 +9,49 @@ import { speakable } from "./voice.js";
  * each other as the words they said, without a round trip through speech to text.
  */
 
-// Public Fish voices that speak Italian naturally: an agent without a chosen voice gets one of its gender.
+// The Fish voices an agent can be given in its Voice panel: Italian voices that are not clones of public figures.
+// The first of each gender is the one Seb chose on 16/11 (NOT-43); it speaks in calls and in voice messages alike.
+// gain brings a voice Fish makes quieter up to the loudness of the others.
+export const FISH_CATALOG = [
+  { id: "b525ef2064b549189d4ab19715da62c4", name: "Italian", gender: "male", description: "Maschile, misurata e professionale." },
+  { id: "12c4a1ac13a5400894585c0ad9bc046b", name: "Oracolo", gender: "female", description: "Femminile, morbida e gentile.", gain: 2.5 },
+  { id: "e103dbb3b9994a04a7feb84b4cf16e98", name: "Gianluca", gender: "male", description: "Maschile, calda e sincera, ritmo calmo." },
+  { id: "e2d4a9a392274479aba57d8c7226d8fd", name: "Voce Narrativa Chiara", gender: "male", description: "Maschile, calma e chiara." },
+  { id: "59ac2b0ad66641b5ab4666d3ed89e5d4", name: "Lorenzo", gender: "male", description: "Maschile, giovane, da assistente vocale." },
+  { id: "f4fb80fb198b4aa1abf4d275b8e4da79", name: "Voce Chiara e Motivazionale", gender: "male", description: "Maschile, chiara e calma." },
+  { id: "906b32c36ba047a3b095713a14a4ba68", name: "Voce Giovane Chiara", gender: "male", description: "Maschile, giovane, da spiegazioni tecniche." },
+  { id: "6edde7ee3b284cce80f0c06d8b0014e9", name: "Giorgia", gender: "female", description: "Femminile, chiara e sicura." },
+  { id: "d17f68089d2f4e7b81ee3ffbfeb13f2a", name: "Catera", gender: "female", description: "Femminile, calma e serena." },
+  { id: "ab43c9e43e4b4b65bf43735360718b95", name: "Assuntazza", gender: "female", description: "Femminile, calma e misurata." },
+  { id: "0e36e185d0654d5bac3d24331562a0cc", name: "Giulia", gender: "female", description: "Femminile, giovane, da assistente vocale." },
+  { id: "5fe29da74b3a4c20b3d6beb745f019a2", name: "Mio", gender: "female", description: "Femminile, morbida e rilassata.", gain: 2.5 },
+];
+// The automatic voice of each gender: every agent without a voice of its own speaks with it.
 export const FISH_VOICES = {
-  male: ["05ec491eed4b4e49b09b874b116a6d2d", "71b5cb1b95714840839cf2cd39534bde", "90bae7a6dfc843f9acad0c8259f93e7c"],
-  female: ["de56cf2236664adb863c0e34bed1f078", "ef02f46e6a7540759f9d767d7e22c2e5", "6d4fe655c7a14aabbb8e0e5d9fd62b41"],
+  male: ["b525ef2064b549189d4ab19715da62c4"],
+  female: ["12c4a1ac13a5400894585c0ad9bc046b"],
 };
+
+/** A voice Fish makes quieter than the others is raised to their loudness: 16-bit PCM in chunks, clipped at full scale. */
+export function voiceGain(voice) {
+  const gain = FISH_CATALOG.find((item) => item.id === voice)?.gain || 1;
+  if (gain === 1) return (pcm) => pcm;
+  let carry = null;
+  return (pcm) => {
+    const data = carry ? Buffer.concat([carry, pcm]) : pcm;
+    const even = data.length - (data.length % 2);
+    carry = even < data.length ? Buffer.from(data.subarray(even)) : null;
+    const out = Buffer.alloc(even);
+    for (let index = 0; index < even; index += 2) out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(data.readInt16LE(index) * gain))), index);
+    return out;
+  };
+}
+const FISH_IDS = new Set(FISH_CATALOG.map((voice) => voice.id));
+
+/** The Fish voice picked for an agent: its own setting, or the panel's choice when it is a Fish voice. */
+export function chosenVoice(agent) {
+  return agent?.fishVoice || (FISH_IDS.has(agent?.voice) ? agent.voice : "");
+}
 const SAMPLE_RATE = 48000;
 const HISTORY = 30;
 const MAX_REPLY = 280;
@@ -100,7 +138,7 @@ export function namedAgent(text, agents) {
 
 /** A Fish voice for an agent that has not chosen one: stable, of its gender, different between agents where it can be. */
 export function fishVoiceFor(agent, taken = []) {
-  if (agent.fishVoice) return agent.fishVoice;
+  if (chosenVoice(agent)) return chosenVoice(agent);
   const pool = FISH_VOICES[agent.gender === "female" ? "female" : "male"];
   let hash = 0;
   for (const char of String(agent.id)) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -116,7 +154,7 @@ export function fishVoiceFor(agent, taken = []) {
  * the pool in the order they were made, so who else is in a call never changes an agent's voice.
  */
 export function agentVoice(agent, agents = []) {
-  if (agent.fishVoice) return agent.fishVoice;
+  if (chosenVoice(agent)) return chosenVoice(agent);
   const kind = (entry) => (entry.gender === "female" ? "female" : "male");
   const pool = FISH_VOICES[kind(agent)];
   const order = [...agents.filter((entry) => entry.id !== agent.id && kind(entry) === kind(agent)), agent]
@@ -849,9 +887,11 @@ export class VoiceCalls {
 
   /** A voice message said as the agent says it in a call: same Fish voice, same speed. 24 kHz mono PCM. */
   async speech(agent, text, language = "") {
-    const tts = this.fish.openTts({ voice: this.voiceOf(agent), language: language || this.language(agent), latency: "normal", speed: this.speechSpeed(agent) });
+    const voice = this.voiceOf(agent);
+    const tts = this.fish.openTts({ voice, language: language || this.language(agent), latency: "normal", speed: this.speechSpeed(agent) });
     const chunks = [];
-    tts.on("audio", (pcm) => chunks.push(pcm));
+    const louder = voiceGain(voice);
+    tts.on("audio", (pcm) => chunks.push(louder(pcm)));
     try {
       await tts.ready;
       tts.sendText(text);
@@ -884,9 +924,10 @@ export class VoiceCalls {
     try {
       const speech = link.speak();
       speaking.speech = speech;
+      const louder = voiceGain(member.voice);
       tts.on("audio", (pcm) => {
         if (!firstAudio) firstAudio = Date.now() - started;
-        if (call.speaking === speaking) speech.write(pcm);
+        if (call.speaking === speaking) speech.write(louder(pcm));
       });
       await tts.ready;
       tts.sendText(text);

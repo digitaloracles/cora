@@ -2779,7 +2779,8 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
 const VOICE_LANGUAGE_NAMES = { it: "Italiano", en: "English", es: "Español", fr: "Français", de: "Deutsch", pt: "Português" };
 
 /**
- * The agent's voice: the language it speaks, a Soniox voice heard before it is chosen, and when it answers out loud.
+ * The agent's voice: the language it speaks, a voice heard before it is chosen, and when it answers out loud.
+ * With Fish connected the voices are Fish's, the same one in voice calls and in voice messages; otherwise Soniox's.
  * The voices offered follow the agent's gender, in the order the server picks the automatic one.
  */
 function voicePanel(agent, genderInput) {
@@ -2790,6 +2791,7 @@ function voicePanel(agent, genderInput) {
   const about = h("span", { class: "voice-about" });
   const player = h("audio", { class: "voice-preview", controls: true, hidden: true });
   let catalog = [];
+  let provider = "soniox";
   const spoken = () => language.value || S.data.settings.language || "it";
   // Of the agent's gender (a neutral one takes any); native in the language first, then the ones with no accent of their own.
   const fits = () => {
@@ -2802,10 +2804,10 @@ function voicePanel(agent, genderInput) {
   const fill = () => {
     const chosen = voice.value;
     voice.replaceChildren(h("option", { value: "" }, "Automatica"),
-      fits().map((item) => h("option", { value: item.id, selected: item.id === chosen }, raw(`${item.id}${item.gender ? ` · ${item.gender}` : ""}`))));
+      ...fits().map((item) => h("option", { value: item.id, selected: item.id === chosen }, raw(`${item.name || item.id}${item.gender ? ` · ${item.gender}` : ""}`))));
     if (chosen && !fits().some((item) => item.id === chosen)) voice.value = "";
     const picked = catalog.find((item) => item.id === voice.value);
-    about.textContent = picked ? picked.description : tr("Automatica: la prima voce di Soniox per la sua lingua e il suo genere.");
+    about.textContent = picked ? picked.description : provider === "fish" ? tr("Automatica: una voce Fish del suo genere, la stessa in chiamata e nei vocali.") : tr("Automatica: la prima voce di Soniox per la sua lingua e il suo genere.");
   };
   const listen = btn("Ascolta", { icon: "play", cls: "ghost", onclick: async () => {
     const heard = voice.value || fits()[0]?.id || catalog[0]?.id;
@@ -2837,6 +2839,7 @@ function voicePanel(agent, genderInput) {
       return;
     }
     catalog = data.voices;
+    provider = data.provider || "soniox";
     fill();
   }).catch(() => { about.textContent = tr("Le voci di Soniox non rispondono: riprova tra poco."); });
   return panel({ icon: "mic", title: "Voce", hint: "A un vocale risponde solo a voce. Per avere il testo, chiediglielo." }, body);
