@@ -281,13 +281,19 @@ test("the panel offers the three Hermes ends and both keys, and the API keeps ea
   spaceCloud().click();
   assert.equal(panel.run("window.__brain.credentialId()"), "", "the space key stays selectable beside a future personal key");
 
-  const secret = panel.app.querySelectorAll("input").find((input) => input.getAttribute("type") === "password");
+  const passwordField = () => panel.app.querySelectorAll("input").find((input) => input.getAttribute("type") === "password");
+  assert.equal(passwordField(), undefined, "with a key ready the form waits behind a button");
+  const opener = panel.app.querySelectorAll("button").find((button) => button.className.includes("hermes-key-open"));
+  assert.ok(opener.className.includes("btn"), "adding a key is a real button");
+  opener.click();
+  const secret = passwordField();
   secret.value = "sk-good-ollama-MINE";
   secret.dispatch("input");
   panel.app.querySelectorAll("button").find((button) => button.textContent.includes("Aggiungi la tua chiave")).click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(calls.some(([method, path]) => method === "POST" && path === "/api/credentials"));
   assert.equal(panel.run("window.__brain.credentialId()"), "key_abcdefabcdef", "adding a key selects it for the model already chosen");
+  assert.match(panel.app.querySelectorAll(".hermes-key-pending")[0]?.textContent || "", /Salva per usare questa chiave/, "a key chosen but not saved says so");
   spaceCloud().click();
   assert.equal(panel.run("window.__brain.credentialId()"), "", "the space key stays available beside the personal one");
   panel.app.querySelectorAll(".hermes-key").find((button) => button.textContent.includes("Mia") && button.textContent.includes("MINE")).click();
@@ -339,4 +345,54 @@ test("the panel gives DeepSeek Harness the same key choice: the person's or the 
   empty.run(`window.__brain = brainPanel({ id: "ag_2", name: "Nico", model: "deepseek/deepseek-flash", credentialId: "", subscriptionId: "", tools: true })`);
   empty.run(`document.getElementById("app").append(window.__brain.node)`);
   assert.equal(empty.run("window.__brain.validate()"), false, "no space key and no personal key: the harness cannot be saved");
+});
+
+test("the panel marks the key in use, sorts the Ollama Cloud models by name and filters them as you type", async () => {
+  const names = ["qwen3-coder:480b", "gpt-oss:120b", "kimi-k2:1t", "glm-4.6", "deepseek-v3.1:671b", "gpt-oss:20b", "minimax-m2", "qwen3-vl:235b", "cogito-2.1:671b", "gemma3:27b"];
+  const panel = panelHarness({ fetch: async (path) => {
+    if (String(path).includes("/models")) return { ok: true, status: 200, json: async () => ({ models: names.map((name) => ({ name })) }) };
+    if (path === "/api/hardware") return { ok: true, status: 200, json: async () => ({ hosts: [], gpus: [] }) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  } });
+  panel.run(`S.data = {
+    settings: { defaultModel: "hermes/qwen3:14b" },
+    currentUser: { id: "local-owner", name: "Owner", role: "owner" },
+    providers: { hermes: true, ollama: true, deepseek: true },
+    keys: { ollama: true, deepseek: true },
+    credentials: [{ id: "key_bbbbbbbbbbbb", provider: "ollama", label: "Mia Ollama", last4: "MINE", connectedBy: { id: "local-owner", name: "Owner" } }],
+    models: [],
+    ollamaCloud: { signedIn: false },
+    agents: [],
+    subscriptions: [],
+  }`);
+  panel.run(`window.__brain = brainPanel({ id: "ag_1", name: "Nico", model: "hermes/ollama/glm-4.6", credentialId: "key_bbbbbbbbbbbb", subscriptionId: "", tools: true })`);
+  panel.run(`document.getElementById("app").append(window.__brain.node)`);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const inUse = () => panel.app.querySelectorAll(".hermes-key").filter((button) => button.textContent.includes("in uso")).map((button) => button.textContent);
+  assert.equal(inUse().length, 1);
+  assert.ok(inUse()[0].includes("Mia Ollama"), "the saved key carries the in-use badge");
+  assert.equal(panel.app.querySelectorAll(".hermes-key-pending").length, 0, "nothing pending while the choice is the saved one");
+
+  const titles = () => panel.app.querySelectorAll(".model-row").filter((row) => !row.hidden).map((row) => row.querySelectorAll(".row-title")[0].textContent.replace("scelto", ""));
+  assert.deepEqual(titles(), ["cogito-2.1:671b", "deepseek-v3.1:671b", "gemma3:27b", "glm-4.6", "gpt-oss:20b", "gpt-oss:120b", "kimi-k2:1t", "minimax-m2", "qwen3-coder:480b", "qwen3-vl:235b"]);
+
+  const search = panel.app.querySelectorAll("input").find((input) => input.getAttribute("type") === "search");
+  assert.ok(search, "a long list has a search field");
+  search.value = "qwen";
+  search.dispatch("input");
+  assert.deepEqual(titles(), ["qwen3-coder:480b", "qwen3-vl:235b"]);
+  search.value = "gpt 120";
+  search.dispatch("input");
+  assert.deepEqual(titles(), ["gpt-oss:120b"]);
+  search.value = "nothing-like-this";
+  search.dispatch("input");
+  assert.deepEqual(titles(), []);
+  assert.equal(panel.app.querySelectorAll(".model-search-none")[0].hidden, false);
+
+  panel.app.querySelectorAll(".hermes-key").find((button) => button.textContent.includes("Chiave dello space")).click();
+  assert.equal(panel.run("window.__brain.credentialId()"), "");
+  assert.match(panel.app.querySelectorAll(".hermes-key-pending")[0]?.textContent || "", /non ancora salvata/);
+  assert.equal(panel.app.querySelectorAll("input").find((input) => input.getAttribute("type") === "search").value, "nothing-like-this", "a redraw keeps the search");
 });
