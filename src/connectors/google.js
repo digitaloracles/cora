@@ -147,6 +147,19 @@ const COMPOSE = {
   attachments: { type: "array", items: { type: "string" }, description: "absolute paths of files on your computer to attach, e.g. /home/agent/work/report.pdf (at most 25 MB in all)" },
 };
 const BODY_RULE = "Send only what the person asked for, to the recipients they named; a send is final, so never retry one whose result is uncertain: check the Sent folder or ask first.";
+const SEND_AT = { type: "string", description: "optional: send later, at this ISO 8601 date-time with timezone (e.g. 2026-12-01T09:00:00+01:00), at most a year ahead. Cora keeps the message and sends it by itself at that time, even if you are not running; gmail_scheduled lists what waits, gmail_cancel_scheduled cancels it" };
+const SCHEDULE_RULE = "With send_at the message is composed now and sent automatically by Cora at that time.";
+
+/** The time a scheduled send leaves, as an ISO string: a real date with its timezone, in the future, at most a year ahead. */
+export function sendTime(value, now = Date.now()) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const when = Date.parse(raw);
+  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(raw) || Number.isNaN(when)) fail("send_at is an ISO 8601 date-time with its timezone, e.g. 2026-12-01T09:00:00+01:00");
+  if (when <= now) fail("send_at is already past: give a later time, or leave it out to send now");
+  if (when > now + 366 * 86400000) fail("send_at can be at most a year ahead");
+  return new Date(when).toISOString();
+}
 
 /** The message an agent composed: checked addresses, both bodies, attachments read from its computer. */
 async function composed(args, ctx, { needTo = true } = {}) {
@@ -217,21 +230,24 @@ const TOOLS = [
   },
   {
     name: "gmail_send", needs: "send",
-    description: () => `Gmail: send a new message from one of your accounts: to, cc, bcc, subject, body_html and/or body_text, and files from your computer as attachments. To answer a message use gmail_reply, which keeps the thread. ${BODY_RULE}`,
-    parameters: { type: "object", properties: { from: FROM, ...COMPOSE }, required: ["to", "subject"] },
-    summarize: (args) => `from ${text(args.from, 80)} → ${list(args.to).join(", ")}`,
+    description: () => `Gmail: send a new message from one of your accounts, now or at a later time with send_at: to, cc, bcc, subject, body_html and/or body_text, and files from your computer as attachments. To answer a message use gmail_reply, which keeps the thread. ${SCHEDULE_RULE} ${BODY_RULE}`,
+    parameters: { type: "object", properties: { from: FROM, ...COMPOSE, send_at: SEND_AT }, required: ["to", "subject"] },
+    summarize: (args) => `from ${text(args.from, 80)} → ${list(args.to).join(", ")}${args.send_at ? ` at ${text(args.send_at, 40)}` : ""}`,
     async run(args, ctx) {
+      const when = sendTime(args.send_at);
       const message = await composed(args, ctx);
+      if (when) return ctx.connector.schedule(ctx.agent, ctx.connection, message, when);
       const sent = await ctx.connector.deliver(ctx.agent, ctx.connection, message);
       return { sent: true, from: ctx.connection.email, to: message.to, message: sent.id, thread: sent.threadId };
     },
   },
   {
     name: "gmail_reply", needs: "send",
-    description: () => `Gmail: reply to a message in its thread, from one of your accounts. Give message (its Gmail id from gmail_search or gmail_read_thread): Cora answers the sender (or Reply-To) with "Re:" and the thread's headers; reply_all also copies the other recipients. to, cc and subject override them. Needs an account that can read; on a send-only account give to, subject, in_reply_to (the Message-ID) and thread instead. ${BODY_RULE}`,
-    parameters: { type: "object", properties: { from: FROM, message: { type: "string", description: "the Gmail id of the message you answer" }, reply_all: { type: "boolean" }, ...COMPOSE, in_reply_to: { type: "string", description: "send-only accounts: the Message-ID you answer" }, thread: { type: "string", description: "send-only accounts: the Gmail thread id" } } },
-    summarize: (args) => `reply ${text(args.message || args.in_reply_to, 80)}${args.reply_all ? " (all)" : ""}`,
+    description: () => `Gmail: reply to a message in its thread, from one of your accounts. Give message (its Gmail id from gmail_search or gmail_read_thread): Cora answers the sender (or Reply-To) with "Re:" and the thread's headers; reply_all also copies the other recipients. to, cc and subject override them. Needs an account that can read; on a send-only account give to, subject, in_reply_to (the Message-ID) and thread instead. ${SCHEDULE_RULE} ${BODY_RULE}`,
+    parameters: { type: "object", properties: { from: FROM, message: { type: "string", description: "the Gmail id of the message you answer" }, reply_all: { type: "boolean" }, ...COMPOSE, in_reply_to: { type: "string", description: "send-only accounts: the Message-ID you answer" }, thread: { type: "string", description: "send-only accounts: the Gmail thread id" }, send_at: SEND_AT } },
+    summarize: (args) => `reply ${text(args.message || args.in_reply_to, 80)}${args.reply_all ? " (all)" : ""}${args.send_at ? ` at ${text(args.send_at, 40)}` : ""}`,
     async run(args, ctx) {
+      const when = sendTime(args.send_at);
       let reply;
       if (args.message) {
         if (!capabilities(ctx.connection).read) fail(`${ctx.connection.email} can only send: give to, subject, in_reply_to and thread, or reconnect it in Connettori so it can read`);
@@ -242,9 +258,23 @@ const TOOLS = [
         reply = { thread: args.thread ? ID(args.thread, "thread") : undefined, to: list(args.to), cc: list(args.cc), subject: text(args.subject, 500), in_reply_to: inReplyTo, references: inReplyTo };
       }
       const message = await composed({ ...args, to: reply.to, cc: reply.cc, subject: reply.subject }, ctx);
-      const sent = await ctx.connector.deliver(ctx.agent, ctx.connection, { ...message, in_reply_to: reply.in_reply_to, references: reply.references, thread: reply.thread });
+      const answer = { ...message, in_reply_to: reply.in_reply_to, references: reply.references, thread: reply.thread };
+      if (when) return ctx.connector.schedule(ctx.agent, ctx.connection, answer, when);
+      const sent = await ctx.connector.deliver(ctx.agent, ctx.connection, answer);
       return { sent: true, from: ctx.connection.email, to: message.to, cc: message.cc.length ? message.cc : undefined, subject: message.subject, message: sent.id, thread: sent.threadId };
     },
+  },
+  {
+    name: "gmail_scheduled", needs: null,
+    description: () => "Gmail: the messages you scheduled with send_at, from any of your accounts: id, account, recipients, subject, time, and whether each waits, was sent (with its Gmail id), was cancelled, failed (with the reason) or is uncertain (check the Sent folder; Cora never retries it).",
+    parameters: { type: "object", properties: { status: { type: "string", enum: ["scheduled", "sent", "cancelled", "failed", "uncertain", "all"], description: "default scheduled" }, limit: { type: "number", description: "default 20, at most 100" } } },
+    async run(args, ctx) { return ctx.connector.scheduledFor(ctx.agent, { status: text(args.status, 20) || "scheduled", limit: count(args.limit, 20, 100) }); },
+  },
+  {
+    name: "gmail_cancel_scheduled", needs: null,
+    description: () => "Gmail: cancel a message you scheduled with send_at before it leaves, by its id from gmail_send, gmail_reply or gmail_scheduled. Only when the person asks.",
+    parameters: { type: "object", properties: { id: { type: "string", description: "the scheduled id, gmail_scheduled_…" } }, required: ["id"] },
+    async run(args, ctx) { return ctx.connector.cancelScheduled(ctx.agent, text(args.id, 100)); },
   },
   {
     name: "gmail_search", needs: "read",
@@ -449,6 +479,15 @@ export class GoogleConnector {
   constructor({ store, broker, space, storeSecret, tokenFor, enabled = true, access = "send", api = "https://gmail.googleapis.com/gmail/v1/users/me", driveApi = "https://www.googleapis.com/drive/v3" }) {
     Object.assign(this, { store, enabled, mailAccess: connectorAccess(access), broker: String(broker || "").replace(/\/$/, ""), space, storeSecret, tokenFor, api, driveApi });
     this.pending = new Map(); this.bundles = new Map(); this.access = new Map();
+    this.stopped = false;
+    if (store?.db) {
+      store.db.exec(`CREATE TABLE IF NOT EXISTS gmail_scheduled (
+        id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, connection_id TEXT NOT NULL, send_at TEXT NOT NULL,
+        status TEXT NOT NULL, data TEXT NOT NULL, raw TEXT NOT NULL DEFAULT '');
+        CREATE INDEX IF NOT EXISTS gmail_scheduled_due ON gmail_scheduled(status, send_at);
+        CREATE INDEX IF NOT EXISTS gmail_scheduled_agent ON gmail_scheduled(agent_id, send_at DESC);`);
+      store.db.prepare("UPDATE gmail_scheduled SET status='uncertain', data=json_set(data,'$.error','Cora stopped while sending: check the Sent folder') WHERE status='dispatching'").run();
+    }
   }
   records() { return this.store.value("googleConnectors", []); }
   view(user = null) {
@@ -567,16 +606,95 @@ export class GoogleConnector {
     const raw = mime({ ...message, from: this.fromHeader(agent, connection) });
     await this.token(connection);
     this.identity(agent, connection.id);
+    return this.sendRaw(connection, raw, message.thread);
+  }
+  async sendRaw(connection, raw, thread) {
     let result;
-    if (raw.length < 3500000) result = await this.gmail(connection, "POST", "/messages/send", { body: defined({ raw, threadId: message.thread }) });
+    if (raw.length < 3500000) result = await this.gmail(connection, "POST", "/messages/send", { body: defined({ raw, threadId: thread }) });
     else {
       const boundary = `cora_${randomBytes(12).toString("hex")}`;
-      const payload = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(defined({ threadId: message.thread }))}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`), Buffer.from(raw, "base64url"), Buffer.from(`\r\n--${boundary}--\r\n`)]);
+      const payload = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(defined({ threadId: thread }))}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`), Buffer.from(raw, "base64url"), Buffer.from(`\r\n--${boundary}--\r\n`)]);
       result = await this.gmail(connection, "POST", "/messages/send", { base: this.api.replace("/gmail/v1/", "/upload/gmail/v1/"), query: { uploadType: "multipart" }, raw: payload, contentType: `multipart/related; boundary=${boundary}` });
     }
     if (!result.id) throw new ToolError("Gmail did not confirm the send: check the Sent folder before trying again");
     return result;
   }
+
+  /** Keeps a composed message to send from an account at a later time: Cora's timer sends it, not the agent. */
+  schedule(agent, connection, message, sendAt) {
+    if (!this.store.db) throw new ToolError("scheduled sends are not available on this Cora");
+    this.identity(agent, connection.id);
+    const raw = mime({ ...message, from: this.fromHeader(agent, connection) });
+    const id = `gmail_scheduled_${randomBytes(12).toString("hex")}`;
+    const data = defined({ from: connection.email, to: message.to, cc: message.cc?.length ? message.cc : undefined, bcc: message.bcc?.length ? message.bcc : undefined, subject: message.subject, thread: message.thread, attachments: message.attachments?.length || undefined, createdAt: new Date().toISOString() });
+    this.store.db.prepare("INSERT INTO gmail_scheduled(id,agent_id,connection_id,send_at,status,data,raw) VALUES(?,?,?,?,?,?,?)").run(id, agent.id, connection.id, sendAt, "scheduled", JSON.stringify(data), raw);
+    this.log?.({ type: "email", agentId: agent.id, text: `Gmail programmata per ${sendAt} da ${connection.email}: ${String(message.subject).slice(0, 80)}` });
+    return { scheduled: true, id, send_at: sendAt, from: connection.email, to: message.to, subject: message.subject };
+  }
+  scheduledFor(agent, { status = "scheduled", limit = 20 } = {}) {
+    if (!this.store.db) return [];
+    const rows = status === "all"
+      ? this.store.db.prepare("SELECT id,send_at,status,data FROM gmail_scheduled WHERE agent_id=? ORDER BY send_at DESC LIMIT ?").all(agent.id, limit)
+      : this.store.db.prepare(`SELECT id,send_at,status,data FROM gmail_scheduled WHERE agent_id=? AND status=? ORDER BY send_at ${status === "scheduled" ? "ASC" : "DESC"} LIMIT ?`).all(agent.id, status, limit);
+    return rows.map((row) => ({ id: row.id, send_at: row.send_at, status: row.status, ...JSON.parse(row.data) }));
+  }
+  cancelScheduled(agent, id) {
+    const row = this.store.db?.prepare("SELECT status,data FROM gmail_scheduled WHERE agent_id=? AND id=?").get(agent.id, id);
+    if (!row) fail("no scheduled message with that id: gmail_scheduled lists them");
+    if (row.status !== "scheduled") fail(`it is no longer waiting: it is ${row.status}`);
+    const data = { ...JSON.parse(row.data), cancelledAt: new Date().toISOString() };
+    if (!this.store.db.prepare("UPDATE gmail_scheduled SET status='cancelled',data=?,raw='' WHERE agent_id=? AND id=? AND status='scheduled'").run(JSON.stringify(data), agent.id, id).changes) fail("it is no longer waiting");
+    this.log?.({ type: "email", agentId: agent.id, text: `Gmail programmata annullata: ${String(data.subject).slice(0, 80)}` });
+    return { id, status: "cancelled", from: data.from, subject: data.subject };
+  }
+
+  /** Sends the scheduled messages whose time has come, once each: a send that may have happened is never repeated. */
+  async dispatchDue(now = Date.now()) {
+    if (!this.store.db) return;
+    if (this.dispatching) return this.dispatching;
+    const db = this.store.db;
+    this.dispatching = (async () => {
+      const due = db.prepare("SELECT id,agent_id,connection_id,send_at,data FROM gmail_scheduled WHERE status='scheduled' AND send_at<=? ORDER BY send_at,id LIMIT 20").all(new Date(now).toISOString());
+      for (const row of due) {
+        if (this.stopped) break;
+        if (!db.prepare("UPDATE gmail_scheduled SET status='dispatching' WHERE id=? AND status='scheduled'").run(row.id).changes) continue;
+        const data = JSON.parse(row.data);
+        const finish = (status, extra = {}) => db.prepare(`UPDATE gmail_scheduled SET status=?,data=?${status === "scheduled" ? "" : ",raw=''"} WHERE id=?`).run(status, JSON.stringify({ ...data, ...extra }), row.id);
+        const say = (text) => this.log?.({ type: "email", agentId: row.agent_id, text: `${text}: ${String(data.subject).slice(0, 80)}` });
+        let connection;
+        try {
+          const agent = this.store.agent(row.agent_id);
+          if (!agent?.enabled || !agent.tools) throw new ConnectorError("the agent is disabled or has no tools", 403);
+          connection = this.identity(agent, row.connection_id);
+          if (!capabilities(connection).send) throw new ConnectorError(`${connection.email} can no longer send`, 403);
+          await this.token(connection);
+        } catch (error) {
+          const late = now - Date.parse(row.send_at) > 3600000;
+          if (error instanceof ConnectorError && error.status === 403 || late) { finish("failed", { error: error.message, failedAt: new Date().toISOString() }); say("Gmail programmata non inviata"); }
+          else finish("scheduled", { lastError: error.message });
+          continue;
+        }
+        try {
+          const sent = await this.sendRaw(connection, db.prepare("SELECT raw FROM gmail_scheduled WHERE id=?").get(row.id).raw, data.thread);
+          finish("sent", { message: sent.id, thread: sent.threadId, sentAt: new Date().toISOString() });
+          say(`Gmail programmata inviata da ${connection.email}`);
+        } catch (error) {
+          if (/limits the calls/.test(error.message) && now - Date.parse(row.send_at) <= 3600000) { finish("scheduled", { lastError: error.message }); continue; }
+          const refused = /answered 4\d\d|refuses|did not grant|limits the calls/.test(error.message);
+          finish(refused ? "failed" : "uncertain", { error: error.message, failedAt: new Date().toISOString() });
+          say(refused ? "Gmail programmata rifiutata da Google" : "Gmail programmata da verificare nella posta inviata");
+        }
+      }
+    })().finally(() => { this.dispatching = null; });
+    return this.dispatching;
+  }
+  start(every = 15000) {
+    if (!this.store.db || this.scheduler) return;
+    this.stopped = false;
+    this.scheduler = setInterval(() => { this.dispatchDue().catch(() => {}); }, every);
+    this.initial = setTimeout(() => { this.dispatchDue().catch(() => {}); }, 2000);
+  }
+  async stop() { this.stopped = true; clearInterval(this.scheduler); clearTimeout(this.initial); this.scheduler = null; await this.dispatching; }
 
   /** The gmail_ tools an agent sees: those that at least one of its accounts allows. */
   toolsFor(agent) {
