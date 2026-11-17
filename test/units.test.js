@@ -59,13 +59,13 @@ describe("being told to stop", () => {
 
 describe("work an agent says it did", () => {
   test("reads a report of work done, and not an offer, a question or an honest no", () => {
-    for (const text of ["Ho salvato il file.", "L'ho creato ieri sul desktop.", "Ricevuto, ci guardo. Salvato in memoria: la riunione è giovedì.", "Il file è stato creato.", "I've sent the email.", "Ho appena aggiornato la pagina.", "Ricevuto. Ho ripreso il lavoro su sinalunga.md", "La riunione è venerdì alle 10: l'ho ricordato nella mia memoria.", "L'ho messo in memoria.", "Ho preso nota.", "Me lo sono segnato.", "Me lo ricorderò.", "I'll remember that.", "Script pronto; file salvato in/Desktop/audioguida.md.", "Sì, l’ho creato nel turno di prima."]) {
+    for (const text of ["Ho salvato il file.", "L'ho creato ieri sul desktop.", "Ricevuto, ci guardo. Salvato in memoria: la riunione è giovedì.", "Il file è stato creato.", "I've sent the email.", "Ho appena aggiornato la pagina.", "Ricevuto. Ho ripreso il lavoro su sinalunga.md", "La riunione è venerdì alle 10: l'ho ricordato nella mia memoria.", "L'ho messo in memoria.", "Ho preso nota.", "Me lo sono segnato.", "Me lo ricorderò.", "I'll remember that.", "Script pronto; file salvato in/Desktop/audioguida.md.", "Sì, l’ho creato nel turno di prima.", "Il file è pronto. Lo sto caricando nel repository Cora per condividerlo con te.", "Lo sto caricando negli artefatti.", "Il CSV è pronto: eccolo.", "I'm uploading it to the artifacts now."]) {
       assert.equal(claimsWork(text), "change", `«${text}» reports something made`);
     }
     for (const text of ["Ho controllato le routine: sono 0.", "Ho già verificato il calendario.", "I've checked the routines."]) {
       assert.equal(claimsWork(text), "look", `«${text}» reports something checked`);
     }
-    for (const text of ["Ricevuto, ci guardo.", "Posso iniziare a compilare il file.", "Ho capito, procedo?", "Non ho creato il file: mi manca il permesso.", "Non l'ho ancora salvato.", "Il file non è stato creato.", "Vuoi che lo salvi?", "I have not created it yet.", "Ho visto che il file non esiste.", "Non ho preso nota.", "Non me lo sono segnato.", "Vuoi che me lo segni?", "Il file non è stato salvato in /tmp.", "Il file creato in precedenza è vuoto.", ""]) {
+    for (const text of ["Ricevuto, ci guardo.", "Posso iniziare a compilare il file.", "Ho capito, procedo?", "Non ho creato il file: mi manca il permesso.", "Non l'ho ancora salvato.", "Il file non è stato creato.", "Vuoi che lo salvi?", "I have not created it yet.", "Ho visto che il file non esiste.", "Non ho preso nota.", "Non me lo sono segnato.", "Vuoi che me lo segni?", "Il file non è stato salvato in /tmp.", "Il file creato in precedenza è vuoto.", "Non lo sto caricando: manca la cartella.", "Il file è pronto?", "Quando il file è pronto te lo dico.", "Sto preparando il CSV.", "Ti sto scrivendo dal thread giusto.", ""]) {
       assert.equal(claimsWork(text), null, `«${text}» does not`);
     }
   });
