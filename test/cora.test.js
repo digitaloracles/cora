@@ -1375,12 +1375,14 @@ test("an agent that listens here but may not take this person's messages: Cora n
   const prompts = [];
   f.state.answer = (body) => { prompts.push(body); return { content: "NOT_ALLOWED_REPLY" }; };
   const sent = () => telegram.state.sent.filter((item) => item.method === "sendMessage").map((item) => item.text);
+  f.app.orchestrator.instanceUrl = "https://cora.example";
   const before = sent().length;
   await f.app.orchestrator.ingest(state, { id: "refused-call-1", kind: "human", authorId: TG_STRANGER, authorName: "Virginia", content: "@Nico qual è il link?", at: Date.now() });
   await waitFor(() => sent().length > before, { what: "Cora's notice" });
   const notice = sent().slice(before).join("\n");
   assert.match(notice, /Nico\*\* non risponde a Virginia: non ha il permesso di farlo lavorare/);
   assert.match(notice, /in Autorizzazioni nel pannello/);
+  assert.ok(notice.includes(`https://cora.example/#/agent/${nico.id}/impostazioni/autorizzazioni`), "the link opens the Permissions section itself");
   assert.doesNotMatch(notice, /non è in ascolto|non è su|è spento/, "it does listen here: no false reason");
   assert.equal(prompts.length, 0, "Nico did not take the message");
 
@@ -7770,11 +7772,13 @@ describe("agents in Telegram", () => {
       assert.deepEqual(app.store.settings.telegramOwnerIds, [], "and not made the owner");
       app.store.updateSettings({ telegramOwnerIds: [TG_OWNER] });
 
+      app.orchestrator.instanceUrl = "https://cora.example";
       telegram.push(group(seb, "@Dino, ci sei?"));
       discord.say({ content: "@Dino, ci sei?" });
       await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Dino" && item.content === "Dino da Discord."), { what: "Dino on Discord" });
       const notice = await waitFor(() => telegram.state.sent.find((item) => /Dino/.test(item.text || "")), { what: "Cora's word about Dino on Telegram" });
       assert.match(notice.text, /Dino\W{0,6} non è su Telegram\. Per farlo rispondere qui .*accendi Telegram in Ascolto/s, "Cora says Dino is not on Telegram at all");
+      assert.ok(notice.text.includes(`https://cora.example/#/agent/${dino.id}/impostazioni/ascolto`), "the link opens the Listening section itself");
       assert.equal(notice.token, MAIN_TG);
       await quiet();
       assert.ok(!telegram.state.sent.some((item) => /Dino da Discord/.test(item.text || "")), "Dino, off on Telegram, does not answer there");
@@ -7782,6 +7786,7 @@ describe("agents in Telegram", () => {
       const primary = await call("/api/settings", { method: "PUT", body: { transport: "telegram" } });
       assert.deepEqual([primary.data.transport, primary.data.transports], ["telegram", ["discord", "telegram"]], "a new primary keeps the other platforms on");
     } finally {
+      app.orchestrator.instanceUrl = "";
       // Discord alone again, whatever happened above: the Slack tests start from there.
       await call("/api/settings", { method: "PUT", body: { transports: ["discord"], transport: "discord" } });
       for (const agent of [dino, lea]) await call(`/api/agents/${agent.id}`, { method: "DELETE" });
@@ -10063,6 +10068,29 @@ test("agent remote access is in Security and sealed agents never load tailnet co
   assert.doesNotMatch(sealedSettings.textContent, /Collega a Tailscale|Passando dalla macchina host/);
 });
 
+
+test("links Cora sends about an agent open the settings section they name, old ones included", async (t) => {
+  const f = await knowledgeWorld(); t.after(f.close);
+  f.app.boxes.inspect = async () => ({ exists: true, running: false, outdated: false });
+  const id = (await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Link fixture", tools: false, enabled: false } })).data.id;
+  const panel = panelHarness({ hash: `#/agent/${id}/impostazioni`, fetch: async (path, options = {}) => {
+    const response = await f.request(f.alice, path, { method: options.method || "GET", body: options.body ? JSON.parse(options.body) : undefined });
+    return { ok: response.status < 400, status: response.status, json: async () => response.data };
+  } });
+  await panel.run("loadState()");
+  const open = () => panel.app.querySelectorAll(".rail-item").find((node) => node.getAttribute("aria-selected") === "true");
+  const openId = () => open()?.getAttribute("id") || open()?.id;
+  for (const [hash, canonical, section] of [
+    [`#/agent/${id}/impostazioni/autorizzazioni`, `#/agent/${id}/impostazioni/autorizzazioni`, "autorizzazioni"],
+    [`#/agent/${id}/impostazioni/ascolto`, `#/agent/${id}/impostazioni/ascolto`, "ascolto"],
+    [`#/agent/${id}/autorizzazioni`, `#/agent/${id}/impostazioni/autorizzazioni`, "autorizzazioni"],
+    [`#/agent/${id}/ascolto`, `#/agent/${id}/impostazioni/ascolto`, "ascolto"],
+  ]) {
+    await panel.navigate(hash);
+    await waitFor(() => openId() === `section-tab-${section}`, { what: `${hash} opens ${section}` });
+    assert.equal(panel.run("location.hash"), canonical);
+  }
+});
 
 test("security seal autosaves, restores rejected changes and survives reload", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);

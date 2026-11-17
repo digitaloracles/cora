@@ -1351,7 +1351,7 @@ export class Orchestrator {
       }
       const transport = transportOf(state.id);
       const where = agent.channelIds.filter((channelId) => transportOf(channelId) === transport).map((channelId) => this.channelMeta(channelId)?.name).filter(Boolean).map((name) => `#${name}`);
-      const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/profilo` : "";
+      const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/impostazioni/ascolto` : "";
       // Switched off on this whole platform, not just away from this channel.
       const away = agent.enabled && !this.channels.agentOn(agent, transport);
       const platform = TRANSPORT_LABELS[transport] || transport;
@@ -1384,7 +1384,7 @@ export class Orchestrator {
     const person = ownerId ? this.store.panelUser(ownerId) : null;
     const owner = person && !person.blocked ? person.name || person.email : "";
     const who = item.authorName || (english ? "this person" : "questa persona");
-    const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/autorizzazioni` : "";
+    const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/impostazioni/autorizzazioni` : "";
     return english
       ? `**${agent.name}** does not answer ${who}: they have no permission to work with it. ${owner || "Its owner"} can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
       : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;

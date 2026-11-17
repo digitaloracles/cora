@@ -4166,9 +4166,12 @@ async function renderAgent() {
   if (legacyTab === "chat" && legacyChat === "cifrata") history.replaceState(null, "", `#/agent/${legacyAgent}/chat`);
   const view = location.hash;
   S.live = null;
-  const [, id, requested = "impostazioni", sub] = route();
+  const [, id, asked = "impostazioni", askedSub] = route();
+  // Links already sent by Cora name a settings section as if it were a tab: open that section.
+  const section = ["ascolto", "autorizzazioni"].includes(asked) ? asked : "";
+  const requested = section ? "impostazioni" : asked, sub = section || askedSub;
   const tab = requested === "profilo" ? "impostazioni" : requested;
-  if (requested === "profilo") history.replaceState(null, "", `#/agent/${id}/impostazioni${sub ? "/" + sub : ""}`);
+  if (requested === "profilo" || section) history.replaceState(null, "", `#/agent/${id}/impostazioni${sub ? "/" + sub : ""}`);
   const agent = S.data.agents.find((item) => item.id === id);
   if (!agent) {
     shell(panel({ icon: "alert", title: "Agente non trovato" }, btn("Torna agli agenti", { icon: "back", href: "#/agenti" })), { title: "Agente", back: "#/agenti" });

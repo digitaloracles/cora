@@ -96,7 +96,7 @@ test("an agent's own GitHub App: made from the panel, installed on GitHub, its h
   const back = await fromGithub(`/github/created?code=code-1&state=${encodeURIComponent(stateParam)}`);
   assert.equal(back.status, 200);
   const page = await back.text();
-  assert.match(page, new RegExp(`<meta http-equiv="refresh" content="1;url=/#/agent/${nico.id}/profilo">`), "a page of its own opens the panel, so the panel's cookie comes along again");
+  assert.match(page, new RegExp(`<meta http-equiv="refresh" content="1;url=/#/agent/${nico.id}/impostazioni/github">`), "a page of its own opens the panel, so the panel's cookie comes along again");
   assert.match(back.headers.get("content-security-policy"), /default-src 'none'/);
   assert.match(Buffer.from(stored.get("CORA_GH_KEY_NICO"), "base64").toString(), /BEGIN RSA PRIVATE KEY/, "the app's key goes to hush");
   assert.equal((await fromGithub(`/github/created?code=code-1&state=${encodeURIComponent(stateParam)}`)).status, 403, "and the state works once");
