@@ -101,8 +101,11 @@ function card(content, kind) {
   return `<main class="solo"><section class="card ${kind}">${content}</section></main>`;
 }
 
-export function login({ next, providers, error, account }) {
+export function login({ next, providers, error, account, space = "" }) {
   const message = error ? `<p class="alert" role="alert">${esc(LOGIN_ERRORS[error] || LOGIN_ERRORS.provider)}</p>` : "";
+  const lead = space
+    ? `Sign in to open <b>${esc(space)}</b>, with the email address the invitation was sent to.`
+    : "One account for all your spaces.";
   const query = `?next=${encodeURIComponent(next)}`;
   const names = { google: "Continue with Google", github: "Continue with GitHub" };
   const buttons = ["google", "github"].filter((provider) => providers[provider])
@@ -110,7 +113,7 @@ export function login({ next, providers, error, account }) {
   const body = card(`
     <div class="card-mark">${MARK}</div>
     <h1>Sign in</h1>
-    <p class="lead">One account for all your spaces.</p>
+    <p class="lead">${lead}</p>
     ${message}
     <div class="providers">${buttons || `<p class="muted">Signing in opens soon.</p>`}</div>
     <p class="fine">We read only your name, email address and picture. <a href="${BASE}/privacy">Privacy</a></p>`, "login-card");
@@ -147,7 +150,7 @@ export function account({ account, identities, spaces, request, notice, error, d
       </div>
       ${alert}
       <h2>${spaces.length ? "Your spaces" : "No space yet"}</h2>
-      ${spaces.length ? `<ul class="spaces">${spaceList}</ul>` : `<p class="lead">Tell us the name you want: we open spaces a few at a time and we will let you in.</p>${asking}${form}`}
+      ${spaces.length ? `<ul class="spaces">${spaceList}</ul>` : `<p class="lead">If someone invited you, open the link in the invitation email: it brings you into their space.</p><p class="lead">To open one of your own, tell us the name you want: we open spaces a few at a time and we will let you in.</p>${asking}${form}`}
       <h2>Signed in with</h2>
       <ul class="identities">${who}</ul>
       <div class="account-actions">
@@ -176,9 +179,12 @@ export function offline({ slug }) {
   return layout({ title: "Off air · Cora", body, page: "plain" });
 }
 
-export function accessDenied({ account, slug }) {
+export function accessDenied({ account, slug, email = "" }) {
+  const who = email
+    ? `<p class="lead">You're signed in as <b>${esc(email)}</b>.</p>`
+    : `<p class="lead">You're signed in, but this account has no confirmed email address.</p>`;
   return layout({ title: "Access not granted · Cora", page: "plain", account,
-    body: card(`<div class="card-mark dim">${MARK}</div><h1>This space is private.</h1><p class="lead">Ask the owner of <b>${esc(slug)}</b> to authorize your email address or your company domain.</p><a class="btn ghost" href="${BASE}/account">Your account</a>`, "status-card") });
+    body: card(`<div class="card-mark dim">${MARK}</div><h1>This space is private.</h1>${who}<p class="lead">Ask the owner of <b>${esc(slug)}</b> to authorize this address or your company domain. If your invitation was sent to a different address, sign in with that one.</p><form method="post" action="${BASE}/go/${esc(slug)}/switch"><button class="btn primary" type="submit">Use another account</button></form><p class="fine"><a href="${BASE}/account">Your account</a></p>`, "status-card") });
 }
 
 /** The pages around a shared folder, for people who are not Cora's users: Italian or English, as their browser asks. */

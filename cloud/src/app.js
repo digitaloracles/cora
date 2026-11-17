@@ -308,7 +308,9 @@ export function createCloud({ config, store, endpoints = {}, log = () => {} }) {
     if (method === "GET" && path === "/login") {
       const next = safeNext(url.searchParams.get("next"));
       if (account) return redirect(res, next);
-      return html(res, 200, views.login({ ...page, next, providers: providers(), error: url.searchParams.get("error") || "" }));
+      // Someone arriving from an invitation should read why they are signing in, and with which address.
+      const opening = /^\/go\/([a-z0-9-]+)(?:[\/?#]|$)/.exec(next)?.[1] || "";
+      return html(res, 200, views.login({ ...page, next, providers: providers(), error: url.searchParams.get("error") || "", space: opening }));
     }
 
     if (method === "GET" && path === "/share") {
@@ -470,7 +472,16 @@ export function createCloud({ config, store, endpoints = {}, log = () => {} }) {
       return redirect(res, "/", { "Set-Cookie": cookie(SESSION, "", { maxAge: 0 }) });
     }
 
-    const go = /^\/go\/([a-z0-9-]+)$/.exec(path);
+    const switchSpace = /^\/go\/([a-z0-9-]+)\/switch$/.exec(path);
+    if (method === "POST" && switchSpace) {
+      if (req.headers.origin !== origin.origin) return html(res, 403, views.notFound(page));
+      const space = store.space(switchSpace[1]);
+      if (!space) return html(res, 404, views.notFound({ ...page, slug: switchSpace[1] }));
+      log({ type: "switch-account", accountId: account.id, space: space.slug });
+      return redirect(res, `/go/${encodeURIComponent(space.slug)}`, { "Set-Cookie": cookie(SESSION, "", { maxAge: 0 }) });
+    }
+
+    const go = /^\/go\/([a-z0-9-]+)\/?$/.exec(path);
     if (method === "GET" && go) {
       const space = store.space(go[1]);
       if (!space) return html(res, 404, views.notFound({ ...page, slug: go[1] }));
@@ -488,7 +499,10 @@ export function createCloud({ config, store, endpoints = {}, log = () => {} }) {
           });
           allowed = response.ok && (await response.json()).allowed === true;
         } catch {}
-        if (!allowed) return html(res, 403, views.accessDenied({ ...page, slug: space.slug }));
+        if (!allowed) {
+          log({ type: "access-denied", accountId: account.id, space: space.slug, verified: Boolean(email) });
+          return html(res, 403, views.accessDenied({ ...page, slug: space.slug, email }));
+        }
         if (store.claimUnownedSpace(space.slug, account.id)) {
           owner = true;
           identity = identityFor(true);
