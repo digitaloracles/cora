@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -127,6 +127,13 @@ const files = Object.fromEntries(fs.readdirSync(home).map((name) => [name, fs.ls
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, files, homeEmpty: fs.readdirSync(process.env.HOME).length === 0, agent: fs.readFileSync(argv[argv.indexOf("--agent-file") + 1], "utf8"),
   mcp: files["mcp.json"] ? JSON.parse(fs.readFileSync(path.join(home, "mcp.json"), "utf8")) : null, bridge: Boolean(process.env.CORA_BRIDGE_TOKEN), telemetry: process.env.KIMI_DISABLE_TELEMETRY, update: process.env.KIMI_CODE_NO_AUTO_UPDATE, token: fs.readFileSync(path.join(home, "credentials", "kimi-code-env-fixture.json"), "utf8").includes("fixture-access-1") }));
 const line = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+// Kimi's own session log says how many tools the first step had; the toolless modes reproduce its MCP race.
+const counter = path.join(${JSON.stringify(root)}, "attempts");
+const attempt = (() => { let n = 0; try { n = Number(fs.readFileSync(counter, "utf8")); } catch {} fs.writeFileSync(counter, String(n + 1)); return n + 1; })();
+const toolless = process.env.FIXTURE_MODE === "toolless" || (process.env.FIXTURE_MODE === "toolless-once" && attempt === 1);
+fs.mkdirSync(path.join(home, "sessions", "wd_x", "s1", "logs"), { recursive: true });
+fs.writeFileSync(path.join(home, "sessions", "wd_x", "s1", "logs", "kimi-code.log"), "2026-11-17T16:40:00.900Z INFO  llm config  turnStep=0.1 provider=openai model=k3 toolCount=" + (toolless ? 0 : 2) + "\\n");
+if (toolless) { line({ role: "assistant", content: "Non ho strumenti." }); process.exit(0); }
 if (process.env.FIXTURE_MODE === "text-call") { line({ role: "assistant", content: "<|open|>tools<|sep|><|open|>call tool=\\"say\\"" }); process.exit(0); }
 if (process.env.FIXTURE_MODE === "fail") { process.stderr.write("Error: quota exceeded for this window\\n"); process.exit(1); }
 line({ role: "assistant", content: "Guardo il nome host.", tool_calls: [{ type: "function", id: "c1", function: { name: "mcp__cora__shell", arguments: "{}" } }] });
@@ -152,7 +159,8 @@ line({ role: "assistant", content: "Fatto: radix." });
     assert.equal(seen.bridge, true);
     assert.equal(seen.token, true, "the account's login is read through the link");
     for (const name of ["credentials", "oauth", "device_id", "config.toml"]) assert.equal(seen.files[name], "link", `${name} is the account's`);
-    assert.equal(seen.mcp.mcpServers.cora.args.at(-1).endsWith("mcp-server.js"), true);
+    assert.equal(seen.mcp.mcpServers.cora.url, `${run.url}/mcp`, "Cora's tools over HTTP, from the run's own bridge");
+    assert.equal(seen.mcp.mcpServers.cora.bearerTokenEnvVar, "CORA_BRIDGE_TOKEN", "the key comes from the environment, never the file");
     assert.match(seen.agent, /^---\nname: cora\n/);
     assert.match(seen.agent, /tools: \["mcp__cora__\*"\]/);
     assert.match(seen.agent, /subagents: \[\]/);
@@ -166,6 +174,13 @@ line({ role: "assistant", content: "Fatto: radix." });
     assert.ok(long.agent.includes(big));
 
     await assert.rejects(runKimi({ bin, model: "k3", system: "S", prompt: "P", mcp: run, toolNames: [], workDir, timeoutMs: 20000, authEnv: { ...subscriptionEnvironment("kimi", account), FIXTURE_MODE: "text-call" } }), /returned no content/);
+    const notes = [];
+    rmSync(join(root, "attempts"), { force: true });
+    const again = await runKimi({ bin, model: "k3", system: "S", prompt: "P", mcp: run, toolNames: TOOLS.map((tool) => tool.name), workDir, timeoutMs: 20000, onStep: (step) => notes.push(step), authEnv: { ...subscriptionEnvironment("kimi", account), FIXTURE_MODE: "toolless-once" } });
+    assert.equal(again.text, "Fatto: radix.", "a turn Kimi started without Cora's tools is started again");
+    assert.equal(notes[0].type, "note");
+    assert.ok(!notes.some((step) => step.text === "Non ho strumenti."), "the toolless attempt's words never count");
+    await assert.rejects(runKimi({ bin, model: "k3", system: "S", prompt: "P", mcp: run, toolNames: TOOLS.map((tool) => tool.name), workDir, timeoutMs: 20000, authEnv: { ...subscriptionEnvironment("kimi", account), FIXTURE_MODE: "toolless" } }), /tools did not load/);
     await assert.rejects(runKimi({ bin, model: "k3", system: "S", prompt: "P", mcp: run, toolNames: [], workDir, timeoutMs: 20000, authEnv: { ...subscriptionEnvironment("kimi", account), FIXTURE_MODE: "fail" } }), /quota exceeded/);
     await assert.rejects(runKimi({ bin, model: "k3", system: "S", prompt: "P", mcp: run, toolNames: [], workDir, timeoutMs: 20000, authEnv: null }), /subscription da collegare/);
   } finally {
@@ -228,6 +243,8 @@ process.stdin.on("end", () => process.exit(0));
     assert.equal(seen.key, "fixture-deepseek-key");
     assert.deepEqual(seen.keys, ["DEEPSEEK_API_KEY"], "only the run's own key reaches Pi");
     assert.equal(seen.files["mcp.json"].mcpServers.cora.exposure, "direct");
+    assert.equal(seen.files["mcp.json"].mcpServers.cora.url, `${run.url}/mcp`);
+    assert.equal(seen.files["mcp.json"].mcpServers.cora.headers.Authorization, "Bearer ${CORA_BRIDGE_TOKEN}", "the token stays in the environment");
     assert.equal(seen.files["mcp.json"].autoEnableCodemode, false);
     assert.deepEqual(readdirSync(workDir), []);
 
@@ -249,6 +266,32 @@ process.stdin.on("end", () => process.exit(0));
   assert.equal(files["models.json"].providers.ollama.apiKey, "${CORA_PI_KEY}", "the key reaches Pi only as an environment variable");
   assert.deepEqual(files["mcp.json"].mcpServers, {});
   assert.equal(piFiles({ backend: "kimi", model: "k3", relayUrl: "http://127.0.0.1:1/relay" })["models.json"].providers["kimi-coding"].baseUrl, "http://127.0.0.1:1/relay/v1");
+});
+
+test("the bridge serves a run's tools as an MCP server over HTTP, to that run only", async () => {
+  const bridge = new ToolBridge();
+  await bridge.start();
+  const calls = [];
+  const run = bridge.register({ tools: TOOLS, execute: async (name, args) => { calls.push([name, args]); return { text: name === "shell" ? "radix" : "error: refused" }; } });
+  const rpc = (body, token = run.token) => fetch(`${bridge.url}/mcp`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify(body) });
+  try {
+    const init = await (await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })).json();
+    assert.deepEqual(init.result.capabilities, { tools: {} });
+    assert.equal((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+    const list = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
+    assert.deepEqual(list.result.tools.map((tool) => tool.name), ["say", "shell"]);
+    assert.ok(list.result.tools.every((tool) => tool.inputSchema.type === "object"));
+    const called = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "shell", arguments: { command: "hostname" } } })).json();
+    assert.deepEqual(called.result, { content: [{ type: "text", text: "radix" }], isError: false });
+    assert.deepEqual(calls, [["shell", { command: "hostname" }]]);
+    assert.equal((await (await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "say", arguments: {} } })).json()).result.isError, true);
+    assert.equal((await (await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "rm", arguments: {} } })).json()).result.isError, true, "only the run's own tools");
+    assert.equal((await rpc({ jsonrpc: "2.0", id: 6, method: "tools/list" }, "wrong")).status, 401);
+    run.dispose();
+    assert.equal((await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list" })).status, 401, "the server dies with the run");
+  } finally {
+    await bridge.stop();
+  }
 });
 
 test("the relay gives a run's CLI Kimi's endpoint with the account's fresh token, and nothing to anyone else", async () => {

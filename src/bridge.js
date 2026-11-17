@@ -57,6 +57,7 @@ export class ToolBridge {
       res.end(JSON.stringify(body));
     };
     if (String(req.url || "").startsWith("/relay/")) return this.relay(req, res, reply);
+    if (req.url === "/mcp") return this.mcp(req, res, reply);
     if (req.method !== "POST") return reply(405, { error: "method not allowed" });
     const run = this.find(req);
     if (!run) return reply(401, { error: "unknown run" });
@@ -76,6 +77,40 @@ export class ToolBridge {
       }
     }
     return reply(404, { error: "not found" });
+  }
+
+  /**
+   * The run's tools as an MCP server over Streamable HTTP (JSON answers, no sessions), for a CLI
+   * that connects to a URL instead of starting src/mcp-server.js: the same tools, the same token.
+   */
+  async mcp(req, res, reply) {
+    if (req.method !== "POST") return reply(405, { error: "method not allowed" });
+    const run = this.find(req);
+    if (!run) return reply(401, { error: "unknown run" });
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let message;
+    try { message = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { return reply(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }); }
+    if (message.id === undefined || message.id === null) {
+      res.writeHead(202);
+      return res.end();
+    }
+    const answer = (result) => reply(200, { jsonrpc: "2.0", id: message.id, result });
+    const fail = (code, text) => reply(200, { jsonrpc: "2.0", id: message.id, error: { code, message: text } });
+    if (message.method === "initialize") return answer({ protocolVersion: message.params?.protocolVersion || "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "cora", version: "0.1.0" } });
+    if (message.method === "ping") return answer({});
+    if (message.method === "tools/list") return answer({ tools: run.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) });
+    if (message.method === "tools/call") {
+      const name = String(message.params?.name || "");
+      const args = message.params?.arguments && typeof message.params.arguments === "object" ? message.params.arguments : {};
+      if (!run.tools.some((tool) => tool.name === name)) return answer({ content: [{ type: "text", text: `error: the tool ${name} is not available now` }], isError: true });
+      let out;
+      try { out = await run.execute(name, args); } catch (error) { out = { text: `error: ${error.message}` }; }
+      const content = [{ type: "text", text: String(out.text ?? "") }];
+      if (out.image) content.push({ type: "image", data: out.image, mimeType: out.mimeType || imageMime(out.image) || "image/jpeg" });
+      return answer({ content, isError: String(out.text).startsWith("error:") });
+    }
+    return fail(-32601, `method not found: ${message.method}`);
   }
 
   /** One model request of a run, forwarded to its endpoint with the account's token; the answer streams back as it comes. */
