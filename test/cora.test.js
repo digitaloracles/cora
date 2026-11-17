@@ -1363,6 +1363,35 @@ test("owner isolation preserves explicit chat permissions without granting priva
   assert.equal(prompts.length, count, "revocation prevents a new model turn");
 });
 
+test("an agent that listens here but may not take this person's messages: Cora names the person, the reason and who can grant it", async (t) => {
+  const telegram = await fakeTelegram();
+  telegram.addBot("owner-refusal-fixture", { id: 89002, username: "fixture_cora_bot", first_name: "Cora" });
+  const f = await knowledgeWorld({ telegramToken: "owner-refusal-fixture", telegramApi: telegram.url });
+  t.after(async () => { await f.close(); await telegram.close(); });
+  await f.request(f.admin, "/api/settings", { method: "PUT", body: { transport: "telegram", transports: ["telegram"], telegramChatIds: [TG_GROUP], telegramOwnerIds: [TG_OWNER] } });
+  const nico = (await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Nico", model: "ollama/test-model", tools: false } })).data;
+  const channelId = "tg:" + TG_GROUP, state = f.app.orchestrator.state(channelId);
+  assert.ok(f.app.orchestrator.agentsFor(channelId).some((agent) => agent.id === nico.id), "Nico listens in this group");
+  const prompts = [];
+  f.state.answer = (body) => { prompts.push(body); return { content: "NOT_ALLOWED_REPLY" }; };
+  const sent = () => telegram.state.sent.filter((item) => item.method === "sendMessage").map((item) => item.text);
+  const before = sent().length;
+  await f.app.orchestrator.ingest(state, { id: "refused-call-1", kind: "human", authorId: TG_STRANGER, authorName: "Virginia", content: "@Nico qual è il link?", at: Date.now() });
+  await waitFor(() => sent().length > before, { what: "Cora's notice" });
+  const notice = sent().slice(before).join("\n");
+  assert.match(notice, /Nico\*\* non risponde a Virginia: non ha il permesso di farlo lavorare/);
+  assert.match(notice, /in Autorizzazioni nel pannello/);
+  assert.doesNotMatch(notice, /non è in ascolto|non è su|è spento/, "it does listen here: no false reason");
+  assert.equal(prompts.length, 0, "Nico did not take the message");
+
+  f.app.store.updateSettings({ permissions: [{ id: "telegram:" + TG_STRANGER, name: "Virginia", agents: [nico.id] }] });
+  const after = sent().length;
+  await f.app.orchestrator.ingest(state, { id: "refused-call-2", kind: "human", authorId: TG_STRANGER, authorName: "Virginia", content: "@Nico qual è il link?", at: Date.now() });
+  await sleep(200);
+  assert.ok(sent().slice(after).every((text) => !/non risponde a Virginia/.test(text)), "once granted, no notice");
+  f.app.store.updateSettings({ permissions: [] });
+});
+
 test("owner isolation hides private platform resources from other members and the space administrator", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);
   const created = await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Alice private assistant", core: "PRIVATE_CORE", tools: false } });
