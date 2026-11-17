@@ -4,8 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { runClaude, runCodex, runDeepSeek, runGemini, runGrok, runHermes, runMuse } from "./cli.js";
-import { isSubscriptionProvider } from "./harnesses.js";
+import { runClaude, runCodex, runDeepSeek, runGemini, runGrok, runHermes, runKimi, runMuse, runPi } from "./cli.js";
+import { isSubscriptionProvider, subscriptionProviderOf } from "./harnesses.js";
 import { DEEPSEEK_CATALOG, HERMES_ENDS, hermesKeyBackend, hermesRemoteModel } from "./hermes-keys.js";
 import { imageMime } from "./images.js";
 import { routerUsage } from "./usage.js";
@@ -110,10 +110,12 @@ export const PROVIDERS = {
   grok: "Grok (abbonamento)",
   muse: "Meta Muse (abbonamento)",
   gemini: "Gemini (abbonamento)",
+  kimi: "Kimi (abbonamento)",
   ollama: "Ollama Cloud",
   orcarouter: "OrcaRouter",
   hermes: "Hermes Agent",
   deepseek: "DeepSeek Harness",
+  pi: "Pi",
 };
 
 /** Routers that speak the OpenAI chat format: every model behind one key, run on the Cora harness. */
@@ -151,12 +153,16 @@ const MUSE_MODELS = [
   { name: "muse-spark-1.3", label: "Muse Spark 1.3" },
 ];
 
+/** What Kimi Code runs when the account has not listed its models yet: the alias its docs name. */
+const KIMI_MODELS = [{ name: "kimi-for-coding", label: "Kimi for Coding" }];
+
 /** What each subscription CLI can do with a model; which models it runs, its provider says. */
 const CLI_TRAITS = {
   claude: { vision: true, thinking: true },
   codex: { vision: true, thinking: true },
   grok: { vision: false, thinking: true },
   muse: { vision: false, thinking: false },
+  kimi: { vision: true, thinking: true },
 };
 
 function callId() {
@@ -181,7 +187,7 @@ export function onPath(bin) {
 }
 
 export class LLM {
-  constructor({ ollamaUrl, ollamaKey, orcaUrl = "https://api.orcarouter.ai/v1", orcaKey = "", claudeBin = "claude", codexBin = "codex", grokBin = "grok", museBin = "muse", geminiBin = "agy", grokHome = "", hermesBin = "hermes", hermesHome = "", hermesBaseUrl = "http://127.0.0.1:11434/v1", hermesEnds = null, deepseekBin = "dsh", deepseekKey = "", deepseekHome = "", cliWorkDir, bridge, codexModelsFile, subscriptions }) {
+  constructor({ ollamaUrl, ollamaKey, orcaUrl = "https://api.orcarouter.ai/v1", orcaKey = "", claudeBin = "claude", codexBin = "codex", grokBin = "grok", museBin = "muse", geminiBin = "agy", kimiBin = "kimi", piBin = "pi", grokHome = "", hermesBin = "hermes", hermesHome = "", hermesBaseUrl = "http://127.0.0.1:11434/v1", hermesEnds = null, deepseekBin = "dsh", deepseekKey = "", deepseekHome = "", cliWorkDir, bridge, codexModelsFile, subscriptions }) {
     this.hermes = { bin: hermesBin, home: hermesHome || join(homedir(), ".cora", "hermes-home"), baseUrl: String(hermesBaseUrl).replace(/\/$/, "") };
     const ollamaEnd = { ...HERMES_ENDS.ollama, ...(hermesEnds?.ollama || {}) };
     // A test (or a private endpoint) that only moves the catalog must check the key there too.
@@ -205,6 +211,8 @@ export class LLM {
     this.grokBin = grokBin;
     this.museBin = museBin;
     this.geminiBin = geminiBin;
+    this.kimiBin = kimiBin;
+    this.piBin = piBin;
     // Grok's own home for the machine's login: Cora's MCP server lives in its config, never in the owner's.
     this.grokHome = grokHome || join(homedir(), ".cora", "grok-home");
     this.cliWorkDir = cliWorkDir;
@@ -320,6 +328,8 @@ export class LLM {
       grok: onPath(this.grokBin),
       muse: onPath(this.museBin),
       gemini: onPath(this.geminiBin),
+      kimi: onPath(this.kimiBin),
+      pi: onPath(this.piBin),
       ollama: Boolean(this.ollamaKey) || this.localOllama,
       // An Ollama on this machine is not an Ollama Cloud account: it lists the cloud
       // models either way, and only a paired machine (or a key) can run them.
@@ -427,7 +437,7 @@ export class LLM {
 
   /** The CLIs run the whole tool loop themselves; Ollama and the routers go through the Cora harness. */
   isAgentic(model) {
-    return isSubscriptionProvider(splitModel(model).provider) || ["hermes", "deepseek"].includes(splitModel(model).provider);
+    return isSubscriptionProvider(splitModel(model).provider) || ["hermes", "deepseek", "pi"].includes(splitModel(model).provider);
   }
 
   /**
@@ -526,6 +536,7 @@ export class LLM {
       grok: () => this.grokModels().map((model) => ({ name: model.id, label: model.label })),
       muse: () => MUSE_MODELS,
       gemini: () => [],
+      kimi: () => KIMI_MODELS,
     };
     const catalogs = await Promise.all(Object.keys(fallback).map(async (provider) => {
       if (!available[provider]) return [provider, []];
@@ -629,6 +640,31 @@ export class LLM {
         models.push({ id, provider: "hermes", label: model.label, via: ROUTERS[model.provider].label, local: false, tools: model.tools, vision: false, thinking: false });
       }
     }
+    // Kimi's subscription models, run by Hermes or Pi through a Kimi Code account.
+    const kimiListed = models.filter((model) => model.provider === "kimi");
+    const kimiReady = this.subscriptions?.list().some((record) => record.provider === "kimi" && record.status === "ready");
+    if (kimiReady && kimiListed.length) {
+      for (const harness of ["hermes", "pi"]) {
+        if (!available[harness]) continue;
+        for (const model of kimiListed) {
+          models.push({ id: `${harness}/kimi/${splitModel(model.id).name}`, provider: harness, label: model.label, via: PROVIDERS.kimi, backend: "kimi", local: false, tools: true, vision: harness === "pi" && model.vision, thinking: true });
+        }
+      }
+    }
+    if (available.pi) {
+      // Pi with a key: DeepSeek's models and Ollama Cloud's, on the person's key or the space's.
+      for (const model of DEEPSEEK_MODELS) {
+        models.push({ id: `pi/deepseek/${model.name}`, provider: "pi", label: model.label, via: "DeepSeek", backend: "deepseek", local: false, tools: true, vision: false, thinking: true });
+      }
+      for (const model of models.filter((item) => item.provider === "ollama" && !item.local)) {
+        const name = splitModel(model.id).name;
+        if (/^argo-/i.test(name)) continue;
+        models.push({ id: `pi/ollama/${name}`, provider: "pi", label: name, via: PROVIDERS.ollama, backend: "ollama", local: false, tools: model.tools, vision: Boolean(model.vision), thinking: Boolean(model.thinking) });
+      }
+      // And the services a Pi account signed in to: Claude, ChatGPT.
+      const listed = await this.subscriptions?.piModels?.({ fresh }).catch(() => []) || [];
+      for (const model of listed) models.push({ id: `pi/${model.name}`, provider: "pi", label: model.label, via: model.via, service: model.service, local: false, tools: true, vision: true, thinking: true });
+    }
     this.cache = { at: Date.now(), models, accounts };
     return models;
   }
@@ -669,8 +705,10 @@ export class LLM {
    */
   async runAgent({ model, subscriptionId, credentialId = "", system, prompt, tools, execute, timeoutMs, onStep, onUsage, effort = "", goal = "", signal, host = "", vision = false }) {
     const { provider, name } = splitModel(model);
-    subscriptionId ||= this.subscriptions?.defaultId(provider);
-    if (isSubscriptionProvider(provider) && (!this.subscriptions || !subscriptionId)) throw new Error("subscription da collegare");
+    // The account the model runs on: its own CLI's, or a Kimi Code account for Hermes and Pi on Kimi.
+    const account = subscriptionProviderOf(model);
+    subscriptionId ||= account ? this.subscriptions?.defaultId(account) : "";
+    if (account && (!this.subscriptions || !subscriptionId)) throw new Error("subscription da collegare");
     const runSignal = timeoutMs ? AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]) : signal;
     // A failed attempt is only retried when the agent had not started working: re-running a
     // turn that already used a tool would do its side effects twice.
@@ -683,22 +721,44 @@ export class LLM {
         used += 1;
         return execute(toolName, args);
       };
-      const run = tools.length ? this.bridge.register({ tools, execute: watched, ttlMs: timeoutMs + 60000 }) : null;
+      // Hermes and Pi on Kimi reach it through the bridge's relay, which adds the account's fresh token.
+      const relay = account === "kimi" && provider !== "kimi"
+        ? { base: (this.subscriptions.kimiBase?.(subscriptionId) || "https://api.kimi.ai/coding/v1").replace(/\/v1$/, ""), token: () => this.subscriptions.kimiToken(subscriptionId) }
+        : null;
+      const run = tools.length || relay ? this.bridge.register({ tools, execute: watched, ttlMs: timeoutMs + 60000, relay }) : null;
       const options = {
         model: name, system, prompt, mcp: run, toolNames: tools.map((tool) => tool.name), workDir: this.cliWorkDir, timeoutMs, onStep, onUsage, effort, goal, signal: runSignal, beforeTool,
       };
       try {
-        if (isSubscriptionProvider(provider)) {
+        if (isSubscriptionProvider(provider) && provider !== "pi") {
           const cli = {
             claude: { run: runClaude, bin: this.claudeBin },
             codex: { run: runCodex, bin: this.codexBin },
             grok: { run: runGrok, bin: this.grokBin },
             muse: { run: runMuse, bin: this.museBin },
             gemini: { run: runGemini, bin: this.geminiBin },
+            kimi: { run: runKimi, bin: this.kimiBin },
           }[provider];
           const invoke = (authEnv, residentAuth) => cli.run({ bin: cli.bin, ...options, authEnv, residentAuth, home: this.grokHome,
             workDir: authEnv ? join(this.cliWorkDir, subscriptionId) : this.cliWorkDir });
           return await this.subscriptions.run(subscriptionId, provider, runSignal, invoke);
+        }
+        const kimiRelay = relay ? { url: run.relayUrl, token: run.token } : null;
+        if (provider === "hermes" && relay) {
+          // Hermes on Kimi's subscription: the relay's address is its endpoint and the run's token its key.
+          const remote = name.split("/").slice(1).join("/");
+          return await this.subscriptions.run(subscriptionId, "kimi", runSignal, () => runHermes({ bin: this.hermes.bin, ...options, home: `${this.hermes.home}-kimi-${createHash("sha256").update(`${remote}:${Boolean(vision)}`).digest("hex").slice(0, 12)}`, baseUrl: `${kimiRelay.url}/v1`, model: remote, apiKey: kimiRelay.token, vision }));
+        }
+        if (provider === "pi") {
+          const backend = name.split("/")[0];
+          const piOptions = { bin: this.piBin, ...options, vision, ollamaUrl: this.hermesEnds.ollama.baseUrl };
+          if (relay) return await this.subscriptions.run(subscriptionId, "kimi", runSignal, () => runPi({ ...piOptions, relay: kimiRelay }));
+          if (account === "pi") {
+            return await this.subscriptions.run(subscriptionId, "pi", runSignal, (authEnv) => runPi({ ...piOptions, agentDir: authEnv.PI_CODING_AGENT_DIR }));
+          }
+          const apiKey = credentialId ? (this.credentials?.secret(credentialId) || "") : backend === "ollama" ? this.ollamaKey : this.deepseek.key;
+          if (!apiKey) throw new Error(credentialId ? "chiave API non trovata" : `manca la chiave ${backend === "ollama" ? "Ollama" : "DeepSeek"} dello space`);
+          return await runPi({ ...piOptions, apiKey });
         }
         if (provider === "hermes") {
           const endpoint = this.hermesRunTarget(name, host, credentialId);

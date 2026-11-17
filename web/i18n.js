@@ -3124,6 +3124,22 @@ export const EN = {
   "La copia contiene un possibile segreto: conservalo nella cassaforte prima di salvare in chiaro.": "The copy contains a possible secret: put it in the vault before saving as plaintext.",
   "Due documenti hanno lo stesso percorso. Rinominali prima della conversione.": "Two documents have the same path. Rename them before conversion.",
   "Verifica lo stato della cartella: il salvataggio finale potrebbe essere già riuscito.": "Check the folder: the final save may already have succeeded.",
+  "Kimi (abbonamento)": "Kimi (subscription)",
+  "Kimi Code guida sé stesso con l'abbonamento Kimi scelto qui sotto.": "Kimi Code drives itself with the Kimi subscription chosen below.",
+  "Pi guida sé stesso: con una chiave DeepSeek o Ollama Cloud, o con un abbonamento Kimi, Claude o ChatGPT.": "Pi drives itself: with a DeepSeek or Ollama Cloud key, or with a Kimi, Claude or ChatGPT subscription.",
+  "Kimi Code non trovato su questa macchina": "Kimi Code not found on this machine",
+  "Pi non trovato su questa macchina": "Pi not found on this machine",
+  "Kimi Code non è installato su questa macchina: installalo sul server con l'utente di Cora (npm i -g @moonshot-ai/kimi-code).": "Kimi Code is not installed on this machine: install it on the server as Cora's user (npm i -g @moonshot-ai/kimi-code).",
+  "Pi non è installato su questa macchina: installalo sul server con l'utente di Cora (npm i -g @earendil-works/pi-coding-agent).": "Pi is not installed on this machine: install it on the server as Cora's user (npm i -g @earendil-works/pi-coding-agent).",
+  "I modelli dell'abbonamento Kimi, con l'account scelto qui sotto.": "The Kimi subscription's models, with the account chosen below.",
+  "I modelli dell'abbonamento Kimi, con un account Kimi Code collegato.": "The Kimi subscription's models, with a connected Kimi Code account.",
+  "I modelli del tuo abbonamento Claude, con un account Pi collegato a Claude.": "Your Claude subscription's models, with a Pi account signed in to Claude.",
+  "I modelli del tuo abbonamento ChatGPT, con un account Pi collegato a ChatGPT.": "Your ChatGPT subscription's models, with a Pi account signed in to ChatGPT.",
+  "I modelli compaiono appena l'account è collegato.": "The models show up as soon as the account is connected.",
+  "Scegli uno dei modelli di questo account.": "Pick one of this account's models.",
+  "Pi entra nel tuo abbonamento Claude o ChatGPT. Con le chiavi DeepSeek e Ollama Cloud, e con l'abbonamento Kimi, Pi non ha bisogno di un account qui.": "Pi signs in to your Claude or ChatGPT subscription. With DeepSeek and Ollama Cloud keys, and with the Kimi subscription, Pi needs no account here.",
+  "Dove gira Pi": "Where Pi runs",
+  "Hermes guida sé stesso: su questa macchina, su Ollama Cloud, su DeepSeek o con l'abbonamento Kimi.": "Hermes drives itself: on this machine, on Ollama Cloud, on DeepSeek or with the Kimi subscription.",
 };
 
 // Encrypted-space controls.

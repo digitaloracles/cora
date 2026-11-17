@@ -7,7 +7,7 @@ import { avatarVersion, drawnAvatar } from "./avatar.js";
 import { sanitizeCharacter } from "./character.js";
 import { plainKeys } from "./box.js";
 import { cleanGithubOrg } from "./github-apps.js";
-import { HARNESSES, SUBSCRIPTION_PROVIDERS, isSubscriptionProvider } from "./harnesses.js";
+import { HARNESSES, PI_SERVICES, SUBSCRIPTION_PROVIDERS, isSubscriptionProvider, subscriptionProviderOf } from "./harnesses.js";
 import { modelKeyBackend } from "./hermes-keys.js";
 import { VOICE_LANGUAGES } from "./voice.js";
 import { aggregateMeters } from "./usage.js";
@@ -15,7 +15,7 @@ import { aggregateMeters } from "./usage.js";
 export const SHARED = "_shared";
 export const CONTEXT_LIMITS = { fileChars: 30000, totalChars: 60000, files: 20 };
 /** The providers a model id can name (provider/model). */
-export const MODEL_PROVIDERS = [...SUBSCRIPTION_PROVIDERS, "ollama", "orcarouter", "hermes", "deepseek"];
+export const MODEL_PROVIDERS = [...new Set([...SUBSCRIPTION_PROVIDERS, "ollama", "orcarouter", "hermes", "deepseek", "pi"])];
 
 function checkModel(value) {
   const model = cleanText(value, 160).trim();
@@ -946,7 +946,7 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     return this.subscriptions().find((record) => record.provider === provider && record.resident) || null;
   }
 
-  ensureResidentSubscriptions(providers = SUBSCRIPTION_PROVIDERS) {
+  ensureResidentSubscriptions(providers = SUBSCRIPTION_PROVIDERS.filter((provider) => !HARNESSES[provider].managedOnly)) {
     for (const provider of providers) {
       if (this.residentSubscription(provider)) continue;
       const record = this.createSubscription({ provider, label: HARNESSES[provider].label });
@@ -955,12 +955,14 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     }
   }
 
-  createSubscription({ provider, label, connectedBy = null }) {
+  createSubscription({ provider, label, service = "", connectedBy = null }) {
     if (!isSubscriptionProvider(provider)) throw new ValidationError("provider subscription non valido");
+    // A Pi account signs in to one service, chosen when it is added.
+    if (provider === "pi" && !Object.hasOwn(PI_SERVICES, service)) throw new ValidationError("scegli il servizio da collegare a Pi");
     const name = cleanText(label, 80).replace(/[\r\n]/g, " ").trim();
     if (!name) throw new ValidationError("nome subscription richiesto");
     const at = new Date().toISOString();
-    const record = { id: newId("sub"), provider, label: name, status: "disconnected", email: "", plan: "", connectedBy: panelPerson(connectedBy), createdAt: at, updatedAt: at };
+    const record = { id: newId("sub"), provider, ...(provider === "pi" ? { service } : {}), label: name, status: "disconnected", email: "", plan: "", connectedBy: panelPerson(connectedBy), createdAt: at, updatedAt: at };
     this.stmt("INSERT INTO subscriptions(id, provider, data) VALUES (?, ?, ?)").run(record.id, provider, JSON.stringify(record));
     return record;
   }
@@ -1015,8 +1017,9 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
   }
 
   checkAgentSubscription(agent, { unchanged = false } = {}) {
-    const provider = (agent.model || this.settings.defaultModel).split("/")[0];
-    const needsSubscription = isSubscriptionProvider(provider);
+    const model = agent.model || this.settings.defaultModel;
+    const provider = subscriptionProviderOf(model) || model.split("/")[0];
+    const needsSubscription = Boolean(subscriptionProviderOf(model));
     if (!agent.subscriptionId) {
       const resident = this.settings.useResidentSubscriptions && this.residentSubscription(provider);
       if (needsSubscription && !unchanged && resident?.status !== "ready") throw new ValidationError("scegli una subscription collegata per questo modello");
@@ -1024,6 +1027,8 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     }
     const subscription = this.subscription(agent.subscriptionId);
     if (!subscription || subscription.provider !== provider || (subscription.resident && !this.settings.useResidentSubscriptions)) throw new ValidationError("subscription incompatibile con il modello");
+    // A Pi account is signed in to one service: Claude's models need the Claude one.
+    if (provider === "pi" && subscription.service !== model.split("/")[1]) throw new ValidationError("subscription incompatibile con il modello");
     if (subscription.status !== "ready" && !unchanged) throw new ValidationError("collega la subscription prima di usarla");
   }
 

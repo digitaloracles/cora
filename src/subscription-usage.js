@@ -69,6 +69,14 @@ export function parseSubscriptionUsage(provider, data) {
       const kind = kindFor(minutes, fallback);
       add(kind, kind, item.used_percent ?? item.usedPercent ?? item.used_percentage ?? item.utilization, item.resets_at ?? item.resetsAtMs ?? item.resetsAt, "", minutes);
     }
+  } else if (provider === "kimi") {
+    // Kimi's /usages: the used ratio (0–1) of the 5-hour, weekly and monthly limits.
+    const usages = object(root.usages);
+    for (const [key, kind, minutes] of [["limit_5h", "session", 300], ["limit_7d", "weekly", 10080], ["limit_month_total", "monthly", null], ["limit_month_code", "monthly", null]]) {
+      const item = object(usages[key]), ratio = number(item.used_ratio);
+      if (ratio === null || ratio < 0 || ratio > 1) continue;
+      add(key, kind, ratio * 100, item.reset_time, key === "limit_month_code" ? "Code" : "", minutes);
+    }
   } else if (provider === "ollama") {
     const included = fields(fields(root).included);
     for (const [key, kind] of [["session", "session"], ["weekly", "weekly"]]) {

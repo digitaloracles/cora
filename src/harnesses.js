@@ -39,6 +39,24 @@ export const HARNESSES = {
     loginHosts: ["auth.meta.com"],
     deviceParam: "code",
   },
+  kimi: {
+    label: "Kimi",
+    product: "Kimi Code",
+    homeVar: "KIMI_CODE_HOME",
+    resident: () => process.env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"),
+    // kimi.com is the region Cora signs in with; kimi.ai is the same service's global mirror.
+    loginHosts: ["www.kimi.com", "kimi.com", "www.kimi.ai", "kimi.ai"],
+    deviceParam: "user_code",
+  },
+  pi: {
+    label: "Pi",
+    product: "Pi",
+    homeVar: "PI_CODING_AGENT_DIR",
+    resident: () => process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"),
+    // Pi signs in to the service it runs on: Claude's code page or ChatGPT's device page.
+    loginHosts: ["claude.ai", "claude.com", "platform.claude.com", "auth.openai.com"],
+    managedOnly: true,
+  },
   gemini: {
     label: "Gemini",
     product: "Antigravity CLI",
@@ -50,6 +68,29 @@ export const HARNESSES = {
 };
 
 export const SUBSCRIPTION_PROVIDERS = Object.keys(HARNESSES);
+
+/** The subscriptions Pi signs in to by itself, and how Cora names them. */
+export const PI_SERVICES = {
+  anthropic: { label: "Claude", manualCode: true },
+  "openai-codex": { label: "ChatGPT", manualCode: false },
+};
+
+/** The ends Pi reaches with a key instead of an account: the person's own or the space's. */
+export const PI_KEY_ENDS = ["deepseek", "ollama"];
+
+/**
+ * The account a model id runs on. A subscription CLI runs on its own (`kimi/…`); Hermes and Pi
+ * reach Kimi's subscription through a Kimi Code account (`hermes/kimi/…`, `pi/kimi/…`); Pi's
+ * own logins are Pi accounts (`pi/anthropic/…`). Empty: no account, a key or the machine.
+ */
+export function subscriptionProviderOf(model) {
+  const parts = String(model || "").split("/");
+  if (Object.hasOwn(HARNESSES, parts[0]) && parts[0] !== "pi") return parts.length > 1 ? parts[0] : "";
+  if (parts.length < 3) return "";
+  if ((parts[0] === "hermes" || parts[0] === "pi") && parts[1] === "kimi") return "kimi";
+  if (parts[0] === "pi" && Object.hasOwn(PI_SERVICES, parts[1])) return "pi";
+  return "";
+}
 
 /**
  * Where Codex keeps the login. The server's own account lives in the machine's

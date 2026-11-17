@@ -581,6 +581,9 @@ before(async () => {
     codexBin: cli.codex,
     grokBin: cli.grok,
     museBin: cli.muse,
+    // Kimi Code and Pi are not installed here: the panel says so.
+    kimiBin: "/missing/kimi",
+    piBin: "/missing/pi",
     geminiBin: cli.gemini,
     codexModelsFile: cli.models,
     ownerInstructions: join(home, "owner-AGENTS.md"),
@@ -7181,7 +7184,7 @@ describe("what runs the models", () => {
     await panel.navigate(`#/agent/${agent.id}/cervello`);
     await waitFor(() => panel.app.querySelector(".brain-harness"));
     assert.deepEqual(panel.app.querySelector(".brain-harness").querySelectorAll("option").map((node) => node.textContent),
-      ["Cora's harness", "Claude Code", "Codex", "Grok Build", "Muse Code", "Antigravity CLI", "Hermes", "DeepSeek Harness"]);
+      ["Cora's harness", "Claude Code", "Codex", "Grok Build", "Muse Code", "Antigravity CLI", "Kimi Code · not installed", "Pi · not installed", "Hermes", "DeepSeek Harness"]);
     const sections = panel.app.querySelector(".email-workspace-nav").querySelectorAll("button");
     assert.deepEqual(sections.map((node) => node.querySelector("b").textContent), ["Model and account", "Reasoning", "Computer"]);
     // It opens on the side the agent is already on: the cloud.

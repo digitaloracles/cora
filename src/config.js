@@ -73,6 +73,8 @@ export const config = {
   grokBin: setting("GROK_BIN") || "grok",
   museBin: setting("MUSE_BIN") || "muse",
   geminiBin: setting("GEMINI_BIN") || "agy",
+  kimiBin: setting("KIMI_BIN") || "kimi",
+  piBin: setting("PI_BIN") || "pi",
   codexModelsFile: setting("CODEX_MODELS") || "",
   hushBin: setting("HUSH_BIN") || "hush",
   vapidKey: env.VAPID_KEY || "",
