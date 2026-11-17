@@ -1324,7 +1324,7 @@ export class Orchestrator {
       return [item];
     }
     const chatId = telegramChatId(channelId);
-    if (chatId) return (this.telegramClientFor(channelId) || this.telegram).say(chatId, { content, name: "Cora" });
+    if (chatId) return (this.telegramClientFor(channelId) || this.telegram).say(chatId, { content, name: "Cora", markdown: true });
     if (slackIds(channelId)) {
       const info = this.channels.info(channelId);
       return this.slackSay(info.channelId, { content, name: "Cora", threadTs: info.threadTs });
@@ -1346,12 +1346,12 @@ export class Orchestrator {
       if (!agent || (this.offered.get(key) || 0) > now - 30 * 60000) continue;
       this.offered.set(key, now);
       if (refused) {
-        await this.notice(state.id, this.permissionNotice(agent, item, english));
+        await this.notice(state.id, this.permissionNotice(agent, item, english, state.id));
         continue;
       }
       const transport = transportOf(state.id);
       const where = agent.channelIds.filter((channelId) => transportOf(channelId) === transport).map((channelId) => this.channelMeta(channelId)?.name).filter(Boolean).map((name) => `#${name}`);
-      const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/impostazioni/ascolto` : "";
+      const link = this.panelLink(state.id, `agent/${agent.id}/impostazioni/ascolto`);
       // Switched off on this whole platform, not just away from this channel.
       const away = agent.enabled && !this.channels.agentOn(agent, transport);
       const platform = TRANSPORT_LABELS[transport] || transport;
@@ -1362,7 +1362,7 @@ export class Orchestrator {
       if (agent.enabled && transport === "discord" && !this.dmAgentId(state.id)) {
         try {
           await this.discord.say(state.id, {
-            content: `${why} ${english ? "The owner can put it to listen here:" : "Il proprietario può metterlo in ascolto qui:"}`,
+            content: `${why} ${english ? `The owner can put it to listen here with the button${link ? `, or under Listening in the panel: ${link}` : ""}.` : `Il proprietario può metterlo in ascolto qui con il pulsante${link ? `, oppure in Ascolto nel pannello: ${link}` : ""}.`}`,
             components: [{ type: 1, components: [{ type: 2, style: 1, label: (english ? `Let ${agent.name} listen here` : `Metti ${agent.name} in ascolto qui`).slice(0, 80), custom_id: `cora:listen:${agent.id}:${item.id}` }] }],
           });
           continue;
@@ -1379,15 +1379,22 @@ export class Orchestrator {
   }
 
   /** It listens here, but the person who called it has no permission on it: who can grant it, and where. */
-  permissionNotice(agent, item, english) {
+  permissionNotice(agent, item, english, channelId = "") {
     const ownerId = this.brain.knowledge?.ownerId?.(agent);
     const person = ownerId ? this.store.panelUser(ownerId) : null;
     const owner = person && !person.blocked ? person.name || person.email : "";
     const who = item.authorName || (english ? "this person" : "questa persona");
-    const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/impostazioni/autorizzazioni` : "";
+    const link = this.panelLink(channelId, `agent/${agent.id}/impostazioni/autorizzazioni`);
     return english
       ? `**${agent.name}** does not answer ${who}: they have no permission to work with it. ${owner || "Its owner"} can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
       : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
+  }
+
+  /** A link into the panel for a notice: on Discord in angle brackets, so no preview card covers the words. */
+  panelLink(channelId, path) {
+    if (!this.instanceUrl) return "";
+    const url = `${this.instanceUrl}/#/${path}`;
+    return transportOf(channelId) === "discord" ? `<${url}>` : url;
   }
 
   /** A button pressed on one of Cora's messages: only the owner may put an agent to listen. */

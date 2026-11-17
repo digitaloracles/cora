@@ -12,6 +12,11 @@ export function escapeHtml(text) {
   return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Cora's own notices are written in Markdown: on Telegram their bold becomes HTML bold, the rest stays text. */
+export function markdownHtml(text) {
+  return escapeHtml(text).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+}
+
 export function chatTitle(chat) {
   return chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || (chat.username ? `@${chat.username}` : String(chat.id));
 }
@@ -170,14 +175,15 @@ export class Telegram extends EventEmitter {
   }
 
   /** Post text (and optionally a file); `name` puts the agent's name in bold on top, for agents without their own bot. */
-  async say(chatId, { content = "", file = null, name = "" }) {
+  async say(chatId, { content = "", file = null, name = "", markdown = false }) {
     const header = name ? `<b>${escapeHtml(name)}</b>\n` : "";
+    const html = markdown ? markdownHtml : escapeHtml;
     const sent = [];
     let text = String(content || "").trim();
     if (file) {
       const form = new FormData();
       const photo = /^image\/(png|jpeg|webp)$/.test(file.type || "") && file.data.length <= PHOTO_LIMIT_BYTES;
-      const caption = header + escapeHtml(text);
+      const caption = header + html(text);
       form.set("chat_id", String(chatId));
       form.set(photo ? "photo" : "document", new Blob([file.data], { type: file.type || "application/octet-stream" }), file.name || "file");
       form.set("parse_mode", "HTML");
@@ -190,7 +196,7 @@ export class Telegram extends EventEmitter {
     }
     for (const chunk of splitMessage(text, MAX_TEXT - header.length)) {
       sent.push(await this.request("sendMessage", {
-        chat_id: chatId, text: header + escapeHtml(chunk), parse_mode: "HTML", link_preview_options: { is_disabled: true },
+        chat_id: chatId, text: header + html(chunk), parse_mode: "HTML", link_preview_options: { is_disabled: true },
       }));
     }
     return sent;
