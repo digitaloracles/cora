@@ -9861,7 +9861,8 @@ function threadLoad(node, board) {
 
 function threadCard(thread) {
   const flows = thread.flows.filter((flow) => flow.status === "active");
-  if (!flows.length && !((thread.thread || thread.kind === "telegram") && thread.open)) return null;
+  // A whole channel with agents listening stays live like a thread: between turns it is neither working nor finished.
+  if (!flows.length && !(thread.open && (thread.thread || thread.kind === "telegram" || thread.listening?.length))) return null;
   const manage = S.data?.currentUser?.role === "owner" || S.data?.access?.canManage;
   return h("article", { class: `thread-card${thread.closed ? " closed" : ""}` },
     h("header", {},

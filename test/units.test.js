@@ -352,6 +352,20 @@ test("the brain keeps no secret: credential shapes and values after a secret's w
   for (const [text, expected] of cases) assert.equal(redactSecrets(text), expected, text);
 });
 
+
+test("a whole channel with agents listening stays on the live list between turns", () => {
+  const panel = panelHarness({ fetch: async () => { throw new Error("offline"); } });
+  panel.run(`S.data = { agents: [], currentUser: { id: "u1", role: "member" } }`);
+  const done = { id: "f1", agentId: "li", agentName: "LinkedIn", status: "done", startedAt: "2026-11-17T14:44:58Z", endedAt: "2026-11-17T14:45:04Z" };
+  const channel = (extra) => ({ id: "sl:C0CGYKUE3T6", name: "cora-ap", kind: "slack", thread: false, parentId: "", open: true, closed: false, flows: [done], ...extra });
+  const card = (thread) => panel.run(`threadCard(${JSON.stringify(thread)})`);
+  const listening = card(channel({ listening: [{ id: "li", name: "LinkedIn" }, { id: "db", name: "Dbase" }] }));
+  assert.ok(listening, "a channel someone listens in is live even when no turn is running");
+  assert.match(listening.querySelector(".thread-idle").textContent, /LinkedIn, Dbase/);
+  assert.equal(card(channel({ listening: [], open: false })), null, "a channel nobody listens in goes to the history");
+  assert.equal(card(channel({ listening: [], open: true })), null, "an open channel without listeners is not live by itself");
+  assert.ok(card(channel({ kind: "discord", id: "1572259042540261507", listening: [{ id: "li", name: "LinkedIn" }] })), "the same on Discord");
+});
 test("every turn in the Reasoning list leads with the token box a goal has, and tokens are never a chip", () => {
   const panel = panelHarness({ fetch: async () => { throw new Error("offline"); } });
   panel.run(`S.data = { agents: [{ id: "ada", name: "Ada", color: "#f2a93b" }], settings: {} }`);
