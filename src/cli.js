@@ -336,6 +336,11 @@ export function hermesConfig({ baseUrl, model, keyed = false, vision = false }) 
     "plugins:",
     "  enabled:",
     "    - cora-tools",
+    // Hermes otherwise hides every plugin tool behind tool_call, whose calls
+    // are JSON inside a string: smaller models break the escaping and no tool runs.
+    "tools:",
+    "  tool_search:",
+    "    enabled: \"off\"",
     "",
   ].join("\n");
 }

@@ -6443,6 +6443,7 @@ describe("talking with the agents", () => {
     assert.ok(run.tools.includes("list_routines") && run.tools.includes("say"));
     assert.match(run.output, /Buongiorno|Nessuna routine|you have no routines/, "the tool really ran through Cora's bridge");
     assert.match(run.hermesConfig, /plugins:\n  enabled:\n    - cora-tools/, "Cora uses the native image-aware adapter");
+    assert.match(run.hermesConfig, /tools:\n  tool_search:\n    enabled: "off"/, "Cora's tools are offered directly, never behind Hermes' tool_call bridge");
     assert.doesNotMatch(run.hermesConfig, /CORA_BRIDGE_TOKEN|mcp_servers/, "the session token never lands in the file");
     assert.deepEqual(run.secretEnv, []);
     assert.ok(run.argv.includes("--usage-file"), "Hermes reports the session it recorded");
