@@ -424,6 +424,7 @@ input[type=color] { width: 64px; height: 44px; padding: 4px; background: var(--w
 /* Where Hermes runs: three lit tiles, each with its mark, rather than a squeezed toggle. */
 .segmented.hermes-places { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
 .segmented.hermes-places.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.segmented.hermes-places.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .segmented.hermes-places button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; min-height: 58px; padding: 8px 6px; line-height: 1.2; text-align: center; }
 .segmented.hermes-places button .ico { width: 18px; height: 18px; margin: 0; vertical-align: 0; }
 .segmented.hermes-places button:not(.on) .ico { color: var(--faint); }
@@ -445,6 +446,7 @@ input[type=color] { width: 64px; height: 44px; padding: 4px; background: var(--w
 .hermes-key-form { margin-top: 10px; }
 @media (max-width: 600px) {
   .segmented.hermes-places.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .segmented.hermes-places.five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .hermes-key-add, .hermes-typed { flex-direction: column; align-items: stretch; }
   .hermes-key-add > input, .hermes-key-add > .paste-field, .hermes-typed > input { flex: none; width: 100%; }
   .hermes-key-form .row > .btn, .hermes-typed > .btn { width: 100%; justify-content: center; }
@@ -757,7 +759,7 @@ input.num { width: 92px; text-align: right; font-family: var(--mono); }
 .account-login { display: grid; gap: 14px; padding: 4px 16px 16px; border-top: 1px dashed var(--line); background: rgba(242, 169, 59, 0.03); }
 .account-login .subscription-steps { margin-top: 12px; }
 .accounts-empty { margin: 0; padding: 14px 16px; border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--muted); font-size: 13px; }
-.accounts-add { display: flex; }
+.accounts-add { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 480px) {
   .account-actions .btn:not(.only-icon) { width: 34px; padding: 0; }
   .account-actions .btn:not(.only-icon) span { display: none; }

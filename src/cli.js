@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { noteChildPid } from "./thread-sessions.js";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -830,5 +830,279 @@ export async function runMuse({ bin, model, system, prompt, mcp, toolNames, work
     return { text: answer, usage: used };
   } finally {
     rmSync(promptFile, { force: true });
+  }
+}
+
+/**
+ * How to start a CLI that npm installed as a Node script (Kimi Code, Pi): with Cora's own Node,
+ * as dsh is. A service's PATH may hold an older Node than the one the script needs, and
+ * `#!/usr/bin/env node` would pick that one. Anything else (a native build) starts as it is.
+ */
+export function nodeCli(bin) {
+  const found = String(bin).includes("/") ? bin : (process.env.PATH || "").split(":").map((dir) => dir && join(dir, bin)).find((path) => path && existsSync(path));
+  if (!found) return { command: bin, args: [] };
+  let real = found;
+  try { real = realpathSync(found); } catch {}
+  return /\.(c|m)?js$/.test(real) ? { command: process.execPath, args: [real] } : { command: found, args: [] };
+}
+
+/** The variables Kimi Code fills into an agent file's body: Cora's own text must never be rewritten by them. */
+const KIMI_TEMPLATE_VARS = /\$\{(skills|agents_md|cwd|cwd_listing|os|shell|now|additional_dirs_info|base_prompt|plugin_sections|windows_notes|additional_dirs_section|skills_section)\}/g;
+// Linux refuses a single argument over 128 KiB: a longer request goes into the agent file instead.
+const KIMI_ARG_LIMIT = 96 * 1024;
+
+/** What is linked from the account's Kimi home into a run's own: the login, its refresh lock, the device and the models. */
+const KIMI_SHARED = ["credentials", "oauth", "device_id", "config.toml"];
+
+/**
+ * The agent file a Kimi Code run starts with: Cora's system prompt is the whole prompt
+ * (no Kimi default, workspace AGENTS.md or skills), and the only tools are Cora's.
+ */
+export function kimiAgentFile({ system, tools = true, request = "" }) {
+  const escape = (text) => String(text).replace(KIMI_TEMPLATE_VARS, (match) => `$⁠${match.slice(1)}`);
+  return [
+    "---",
+    "name: cora",
+    "description: Agente di Cora con i soli strumenti di Cora",
+    `tools: ${tools ? '["mcp__cora__*"]' : "[]"}`,
+    "subagents: []",
+    "---",
+    "",
+    escape(system),
+    ...(request ? ["", "<richiesta_corrente>", escape(request), "</richiesta_corrente>"] : []),
+    "",
+  ].join("\n");
+}
+
+/**
+ * Cora's tools for a Kimi Code turn: the bridge's own MCP endpoint over HTTP, its key the run's
+ * token from the environment. A stdio server raced Kimi Code 2.6's first step (the turn often
+ * started before the server's tools were attached); an HTTP server is there before Kimi asks.
+ */
+export function kimiMcpConfig(url) {
+  return `${JSON.stringify({ mcpServers: { cora: { url: `${url}/mcp`, bearerTokenEnvVar: "CORA_BRIDGE_TOKEN", startupTimeoutMs: 60000 } } }, null, 2)}\n`;
+}
+
+/**
+ * How many tools Kimi Code gave the model on a turn's first step, from the session log it keeps
+ * in the run's home ("llm config … toolCount=N"); null when it wrote none.
+ */
+export function kimiFirstStepTools(runHome) {
+  const sessions = join(runHome, "sessions");
+  let text = "";
+  try {
+    for (const workspace of readdirSync(sessions)) {
+      for (const session of readdirSync(join(sessions, workspace))) {
+        try { text += readFileSync(join(sessions, workspace, session, "logs", "kimi-code.log"), "utf8"); } catch {}
+      }
+    }
+  } catch { return null; }
+  const first = text.match(/llm config\s+turnStep=\d+\.1\b[^\n]*?\btoolCount=(\d+)/);
+  return first ? Number(first[1]) : null;
+}
+
+// Kimi Code 2.6 sometimes starts a turn before it has attached a user-level MCP server's
+// tools (its session baseline is frozen without them): such a turn ran with no tool at all,
+// so it is started again, in a new home, before its answer counts.
+const KIMI_TOOL_ATTEMPTS = 3;
+
+/**
+ * One agent turn on Kimi Code, one-shot in print mode. Each turn gets a Kimi home of its own,
+ * gone when the turn ends, with Cora's MCP server in its mcp.json; the account's login, its
+ * refresh lock, device id and model aliases are linked from the account's home, so a refreshed
+ * token is the account's for every later turn and parallel turns refresh under the same lock.
+ * An empty HOME keeps the owner's ~/.agents (instructions, skills, agents) out.
+ */
+export async function runKimi({ bin, model, system, prompt, mcp, toolNames, workDir, timeoutMs, onStep, authEnv, residentAuth = false, signal }) {
+  if (!authEnv || (!authEnv.KIMI_CODE_HOME && !residentAuth)) throw new Error("subscription da collegare");
+  const tools = Boolean(mcp && toolNames.length);
+  for (let attempt = 1; ; attempt += 1) {
+    const result = await kimiAttempt({ bin, model, system, prompt, mcp, tools, workDir, timeoutMs, onStep, authEnv, signal });
+    if (!tools || result.toolCount !== 0) return { text: result.text, usage: { in: 0, out: 0 } };
+    if (attempt >= KIMI_TOOL_ATTEMPTS) throw new Error("kimi: Cora's tools did not load in Kimi Code");
+    onStep?.({ type: "note", text: "Kimi Code è partito senza gli strumenti di Cora: riparto il turno." });
+  }
+}
+
+async function kimiAttempt({ bin, model, system, prompt, mcp, tools, workDir, timeoutMs, onStep, authEnv, signal }) {
+  const account = authEnv.KIMI_CODE_HOME || join(homedir(), ".kimi-code");
+  const id = randomBytes(6).toString("hex");
+  const runHome = join(workDir, `kimi-${id}`);
+  const empty = join(runHome, "home");
+  const skills = join(runHome, "skills-none");
+  mkdirSync(empty, { recursive: true, mode: 0o700 });
+  mkdirSync(skills, { recursive: true, mode: 0o700 });
+  mkdirSync(join(account, "oauth"), { recursive: true, mode: 0o700 });
+  for (const name of KIMI_SHARED) if (existsSync(join(account, name))) symlinkSync(join(account, name), join(runHome, name));
+  if (tools) writeFileSync(join(runHome, "mcp.json"), kimiMcpConfig(mcp.url), { mode: 0o600 });
+  const inline = Buffer.byteLength(prompt, "utf8") <= KIMI_ARG_LIMIT;
+  const agentFile = join(runHome, "cora-agent.md");
+  writeFileSync(agentFile, kimiAgentFile({ system, tools, request: inline ? "" : prompt }), { mode: 0o600 });
+  const request = inline ? prompt : "Esegui la richiesta corrente riportata alla fine delle tue istruzioni, in <richiesta_corrente>.";
+  const args = ["-p", request, "--output-format", "stream-json", "-m", `kimi-code/${model}`, "--agent-file", agentFile, "--skills-dir", skills];
+  const env = {
+    HOME: empty, KIMI_CODE_HOME: runHome, KIMI_DISABLE_TELEMETRY: "1", KIMI_CODE_NO_AUTO_UPDATE: "1",
+    KIMI_CODE_WATCH: "0", KIMI_CODE_BUILTIN_PRODUCT_SKILLS: "0", KIMI_CODE_GLOBAL_SEARCH: "0",
+    CORA_BRIDGE_URL: tools ? mcp.url : "", CORA_BRIDGE_TOKEN: tools ? mcp.token : "",
+  };
+  // Steps wait until the attempt is known to have had its tools: a toolless attempt's words are dropped.
+  const held = [];
+  const texts = textSteps((step) => held.push(step));
+  let answer = null;
+  let failure = "";
+  const onLine = (line) => {
+    const message = JSON.parse(line);
+    if (message.type === "error") { failure = String(message.message || message.code || "error"); return; }
+    if (message.role !== "assistant") return;
+    const text = typeof message.content === "string" ? message.content : "";
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+      // What it wrote before reaching for a tool was its reasoning, not the answer.
+      if (text.trim()) texts.text(text);
+      texts.flush();
+      for (const step of held.splice(0)) onStep?.(step);
+      answer = null;
+    } else if (text.trim()) {
+      if (answer !== null) texts.text(answer);
+      answer = text;
+    }
+  };
+  try {
+    const cli = nodeCli(bin);
+    const out = await run(cli.command, [...cli.args, ...args], { cwd: workDir, timeoutMs, onLine, env, authEnv, signal });
+    signal?.throwIfAborted();
+    const toolCount = tools ? kimiFirstStepTools(runHome) : null;
+    if (toolCount === 0 && !out.timedOut) return { text: "", toolCount };
+    if (out.timedOut) throw cliFailure(`kimi: no answer within ${Math.round(timeoutMs / 1000)}s`, out);
+    if (out.code !== 0 || failure) {
+      const reason = failure || out.stderr.trim().split("\n").filter(Boolean).pop() || `exit ${out.code}`;
+      throw cliFailure(`kimi: ${reason.slice(0, 240)}`, out);
+    }
+    if (answer === null) throw cliFailure("kimi: returned no content", out);
+    // A model that writes its tool call out as text instead of calling it said nothing usable: a retry, not an answer.
+    if (/<\|open\|>\s*tools?\b/.test(answer)) throw cliFailure("kimi: returned no content (a tool call came back as text)", out);
+    texts.finish(answer);
+    for (const step of held.splice(0)) onStep?.(step);
+    return { text: answer.trim(), toolCount };
+  } finally {
+    // Links are removed as links: the account's own files stay.
+    rmSync(runHome, { recursive: true, force: true });
+  }
+}
+
+/** Pi's thinking levels for Cora's efforts. */
+const PI_THINKING = { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+
+/**
+ * Pi's agent dir for one run: Cora's MCP server with its tools declared to the model, no
+ * code mode, and the endpoint the model is reached through. Ollama Cloud is an
+ * OpenAI-compatible endpoint Pi has no provider for; Kimi's subscription goes through
+ * Cora's relay, which adds the account's token.
+ */
+export function piFiles({ backend, model, tools = true, bridgeUrl = "", relayUrl = "", ollamaUrl = "https://ollama.com/v1", vision = false }) {
+  // Cora's tools over HTTP from the run's own bridge, as for Kimi Code: no server process to start, its key from the environment.
+  const mcp = tools ? { autoEnableCodemode: false, mcpServers: { cora: { url: `${bridgeUrl}/mcp`, headers: { Authorization: "Bearer ${CORA_BRIDGE_TOKEN}" }, exposure: "direct", timeout: 3600 } } } : { autoEnableCodemode: false, mcpServers: {} };
+  const providers = {};
+  if (backend === "ollama") {
+    providers.ollama = { baseUrl: ollamaUrl, api: "openai-completions", apiKey: "${CORA_PI_KEY}", models: [{ id: model, name: model, input: vision ? ["text", "image"] : ["text"], reasoning: true, contextWindow: 131072, maxTokens: 32768 }] };
+  }
+  if (backend === "kimi") providers["kimi-coding"] = { baseUrl: `${relayUrl}/v1` };
+  return { "mcp.json": mcp, "models.json": { providers }, "settings.json": { quietStartup: true, telemetry: false } };
+}
+
+/** The provider Pi knows each Cora end by. */
+const PI_PROVIDERS = { deepseek: "deepseek", ollama: "ollama", kimi: "kimi-coding", anthropic: "anthropic", "openai-codex": "openai-codex" };
+/** The services a Pi account signs in to itself: their login lives in the account's auth.json. */
+const PI_ACCOUNT_SERVICES = ["anthropic", "openai-codex"];
+
+/**
+ * One agent turn on Pi, over its RPC mode: the prompt goes on stdin, so no length limit,
+ * and the events give its thoughts, text and usage. Pi gets an agent dir of its own for the
+ * run (never the owner's ~/.pi), no session, extensions, skills, templates or context files,
+ * and only Cora's tools. The key reaches only this child.
+ */
+export async function runPi({ bin, model, system, prompt, mcp, toolNames, workDir, timeoutMs, onStep, onUsage, effort = "", apiKey = "", relay = null, agentDir: accountDir = "", vision = false, ollamaUrl, signal }) {
+  const slash = String(model).indexOf("/");
+  const backend = slash > 0 ? model.slice(0, slash) : "";
+  const name = slash > 0 ? model.slice(slash + 1) : "";
+  if (!PI_PROVIDERS[backend] || !name) throw new Error(`pi: modello non valido (${model})`);
+  const signedIn = PI_ACCOUNT_SERVICES.includes(backend);
+  if (backend === "kimi" ? !relay?.url : signedIn ? !accountDir || !existsSync(join(accountDir, "auth.json")) : !apiKey) {
+    throw new Error(backend === "kimi" || signedIn ? "subscription da collegare" : "chiave API non trovata");
+  }
+  mkdirSync(workDir, { recursive: true, mode: 0o700 });
+  const id = randomBytes(6).toString("hex");
+  const runHome = join(workDir, `pi-${id}`);
+  const agentDir = join(runHome, "agent");
+  const empty = join(runHome, "home");
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  mkdirSync(empty, { recursive: true, mode: 0o700 });
+  const tools = Boolean(mcp && toolNames.length);
+  for (const [file, value] of Object.entries(piFiles({ backend, model: name, tools, bridgeUrl: tools ? mcp.url : "", relayUrl: relay?.url || "", ollamaUrl, vision }))) {
+    writeFileSync(join(agentDir, file), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  }
+  // The account's login is linked, not copied: Pi refreshes it in place under a lock on the real file.
+  if (signedIn) symlinkSync(join(accountDir, "auth.json"), join(agentDir, "auth.json"));
+  const systemFile = join(runHome, "system.md");
+  writeFileSync(systemFile, system, { mode: 0o600 });
+  const args = [
+    "--mode", "rpc", "--no-session", "--no-extensions", ...(tools ? ["-e", "builtin:mcp"] : []), "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+    "--no-approve", "--offline", "--system-prompt", systemFile, "--provider", PI_PROVIDERS[backend], "--model", name,
+    ...(tools ? ["--tools", "mcp__cora__*"] : ["--no-tools"]),
+    ...(PI_THINKING[effort] ? ["--thinking", PI_THINKING[effort]] : []),
+  ];
+  const key = backend === "kimi" ? relay.token : apiKey;
+  const env = {
+    HOME: empty, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_TELEMETRY: "0",
+    ...(signedIn ? {} : backend === "deepseek" ? { DEEPSEEK_API_KEY: key } : backend === "kimi" ? { KIMI_API_KEY: key } : { CORA_PI_KEY: key }),
+    CORA_BRIDGE_URL: tools ? mcp.url : "", CORA_BRIDGE_TOKEN: tools ? mcp.token : "",
+  };
+  const texts = textSteps(onStep);
+  const used = { in: 0, out: 0 };
+  let answer = "";
+  let failure = "";
+  let settled = false;
+  let accepted = false;
+  const onLine = (line, io) => {
+    const event = JSON.parse(line);
+    if (event.type === "response" && event.command === "prompt") {
+      if (!event.success) { failure = String(event.error || "prompt refused"); io.close(); }
+      else if (event.data?.disposition === "handled") { failure = "prompt handled without a run"; io.close(); }
+      else accepted = true;
+      return;
+    }
+    if (event.type === "message_end" && event.message?.role === "assistant") {
+      const message = event.message;
+      const blocks = Array.isArray(message.content) ? message.content : [];
+      for (const block of blocks) {
+        if (block.type === "thinking" && String(block.thinking || "").trim()) { texts.flush(); onStep?.({ type: "thinking", text: String(block.thinking) }); }
+      }
+      const text = blocks.filter((block) => block.type === "text").map((block) => block.text || "").join("").trim();
+      const calls = blocks.some((block) => block.type === "toolCall");
+      if (calls) { if (text) texts.text(text); texts.flush(); answer = ""; }
+      else if (text) { if (answer) texts.text(answer); answer = text; }
+      if (message.stopReason === "error" || message.stopReason === "aborted") failure = String(message.errorMessage || message.stopReason);
+      else if (!calls && message.stopReason !== "toolUse") failure = "";
+      const usage = message.usage || {};
+      const step = { in: (Number(usage.input) || 0) + (Number(usage.cacheRead) || 0) + (Number(usage.cacheWrite) || 0), out: Number(usage.output) || 0 };
+      used.in += step.in;
+      used.out += step.out;
+    }
+    if (event.type === "agent_settled") { settled = true; io.close(); }
+  };
+  try {
+    const cli = nodeCli(bin);
+    const out = await run(cli.command, [...cli.args, ...args], {
+      cwd: workDir, timeoutMs, onLine, env, signal,
+      interactive: (io) => io.write({ id: "cora-prompt", type: "prompt", message: prompt }),
+    });
+    signal?.throwIfAborted();
+    if (out.timedOut) throw cliFailure(`pi: no answer within ${Math.round(timeoutMs / 1000)}s`, out);
+    if (failure) throw cliFailure(`pi: ${failure.slice(0, 240)}`, out);
+    if (!accepted || !settled) throw cliFailure(`pi: ${(out.stderr.trim().split("\n").filter(Boolean).pop() || `exit ${out.code}`).slice(0, 240)}`, out);
+    if (!answer) throw cliFailure("pi: returned no content", out);
+    texts.finish(answer);
+    return { text: answer, usage: used };
+  } finally {
+    rmSync(runHome, { recursive: true, force: true });
   }
 }

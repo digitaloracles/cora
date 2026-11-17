@@ -42,10 +42,12 @@ const PROVIDERS = {
   grok: "Grok (abbonamento)",
   muse: "Meta Muse (abbonamento)",
   gemini: "Gemini (abbonamento)",
+  kimi: "Kimi (abbonamento)",
   ollama: "Ollama Cloud",
   orcarouter: "OrcaRouter",
   hermes: "Hermes Agent",
   deepseek: "DeepSeek Harness",
+  pi: "Pi",
 };
 // Who runs the loop is one choice; which model thinks is another. Cora's own harness
 // drives Ollama and the routers; Claude Code, Codex, Grok Build, Muse Code, Hermes and DeepSeek Harness drive themselves.
@@ -56,7 +58,9 @@ const HARNESSES = {
   grok: { label: "Grok Build", hint: "Grok guida sé stesso con l'account scelto qui sotto.", providers: ["grok"] },
   muse: { label: "Muse Code", hint: "Muse guida sé stesso con l'account Meta scelto qui sotto.", providers: ["muse"] },
   gemini: { label: "Antigravity CLI", hint: "Gemini usa l'abbonamento Google AI dell'account scelto qui sotto.", providers: ["gemini"] },
-  hermes: { label: "Hermes", hint: "Hermes guida sé stesso: su questa macchina, su Ollama Cloud o su DeepSeek.", providers: ["hermes"] },
+  kimi: { label: "Kimi Code", hint: "Kimi Code guida sé stesso con l'abbonamento Kimi scelto qui sotto.", providers: ["kimi"] },
+  pi: { label: "Pi", hint: "Pi guida sé stesso: con una chiave DeepSeek o Ollama Cloud, o con un abbonamento Kimi, Claude o ChatGPT.", providers: ["pi"] },
+  hermes: { label: "Hermes", hint: "Hermes guida sé stesso: su questa macchina, su Ollama Cloud, su DeepSeek o con l'abbonamento Kimi.", providers: ["hermes"] },
   deepseek: { label: "DeepSeek Harness", hint: "dsh, l'harness di DeepSeek, guida sé stesso con la tua chiave DeepSeek o quella dello space.", providers: ["deepseek"] },
 };
 const harnessOf = (model) => {
@@ -78,7 +82,9 @@ const CONNECTIONS = [
   ["grok", "Grok Build"],
   ["muse", "Muse Code"],
   ["gemini", "Antigravity CLI"],
+  ["kimi", "Kimi Code"],
   ["hermes", "Hermes Agent"],
+  ["pi", "Pi"],
   ["deepseek", "DeepSeek Harness"],
 ];
 const PROVIDER_HINTS = {
@@ -87,6 +93,8 @@ const PROVIDER_HINTS = {
   grok: "Grok Build non trovato su questa macchina",
   muse: "Muse Code non trovato su questa macchina",
   gemini: "Antigravity CLI non trovato su questa macchina",
+  kimi: "Kimi Code non trovato su questa macchina",
+  pi: "Pi non trovato su questa macchina",
   ollama: "questa macchina non è collegata a Ollama Cloud, e manca CORA_OLLAMA_API_KEY in hush",
   ollamaLocal: "nessun Ollama in ascolto su questa macchina",
   ollamaCloud: "questa macchina non è collegata a Ollama Cloud, e manca CORA_OLLAMA_API_KEY in hush",
@@ -94,11 +102,13 @@ const PROVIDER_HINTS = {
   hermes: "Hermes non trovato su questa macchina",
   deepseek: "serve dsh su questa macchina e una chiave DeepSeek, tua o dello space",
 };
-const PROVIDER_SHORT = { claude: "Claude", codex: "ChatGPT", grok: "Grok", muse: "Meta", gemini: "Gemini", ollama: "Ollama", orcarouter: "OrcaRouter", hermes: "Hermes", deepseek: "DeepSeek" };
+const PROVIDER_SHORT = { claude: "Claude", codex: "ChatGPT", grok: "Grok", muse: "Meta", gemini: "Gemini", kimi: "Kimi", pi: "Pi", ollama: "Ollama", orcarouter: "OrcaRouter", hermes: "Hermes", deepseek: "DeepSeek" };
 /** Each subscription's mark, so two accounts are told apart at a glance. */
-const SUBSCRIPTION_ICONS = { claude: "spark", codex: "chip", grok: "terminal", muse: "layers", gemini: "spark" };
+const SUBSCRIPTION_ICONS = { claude: "spark", codex: "chip", grok: "terminal", muse: "layers", gemini: "spark", kimi: "layers", pi: "terminal" };
 /** The account's name and the program that uses it, as Settings lists them. */
-const SUBSCRIPTION_NAMES = { claude: "Claude", codex: "ChatGPT / Codex", grok: "Grok / Grok Build", muse: "Meta / Muse Code", gemini: "Gemini / Antigravity" };
+const SUBSCRIPTION_NAMES = { claude: "Claude", codex: "ChatGPT / Codex", grok: "Grok / Grok Build", muse: "Meta / Muse Code", gemini: "Gemini / Antigravity", kimi: "Kimi / Kimi Code", pi: "Pi" };
+/** The services a Pi account signs in to itself, as the server names them. */
+const PI_SERVICES = { anthropic: "Claude", "openai-codex": "ChatGPT" };
 const PRESETS = [
   ["Ogni mattina 9:00", "0 9 * * *"],
   ["Ogni sera 21:00", "0 21 * * *"],
@@ -1158,7 +1168,7 @@ function subscriptionUsagePanel() {
   const body = h("div", { class: "quota-accounts" });
   const tabs = h("div", { class: "quota-tabs", role: "tablist", "aria-label": "Abbonamenti" });
   const slots = new Map(), snapshots = new Map(), buttons = new Map();
-  const labels = { claude: "Claude", codex: "ChatGPT", gemini: "Gemini", grok: "Grok", muse: "Muse", ollama: "Ollama", deepseek: "DeepSeek" };
+  const labels = { claude: "Claude", codex: "ChatGPT", gemini: "Gemini", grok: "Grok", muse: "Muse", kimi: "Kimi", pi: "Pi", ollama: "Ollama", deepseek: "DeepSeek" };
   const names = { ...SUBSCRIPTION_NAMES, ollama: "Ollama Cloud", deepseek: "DeepSeek API" };
   const date = (value) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString(LOCALE, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
   const foot = (data) => [h("span", {}, data.fetchedAt ? tr("Lettura {date}", { date: date(data.fetchedAt) }) : tr("Nessuna lettura disponibile")),
@@ -1359,6 +1369,8 @@ const HARNESS_NEEDS = {
   grok: "Grok Build non è installato su questa macchina: installalo sul server con l'utente di Cora.",
   muse: "Muse Code non è installato su questa macchina: installalo sul server con l'utente di Cora.",
   gemini: "Antigravity CLI non è installato su questa macchina: installalo sul server con l'utente di Cora.",
+  kimi: "Kimi Code non è installato su questa macchina: installalo sul server con l'utente di Cora (npm i -g @moonshot-ai/kimi-code).",
+  pi: "Pi non è installato su questa macchina: installalo sul server con l'utente di Cora (npm i -g @earendil-works/pi-coding-agent).",
   hermes: "Hermes non è installato su questa macchina: installalo sul server con l'utente di Cora.",
   deepseek: "DeepSeek Harness ha bisogno di dsh sul server (npm i -g @deepseek-ai/dsh) e di una chiave DeepSeek: la tua, oppure quella dello space in Impostazioni → DeepSeek.",
   ollama: "Nessun Ollama su questa macchina e nessuna chiave Ollama Cloud.",
@@ -1379,7 +1391,9 @@ const HERMES_MIN_CONTEXT = 64000;
 const HERMES_TOO_SHORT = "troppo poco contesto per Hermes, che ne vuole almeno 64K";
 
 /** The harnesses that run on someone's subscription: the account is part of the choice. */
-const SUBSCRIPTION_HARNESSES = ["claude", "codex", "grok", "muse", "gemini"];
+const SUBSCRIPTION_HARNESSES = ["claude", "codex", "grok", "muse", "gemini", "kimi"];
+/** Every account Settings lists, Pi's own sign-ins included. */
+const ACCOUNT_HARNESSES = [...SUBSCRIPTION_HARNESSES, "pi"];
 
 const modelsOf = (harness, place) => {
   const providers = harnessProviders(harness);
@@ -1407,21 +1421,41 @@ const usableModel = (id) => {
  * default that belongs to a different one, and it cannot be saved half-chosen.
  */
 
-/** Hermes on a keyed endpoint: `hermes/ollama/<model>` or `hermes/deepseek/<model>`. */
+/** Hermes or Pi on a keyed endpoint: `hermes|pi/ollama/<model>` or `hermes|pi/deepseek/<model>`. */
 function hermesBackendOf(model) {
   const parts = String(model || "").split("/");
-  if (parts[0] !== "hermes" || parts.length < 3) return "";
+  if ((parts[0] !== "hermes" && parts[0] !== "pi") || parts.length < 3) return "";
   return parts[1] === "ollama" || parts[1] === "deepseek" ? parts[1] : "";
 }
 
-/** The key a model id needs: a keyed Hermes end, or DeepSeek Harness itself. */
+/** The key a model id needs: a keyed Hermes or Pi end, or DeepSeek Harness itself. */
 function keyBackendOf(model) {
   const parts = String(model || "").split("/");
-  if (parts[0] === "hermes") return hermesBackendOf(model);
+  if (parts[0] === "hermes" || parts[0] === "pi") return hermesBackendOf(model);
   return parts[0] === "deepseek" ? "deepseek" : "";
 }
 
+/** Pi's places that are an account it signs in to, and the service each one is. */
+const PI_ACCOUNT_PLACES = { claude: "anthropic", chatgpt: "openai-codex" };
+
+/** Where a Pi model runs: a key's end, Kimi's subscription, or a service Pi signed in to. */
+function piPlaceOf(id) {
+  const parts = String(id || "").split("/");
+  if (parts[0] !== "pi") return "";
+  if (parts[1] === "kimi" || parts[1] === "deepseek" || parts[1] === "ollama") return parts[1];
+  return Object.keys(PI_ACCOUNT_PLACES).find((place) => PI_ACCOUNT_PLACES[place] === parts[1]) || "";
+}
+
+/** The account a brain needs: the CLI's own, Kimi's for Hermes or Pi on Kimi, or a Pi sign-in. */
+function accountOf(harness, place) {
+  if (SUBSCRIPTION_HARNESSES.includes(harness)) return { provider: harness, service: "" };
+  if ((harness === "hermes" || harness === "pi") && place === "kimi") return { provider: "kimi", service: "" };
+  if (harness === "pi" && PI_ACCOUNT_PLACES[place]) return { provider: "pi", service: PI_ACCOUNT_PLACES[place] };
+  return { provider: "", service: "" };
+}
+
 function hermesPlaceOf(id) {
+  if (String(id || "").startsWith("hermes/kimi/")) return "kimi";
   const backend = hermesBackendOf(id);
   if (backend) return backend;
   const rest = String(id || "").split("/").slice(1).join("/");
@@ -1436,6 +1470,15 @@ const HERMES_PLACES = {
   ollama: ["Ollama Cloud", "I modelli cloud di Ollama, con la tua chiave o quella dello space.", "layers"],
   deepseek: ["DeepSeek", "I modelli DeepSeek, con la tua chiave o quella dello space.", "spark"],
   orcarouter: ["OrcaRouter", "I modelli del router, con la chiave dello space.", "swap"],
+  kimi: ["Kimi", "I modelli dell'abbonamento Kimi, con l'account scelto qui sotto.", "layers"],
+};
+
+const PI_PLACES = {
+  deepseek: ["DeepSeek", "I modelli DeepSeek, con la tua chiave o quella dello space.", "spark"],
+  ollama: ["Ollama Cloud", "I modelli cloud di Ollama, con la tua chiave o quella dello space.", "layers"],
+  kimi: ["Kimi", "I modelli dell'abbonamento Kimi, con un account Kimi Code collegato.", "layers"],
+  claude: ["Claude", "I modelli del tuo abbonamento Claude, con un account Pi collegato a Claude.", "spark"],
+  chatgpt: ["ChatGPT", "I modelli del tuo abbonamento ChatGPT, con un account Pi collegato a ChatGPT.", "chip"],
 };
 
 function brainPanel(agent) {
@@ -1505,7 +1548,6 @@ function brainPanel(agent) {
     modelInput.value = chosen;
     place = next ? placeOfModel(next) : next === "" ? placeOfModel(fallback) : "";
     problem = "";
-    subscription.setProvider(SUBSCRIPTION_HARNESSES.includes(key) && harnessReady(key) ? key : "");
     drawHarness();
     drawRight();
   };
@@ -1801,16 +1843,33 @@ function brainPanel(agent) {
       open ? form : h("div", { class: "row" }, opener));
   }
 
-  function keyedSide(backend) {
+  /** The account this brain runs on follows the harness and the place: the picker asks for that one. */
+  function syncAccount() {
+    const { provider, service } = accountOf(harness, place);
+    subscription.setProvider(provider && harnessReady(harness) && S.data.providers?.[provider] ? provider : "", service);
+  }
+
+  /** Models that run on an account (Hermes or Pi on Kimi, a Pi sign-in): the account first, then its models. */
+  function accountSide(prefix) {
+    const rows = (S.data.models || []).filter((model) => String(model.id).startsWith(prefix));
+    if (chosen && chosen.startsWith(prefix) && !rows.some((model) => model.id === chosen)) rows.push({ id: chosen, label: chosen.slice(prefix.length), tools: true });
+    const out = [subscription.node];
+    if (rows.length) out.push(...modelList(rows, (model) => modelRow(model, { subtitle: tr(model.via || ""), selected: model.id === chosen })));
+    else out.push(h("small", { class: "muted" }, tr("I modelli compaiono appena l'account è collegato.")));
+    return out;
+  }
+
+  function keyedSide(backend, prefix = "hermes") {
     ensureRemote(backend);
-    const known = (S.data.models || []).filter((model) => model.provider === "hermes" && (model.id.startsWith(`hermes/${backend}/`) || model.backend === backend));
+    const placeOf = prefix === "pi" ? piPlaceOf : hermesPlaceOf;
+    const known = (S.data.models || []).filter((model) => model.provider === prefix && (model.id.startsWith(`${prefix}/${backend}/`) || (prefix === "hermes" && model.backend === backend)));
     const extra = (remoteModels[backend] || []).flatMap((model) => {
-      const id = `hermes/${backend}/${model.name}`;
+      const id = `${prefix}/${backend}/${model.name}`;
       if (!model.name || known.some((item) => item.id === id)) return [];
       return [{ id, label: model.label || model.name, tools: true, via: backend === "deepseek" ? "DeepSeek" : "Ollama Cloud" }];
     });
     const rows = [...known, ...extra];
-    if (chosen && hermesPlaceOf(chosen) === backend && !rows.some((model) => model.id === chosen)) {
+    if (chosen && placeOf(chosen) === backend && !rows.some((model) => model.id === chosen)) {
       rows.push({ id: chosen, label: chosen.split("/").slice(2).join("/") || chosen, tools: true });
     }
     rows.sort(byName);
@@ -1835,7 +1894,7 @@ function brainPanel(agent) {
         drawRight();
         return;
       }
-      pick(`hermes/${backend}/${name}`);
+      pick(`${prefix}/${backend}/${name}`);
     };
     const typedRow = h("div", { class: "input-row hermes-typed" }, typed, btn("Usa questo nome", { icon: "check", cls: "sm", onclick: useTyped }));
     out.push(rows.length ? h("details", { class: "brain-custom" }, h("summary", {}, tr("Un modello che non è in elenco")), h("div", { class: "stack-sm" }, typedRow)) : typedRow);
@@ -1862,11 +1921,23 @@ function brainPanel(agent) {
       right.replaceChildren(...out);
       return;
     }
-    if (harness === "hermes") {
+    if (harness === "pi") {
+      const ends = ["deepseek", "ollama", ...(S.data.providers?.kimi ? ["kimi"] : []), "claude", "chatgpt"];
+      if (!ends.includes(place)) place = ends.includes(piPlaceOf(chosen || fallback)) ? piPlaceOf(chosen || fallback) : "deepseek";
+      const switcher = h("div", { class: `segmented hermes-places${ends.length > 3 ? " four" : ""}${ends.length > 4 ? " five" : ""}`, role: "tablist", "aria-label": "Dove gira Pi" });
+      for (const key of ends) {
+        switcher.append(h("button", {
+          type: "button", role: "tab", class: `hermes-end${place === key ? " on" : ""}`, "aria-selected": String(place === key),
+          onclick: () => { place = key; problem = ""; drawRight(); },
+        }, icon(PI_PLACES[key][2]), h("span", {}, tr(PI_PLACES[key][0]))));
+      }
+      out.push(h("div", { class: "field" }, h("span", { class: "label" }, "Dove gira"), switcher, h("small", {}, tr(PI_PLACES[place][1]))));
+    } else if (harness === "hermes") {
       const ends = ["local", "ollama", "deepseek"];
+      if (S.data.providers?.kimi) ends.push("kimi");
       if ((S.data.models || []).some((model) => String(model.id).startsWith("hermes/orcarouter/"))) ends.push("orcarouter");
       if (!ends.includes(place)) place = ends.includes(hermesPlaceOf(chosen || fallback)) ? hermesPlaceOf(chosen || fallback) : "local";
-      const switcher = h("div", { class: `segmented hermes-places${ends.length > 3 ? " four" : ""}`, role: "tablist", "aria-label": "Dove gira Hermes" });
+      const switcher = h("div", { class: `segmented hermes-places${ends.length > 3 ? " four" : ""}${ends.length > 4 ? " five" : ""}`, role: "tablist", "aria-label": "Dove gira Hermes" });
       for (const key of ends) {
         switcher.append(h("button", {
           type: "button", role: "tab", class: `hermes-end${place === key ? " on" : ""}`, "aria-selected": String(place === key),
@@ -1892,13 +1963,17 @@ function brainPanel(agent) {
       }
     }
 
+    syncAccount();
     if (problem) out.push(h("p", { class: "notice warn", role: "alert" }, icon("alert"), h("span", {}, problem)));
     if (harness === "deepseek") out.push(keyBox("deepseek"), ...cloudSide());
+    else if (harness === "pi" && (place === "deepseek" || place === "ollama")) out.push(...keyedSide(place, "pi"));
+    else if (harness === "pi") out.push(...accountSide(place === "kimi" ? "pi/kimi/" : `pi/${PI_ACCOUNT_PLACES[place]}/`));
+    else if (harness === "hermes" && place === "kimi") out.push(...accountSide("hermes/kimi/"));
     else if (harness === "hermes" && place === "ollama") out.push(...keyedSide("ollama"));
     else if (harness === "hermes" && place === "deepseek") out.push(...keyedSide("deepseek"));
     else if (harness === "hermes" && place === "orcarouter") out.push(...routerSide());
     else out.push(...(place === "local" ? localSide() : cloudSide()));
-    const keyedHermes = harness === "hermes" && (place === "ollama" || place === "deepseek");
+    const keyedHermes = (harness === "hermes" && (place === "ollama" || place === "deepseek" || place === "kimi")) || harness === "pi";
     if (!keyedHermes || custom.value.trim()) out.push(h("details", { class: "brain-custom" }, h("summary", {}, tr("Scrivi tu l'id del modello")),
       h("div", { class: "stack-sm" }, custom, h("small", { class: "muted" }, "Se lo scrivi, vince su quello scelto qui sopra."))));
     right.replaceChildren(...out.filter(Boolean));
@@ -1912,13 +1987,13 @@ function brainPanel(agent) {
     if (!harnessReady(harness)) problem = tr("{harness} non è installato su questa macchina: scegli un altro harness.", { harness: tr(HARNESSES[harness].label) });
     else if (typed) problem = harnessOf(typed) === harness ? "" : tr("L'id scritto appartiene a un altro harness.");
     else if (!chosen && !(fallback && harnessOf(fallback) === harness && usableModel(fallback))) problem = tr("Scegli un modello: quello predefinito dell'istanza non gira con questo harness.");
-    else if (chosen && !usableModel(chosen) && !chosen.startsWith("ollama/") && !chosen.startsWith("hermes/")) problem = tr("Questo modello non è disponibile su questa macchina.");
+    else if (chosen && !usableModel(chosen) && !chosen.startsWith("ollama/") && !chosen.startsWith("hermes/") && !chosen.startsWith("pi/")) problem = tr("Questo modello non è disponibile su questa macchina.");
+    else if (accountOf(harness, place).provider && !SUBSCRIPTION_HARNESSES.includes(harness) && (harness === "pi" ? piPlaceOf : hermesPlaceOf)(typed || chosen) !== place) problem = tr("Scegli uno dei modelli di questo account.");
     else problem = hermesKeyProblem(typed || chosen);
     if (problem) { drawRight(); toast(problem, true); right.scrollIntoView({ block: "center", behavior: "smooth" }); return false; }
     return subscription.validate();
   };
 
-  subscription.setProvider(SUBSCRIPTION_HARNESSES.includes(harness) && harnessReady(harness) ? harness : "");
   drawHarness();
   drawRight();
   loadHardware();
@@ -2052,7 +2127,7 @@ function pickedModel(data, name) {
 }
 
 /** The program each subscription runs through, which is what has to be installed. */
-const CLI_NAMES = { claude: "Claude Code", codex: "Codex", grok: "Grok Build", muse: "Muse Code", gemini: "Antigravity CLI" };
+const CLI_NAMES = { claude: "Claude Code", codex: "Codex", grok: "Grok Build", muse: "Muse Code", gemini: "Antigravity CLI", kimi: "Kimi Code", pi: "Pi" };
 const SUBSCRIPTION_STATES = { disconnected: "Da collegare", connecting: "Accesso in corso", ready: "Collegata", error: "Accesso non riuscito" };
 
 function subscriptionDisplay(record) {
@@ -2161,8 +2236,8 @@ function subscriptionAccounts(provider, { onChange = () => {} } = {}) {
     busy = false;
     draw(true);
   }
-  const add = () => act(async () => {
-    const record = await api("/api/subscriptions", { method: "POST", body: { provider, label: name } });
+  const add = (service = "") => act(async () => {
+    const record = await api("/api/subscriptions", { method: "POST", body: { provider, label: service ? `Pi · ${PI_SERVICES[service]}` : name, ...(service ? { service } : {}) } });
     await api(`/api/subscriptions/${record.id}/login`, { method: "POST" });
   }, "Preparazione dell'accesso…");
   function draw(force = false) {
@@ -2204,7 +2279,9 @@ function subscriptionAccounts(provider, { onChange = () => {} } = {}) {
       rows.length ? h("div", { class: "account-list" }, rows)
         : h("p", { class: "accounts-empty" }, installed ? tr("Nessun altro account {provider} collegato.", { provider: name })
           : tr("{cli} non è installato su questa macchina, quindi non c'è ancora niente da collegare. Installalo sul server con l'utente di Cora e questa scheda si accende da sola.", { cli: CLI_NAMES[provider] || name })),
-      installed ? h("div", { class: "accounts-add" }, btn("Aggiungi account", { icon: "plus", cls: rows.length ? "" : "primary", disabled: busy, onclick: add })) : null,
+      installed ? h("div", { class: "accounts-add" }, provider === "pi"
+        ? Object.entries(PI_SERVICES).map(([service, label]) => btn(tr("Collega {provider}", { provider: label }), { icon: "plus", cls: rows.length ? "" : "primary", disabled: busy, onclick: () => add(service) }))
+        : btn("Aggiungi account", { icon: "plus", cls: rows.length ? "" : "primary", disabled: busy, onclick: () => add() })) : null,
     ].filter(Boolean));
     onChange();
   }
@@ -2225,8 +2302,11 @@ function subscriptionAccounts(provider, { onChange = () => {} } = {}) {
 }
 
 function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
-  const accounts = () => [...new Map([...(S.data.quotaAccounts || []).filter(item => item.id === currentId), ...(S.data.subscriptions || [])].map(item => [item.id, item])).values()];
   let provider = "";
+  // A Pi account is signed in to one service: the picker offers only the accounts of the one this brain needs.
+  let service = "";
+  const accounts = () => [...new Map([...(S.data.quotaAccounts || []).filter(item => item.id === currentId), ...(S.data.subscriptions || [])].map(item => [item.id, item])).values()]
+    .filter((item) => item.provider !== "pi" || !service || item.service === service);
   let initialProvider = null;
   let selectedId = currentId || "";
   let choosing = !selectedId;
@@ -2268,7 +2348,7 @@ function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
   function connectNew() {
     const nextProvider = provider;
     return action(async () => {
-      const record = await api("/api/subscriptions", { method: "POST", body: { provider: nextProvider, label: PROVIDER_SHORT[nextProvider] } });
+      const record = await api("/api/subscriptions", { method: "POST", body: { provider: nextProvider, label: nextProvider === "pi" ? `Pi · ${PI_SERVICES[service] || ""}` : PROVIDER_SHORT[nextProvider], ...(nextProvider === "pi" ? { service } : {}) } });
       selections.set(nextProvider, record.id);
       if (provider === nextProvider) { selectedId = record.id; choosing = false; }
       await api(`/api/subscriptions/${record.id}/login`, { method: "POST" });
@@ -2294,7 +2374,7 @@ function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
     root.setAttribute("data-state", record?.status || "empty");
     content.replaceChildren();
     if (root.hidden) return;
-    const name = PROVIDER_SHORT[provider];
+    const name = provider === "pi" && PI_SERVICES[service] ? `Pi · ${PI_SERVICES[service]}` : PROVIDER_SHORT[provider];
     const state = record?.status || "disconnected";
     const status = h("span", { class: `subscription-status ${state}`, role: "status" }, h("i", { "aria-hidden": "true" }), SUBSCRIPTION_STATES[state]);
     content.append(h("header", { class: "subscription-head" },
@@ -2398,15 +2478,17 @@ function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
   root.refreshSubscription = () => draw();
   return {
     node: root,
-    setProvider(value) {
-      if (provider) selections.set(provider, selectedId);
-      const previous = provider;
+    setProvider(value, nextService = "") {
+      const key = (name, kind) => (name === "pi" ? `pi:${kind}` : name);
+      if (provider) selections.set(key(provider, service), selectedId);
+      const previous = key(provider, service);
       provider = value;
-      const needs = SUBSCRIPTION_HARNESSES.includes(provider);
+      service = value === "pi" ? nextService : "";
+      const needs = ACCOUNT_HARNESSES.includes(provider);
       root.hidden = !needs;
       input.disabled = !needs;
       if (initialProvider === null) initialProvider = value;
-      if (previous !== provider) {
+      if (previous !== key(provider, service)) {
         // Every account already signed in for this brain: the server's and the linked subscriptions.
         const ready = accounts().filter((item) => item.provider === provider && item.status === "ready"
           && (!item.resident || (!manage && S.data.settings.useResidentSubscriptions)));
@@ -2415,7 +2497,7 @@ function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
         // An agent moving to another brain starts on an account already signed in, never on a fresh sign-in:
         // the only one there is, otherwise the list of them to choose from.
         const switching = !isNew && !manage && provider !== initialProvider;
-        const kept = selections.has(provider) ? selections.get(provider) : accounts().find((item) => item.id === currentId && item.provider === provider)?.id;
+        const kept = selections.has(key(provider, service)) ? selections.get(key(provider, service)) : accounts().find((item) => item.id === currentId && item.provider === provider)?.id;
         if (kept !== undefined || own || !switching || !ready.length) {
           selectedId = kept ?? own?.id ?? "";
           choosing = !selectedId && (manage || !S.data.settings.useResidentSubscriptions);
@@ -9066,7 +9148,7 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "connettori", "mcp", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...SUBSCRIPTION_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "connettori", "mcp", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
@@ -9166,7 +9248,9 @@ function renderSettings() {
     panel({ icon: "user", title: "Aspetto delle app", hint: "Nome, descrizione e immagine di ogni app seguono il pannello." }, slackAppsField()));
 
   /* ---------- Abbonamenti e chiavi ---------- */
-  const providers = SUBSCRIPTION_HARNESSES.filter((provider) => ["claude", "codex", "gemini"].includes(provider) || S.data.providers?.[provider] || S.data.subscriptions?.some((item) => item.provider === provider));
+  const providers = ACCOUNT_HARNESSES.filter((provider) => ["claude", "codex", "gemini"].includes(provider) || S.data.providers?.[provider] || S.data.subscriptions?.some((item) => item.provider === provider));
+  // Antigravity and Pi have no account of the server's own: only the ones connected here.
+  const managedOnly = (provider) => provider === "gemini" || provider === "pi";
   const residentToggle = switchInput("useResidentSubscriptions", "", S.data.settings.useResidentSubscriptions);
   const toggle = residentToggle.querySelector("input");
   const residentToggleRow = setRow("Usa gli account del server", "Gli agenti che non scelgono un account usano quelli già presenti sulla macchina che ospita Cora.", residentToggle);
@@ -9192,8 +9276,8 @@ function renderSettings() {
   const residentList = h("div", { class: "resident-accounts" });
   const residentSlots = new Map(providers.map((provider) => [provider, h("div", {})]));
   const drawResidents = () => {
-    residentList.replaceChildren(...providers.filter((provider) => provider !== "gemini").map((provider) => residentRow(provider, () => show(provider))));
-    for (const [provider, slot] of residentSlots) if (provider !== "gemini") slot.replaceChildren(residentRow(provider));
+    residentList.replaceChildren(...providers.filter((provider) => !managedOnly(provider)).map((provider) => residentRow(provider, () => show(provider))));
+    for (const [provider, slot] of residentSlots) if (!managedOnly(provider)) slot.replaceChildren(residentRow(provider));
     drawNav();
   };
   const scan = btn("Rileva account", { icon: "refresh", cls: "ghost", onclick: async () => {
@@ -9219,8 +9303,9 @@ function renderSettings() {
     page(provider,
       panel({ icon: SUBSCRIPTION_ICONS[provider], title: SUBSCRIPTION_NAMES[provider], hint: tr("Lo usa {cli}, per gli agenti che lo scelgono nel loro Cervello.", { cli: CLI_NAMES[provider] }), actions: accountStatus },
         provider === "gemini" ? h("p", { class: "muted" }, "Collega il tuo account Google AI Pro o Ultra. Gli agenti usano l'abbonamento, con le sue quote, senza una chiave API.")
+          : provider === "pi" ? h("p", { class: "muted" }, "Pi entra nel tuo abbonamento Claude o ChatGPT. Con le chiavi DeepSeek e Ollama Cloud, e con l'abbonamento Kimi, Pi non ha bisogno di un account qui.")
           : h("div", { class: "set-section" }, h("span", { class: "label" }, "Su questo server"), residentSlots.get(provider)),
-        h("div", { class: "set-section" }, h("span", { class: "label" }, provider === "gemini" ? "Account" : "Altri account"),
+        h("div", { class: "set-section" }, h("span", { class: "label" }, managedOnly(provider) ? "Account" : "Altri account"),
           h("p", { class: "muted" }, "Collegane quanti vuoi, dal browser: nel Cervello di ogni agente scegli quale usa."),
           subscriptionAccounts(provider, { onChange: drawAccountStatus }))));
   }

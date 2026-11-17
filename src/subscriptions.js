@@ -4,9 +4,11 @@ import { resolve as resolvePath, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ValidationError } from "./store.js";
 import { onPath } from "./llm.js";
-import { HARNESSES, SUBSCRIPTION_PROVIDERS, codexCredentialStore } from "./harnesses.js";
+import { HARNESSES, PI_SERVICES, SUBSCRIPTION_PROVIDERS, codexCredentialStore } from "./harnesses.js";
+import { kimiAccessToken, kimiAccount, kimiEnds, kimiModels, kimiSignedIn, kimiUsage } from "./kimi-auth.js";
 import { geminiScope, prepareGeminiProfile } from "./gemini-profile.js";
 import { geminiQuotaMessage } from "./gemini-quota.js";
+import { nodeCli } from "./cli.js";
 
 const LOGIN_MS = 10 * 60 * 1000;
 // How long a provider's model list holds before Cora asks again; an older one is shown while it does.
@@ -18,7 +20,9 @@ const TERMINAL_HELPER = fileURLToPath(new URL("./subscription-terminal.py", impo
 const USAGE_HELPER = fileURLToPath(new URL("./subscription-usage-worker.js", import.meta.url));
 const AUTH_FAILURE = /authentication_failed|failed to authenticate|login expired|not logged in|not signed in|not authenticated|please (run \/login|log in)|refresh token.*(expired|invalid|revoked)/i;
 /** The CLIs that log in by showing a code to confirm on a page, and how to start it. */
-const DEVICE_LOGIN = { grok: ["login", "--device-auth"], muse: ["login"] };
+// Kimi Code signs in on kimi.ai, the global service; kimi.com is the mainland one.
+const DEVICE_LOGIN = { grok: ["login", "--device-auth"], muse: ["login"], kimi: ["login", "--region", "global"] };
+// Kimi Code has no logout command and Pi's only forgets: removing the profile is the logout.
 const LOGOUT = { claude: ["auth", "logout"], codex: ["-c", 'cli_auth_credentials_store="file"', "logout"], grok: ["logout"], muse: ["logout"], gemini: ["--settings", '{"disableSlashCommands":false}', "-p", "/logout"] };
 
 function terminate(child) {
@@ -46,6 +50,11 @@ export function subscriptionEnvironment(provider, directory, source = process.en
     env.MUSE_NO_AUTO_UPDATE = "1";
   }
   if (provider === "grok") env.GROK_DISABLE_AUTOUPDATER = "1";
+  if (provider === "kimi") {
+    env.KIMI_DISABLE_TELEMETRY = "1";
+    env.KIMI_CODE_NO_AUTO_UPDATE = "1";
+  }
+  if (provider === "pi") env.PI_TELEMETRY = "0";
   if (provider === "gemini") {
     env.ANTIGRAVITY_CREDENTIAL_SCOPE = geminiScope(directory);
     env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
@@ -65,6 +74,21 @@ function allowedLoginUrl(value, provider) {
     if (url.searchParams.has("code") && deviceParam !== "code" && url.searchParams.get("code") !== "true") return "";
     return url.href;
   } catch { return ""; }
+}
+
+/**
+ * The code a device page asks for: on a line of its own (Grok, Muse), after "code:" (Kimi, Pi),
+ * or in the page's own address when the provider puts it there.
+ */
+function deviceCode(text, url, provider) {
+  const shape = /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/;
+  const alone = text.match(/^\s*([A-Z0-9]{4,8}-[A-Z0-9]{4,8})\s*$/m)?.[1];
+  if (alone) return alone;
+  const after = text.match(/\bcode:?\s+([A-Z0-9]{4,8}-[A-Z0-9]{4,8})\b/)?.[1];
+  if (after) return after;
+  const param = HARNESSES[provider]?.deviceParam;
+  try { const value = param && url ? new URL(url).searchParams.get(param) : ""; if (value && shape.test(value)) return value; } catch {}
+  return "";
 }
 
 class CodexAccount {
@@ -133,13 +157,14 @@ class CodexAccount {
 
 /** The database selects an identity; the official CLI owns its protected credentials. */
 export class Subscriptions {
-  constructor({ store, claudeBin, codexBin, grokBin = "grok", museBin = "muse", geminiBin = "agy", timezone = "UTC", residentDirectories = {}, ownerScoped = false, emit = () => {} }) {
+  constructor({ store, claudeBin, codexBin, grokBin = "grok", museBin = "muse", geminiBin = "agy", kimiBin = "kimi", piBin = "pi", timezone = "UTC", residentDirectories = {}, ownerScoped = false, emit = () => {}, fetchImpl = null }) {
+    this.fetchImpl = fetchImpl;
     this.store = store;
     this.ownerScoped = Boolean(ownerScoped);
     this.timezone = timezone;
     this.residentOverrides = residentDirectories;
     this.residentDirectories = Object.fromEntries(SUBSCRIPTION_PROVIDERS.map((provider) => [provider, residentDirectories[provider] || HARNESSES[provider].resident()]));
-    this.bins = { claude: claudeBin, codex: codexBin, grok: grokBin, muse: museBin, gemini: geminiBin };
+    this.bins = { claude: claudeBin, codex: codexBin, grok: grokBin, muse: museBin, gemini: geminiBin, kimi: kimiBin, pi: piBin };
     this.emit = emit;
     this.logins = new Map();
     this.stopping = new Map();
@@ -194,6 +219,13 @@ export class Subscriptions {
     return env;
   }
 
+  /** The command and leading arguments a provider's CLI starts with: Kimi Code and Pi on Cora's own Node. */
+  command(provider, args) {
+    if (provider !== "kimi" && provider !== "pi") return [this.bins[provider], args];
+    const cli = nodeCli(this.bins[provider]);
+    return [cli.command, [...cli.args, ...args]];
+  }
+
   /** Whether the CLI this account would be used through is installed here at all. */
   installed(provider) {
     return onPath(this.bins[provider] || provider);
@@ -205,7 +237,7 @@ export class Subscriptions {
     return {
       ...record,
       installed: this.installed(record.provider),
-      ...(login ? { login: { url: login.url, userCode: login.userCode, manualCode: ["claude", "gemini"].includes(record.provider), expiresAt: login.expiresAt,
+      ...(login ? { login: { url: login.url, userCode: login.userCode, manualCode: ["claude", "gemini"].includes(record.provider) || Boolean(record.provider === "pi" && PI_SERVICES[record.service]?.manualCode), expiresAt: login.expiresAt,
         phase: login.codeSubmitted ? "verifying" : login.url ? "authorizing" : "preparing" } } : {}),
     };
   }
@@ -401,15 +433,44 @@ export class Subscriptions {
           if (!login.url || !login.userCode) throw new Error("invalid device authorization");
           ready();
         }
+      } else if (record.provider === "pi") {
+        // Pi asks in a terminal: a device page and code for ChatGPT, a page whose code is pasted back for Claude.
+        if (!PI_SERVICES[record.service]) throw new Error("Pi account without a service");
+        const [command, args] = this.command("pi", ["auth", "login", record.service, "--no-browser"]);
+        const child = spawn("python3", [TERMINAL_HELPER, command, ...args], { env: { ...env, TERM: "xterm-256color" }, cwd: directory, stdio: ["pipe", "pipe", "pipe"] });
+        login.child = child;
+        login.close = () => terminate(child);
+        child.stdin.on("error", () => {});
+        let buffer = "";
+        const read = (chunk) => {
+          buffer = (buffer + chunk.toString().replace(/\x1b\[[0-9;?<>]*[a-zA-Z]/g, "")).slice(-32000);
+          if (login.url || this.logins.get(id) !== login) return;
+          const url = [...buffer.matchAll(/https:\/\/[^\s<>"'\x00-\x20\x7f-\x9f]+/g)].map((match) => allowedLoginUrl(match[0], "pi")).find(Boolean);
+          if (!url) return;
+          const code = PI_SERVICES[record.service].manualCode ? "" : deviceCode(buffer, url, "pi");
+          if (!PI_SERVICES[record.service].manualCode && !code) return;
+          Object.assign(login, { url, userCode: code });
+          ready();
+        };
+        child.stdout.on("data", read);
+        child.stderr.on("data", read);
+        child.on("error", () => { if (this.logins.get(id) === login) this.finish(id, "error"); });
+        child.on("close", (code) => {
+          if (this.logins.get(id) !== login) return;
+          if (code !== 0) return this.finish(id, "error");
+          this.readAccount(record).then((details) => {
+            if (this.logins.get(id) === login) this.finish(id, details ? "ready" : "error", details || {});
+          }).catch(() => { if (this.logins.get(id) === login) this.finish(id, "error"); });
+        });
       } else if (DEVICE_LOGIN[record.provider]) {
-        // Grok and Muse print a page and a code to confirm there, then wait for the owner.
-        const child = spawn(this.bins[record.provider], DEVICE_LOGIN[record.provider], { env, cwd: directory, stdio: ["ignore", "pipe", "pipe"] });
+        // Grok, Muse and Kimi Code print a page and a code to confirm there, then wait for the owner.
+        const child = spawn(...this.command(record.provider, DEVICE_LOGIN[record.provider]), { env, cwd: directory, stdio: ["ignore", "pipe", "pipe"] });
         login.close = () => terminate(child);
         let buffer = "";
         const read = (chunk) => {
           buffer = (buffer + chunk.toString().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")).slice(-32000);
           const url = [...buffer.matchAll(/https:\/\/[^\s<>"']+/g)].map((match) => allowedLoginUrl(match[0], record.provider)).find(Boolean);
-          const code = buffer.match(/^\s*([A-Z0-9]{4,8}-[A-Z0-9]{4,8})\s*$/m)?.[1] || "";
+          const code = deviceCode(buffer, url, record.provider);
           if (url && code && this.logins.get(id) === login && !login.url) {
             Object.assign(login, { url, userCode: code });
             ready();
@@ -508,6 +569,11 @@ export class Subscriptions {
       } finally { signal?.removeEventListener("abort", abort); await rpc.close(); }
     }
     if (record.provider === "claude" && !await this.readClaude(record, signal)) throw unavailable("AUTH_REQUIRED");
+    if (record.provider === "pi") throw unavailable("UNSUPPORTED");
+    if (record.provider === "kimi") {
+      try { return await kimiUsage(this.kimiHome(record), { fetchImpl: this.fetchImpl || fetch }); }
+      catch (error) { throw unavailable(error.code === "KIMI_AUTH" ? "AUTH_REQUIRED" : "UNAVAILABLE"); }
+    }
     if (record.provider === "gemini") {
       const result = await this.geminiCommand(record, ["--settings", '{"disableSlashCommands":false}', "-p", "/usage", "--output-format", "json"], signal);
       let data; try { data = JSON.parse(result.output); } catch { throw unavailable(); }
@@ -540,6 +606,8 @@ export class Subscriptions {
   readAccount(record, signal) {
     if (record.provider === "claude") return this.readClaude(record, signal);
     if (record.provider === "gemini") return this.readGemini(record, signal);
+    if (record.provider === "kimi") return this.readKimi(record);
+    if (record.provider === "pi") return this.readPi(record, signal);
     const args = record.provider === "grok" ? ["models"] : ["usage"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.bins[record.provider], args, { env: this.environment(record), cwd: record.resident ? this.store.home : this.directory(record), stdio: ["ignore", "pipe", "pipe"], signal: signal || undefined });
@@ -554,6 +622,52 @@ export class Subscriptions {
         if (record.provider === "grok") return resolve(code === 0 && /you are logged in/i.test(output) ? { email: "", plan: "" } : null);
         const tier = output.match(/^Tier:\s*(.+)$/m)?.[1]?.trim();
         resolve(code === 0 && tier && !AUTH_FAILURE.test(output) ? { email: "", plan: tier.slice(0, 80) } : null);
+      });
+    });
+  }
+
+  /** The Kimi home a record's login lives in. */
+  kimiHome(record) {
+    return record.resident ? resolvePath(this.residentDirectories.kimi) : this.directory(record);
+  }
+
+  /** Who a Kimi Code account is, from Kimi's own /me with the account's token. */
+  async readKimi(record) {
+    const home = this.kimiHome(record);
+    if (!kimiSignedIn(home)) return null;
+    try { return await kimiAccount(home, { fetchImpl: this.fetchImpl || fetch }); }
+    catch (error) { if (error.code === "KIMI_AUTH") return null; throw error; }
+  }
+
+  /**
+   * A fresh token of a Kimi Code account, for the relay that Hermes and Pi reach Kimi through.
+   * Refreshed with the CLI's own lock: the CLI and Cora never spend one refresh token twice.
+   */
+  async kimiToken(id) {
+    const record = this.require(id);
+    if (record.provider !== "kimi" || record.status !== "ready") throw new ValidationError("subscription da collegare");
+    try { return await kimiAccessToken(this.kimiHome(record), { fetchImpl: this.fetchImpl || fetch }); }
+    catch (error) {
+      if (error.code === "KIMI_AUTH") this.changed(id, { status: "disconnected" });
+      throw error;
+    }
+  }
+
+  /** Whether a Pi account is signed in to its service: Pi's own check, which never prints the credential. */
+  readPi(record, signal) {
+    if (!PI_SERVICES[record.service]) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      const child = spawn(...this.command("pi", ["auth", "check", "--provider", record.service, "--json"]), { env: this.environment(record), cwd: this.directory(record), stdio: ["ignore", "pipe", "ignore"], signal: signal || undefined });
+      let output = "";
+      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("provider timeout")); }, 20000);
+      child.stdout.on("data", (chunk) => { if (output.length < 32000) output += chunk; });
+      child.on("error", () => { clearTimeout(timer); reject(signal?.reason || new Error("Pi non disponibile")); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        let data = {};
+        try { data = JSON.parse(output); } catch {}
+        const status = String(data.status || data.result || output.trim().split(/\s+/)[0] || "");
+        resolve(code === 0 && /^ready$/i.test(status) ? { email: "", plan: PI_SERVICES[record.service].label } : null);
       });
     });
   }
@@ -595,7 +709,7 @@ export class Subscriptions {
    * on disk too, so a slow or failed check never empties the list.
    */
   async models(provider, { fresh = false } = {}) {
-    if (provider === "claude") return [];
+    if (provider === "claude" || provider === "pi") return [];
     const record = this.catalogAccount(provider);
     if (!record || !this.installed(provider)) return [];
     if (!this.catalogs) {
@@ -617,10 +731,47 @@ export class Subscriptions {
     return this.catalogs[provider]?.models || [];
   }
 
+  /**
+   * The models of every service a Pi account is signed in to, one account asked per service and
+   * the answer kept like any catalog: Claude's models only when a Claude account is ready.
+   */
+  async piModels({ fresh = false } = {}) {
+    if (!this.installed("pi")) return [];
+    const ready = this.store.subscriptions().filter((record) => record.provider === "pi" && record.status === "ready" && PI_SERVICES[record.service] && !this.logins.has(record.id));
+    if (!this.catalogs) {
+      try { this.catalogs = JSON.parse(readFileSync(this.catalogFile(), "utf8")); } catch { this.catalogs = {}; }
+    }
+    this.catalogLoads ||= new Map();
+    const out = [];
+    for (const service of [...new Set(ready.map((record) => record.service))]) {
+      const record = ready.find((item) => item.service === service);
+      const key = `pi:${service}`;
+      const known = this.catalogs[key];
+      const other = !known || known.account !== record.id;
+      if ((other || fresh || Date.now() - known.at > CATALOG_MS) && !this.catalogLoads.has(key)) {
+        const load = this.readCatalog("pi", record).then((models) => {
+          if (!models.length) return;
+          this.catalogs[key] = { at: Date.now(), account: record.id, models };
+          try { writeFileSync(this.catalogFile(), JSON.stringify(this.catalogs), { mode: 0o600 }); } catch {}
+        }).catch(() => {}).finally(() => this.catalogLoads.delete(key));
+        this.catalogLoads.set(key, load);
+      }
+      if (other || fresh) await Promise.race([this.catalogLoads.get(key), new Promise((done) => setTimeout(done, CATALOG_WAIT_MS).unref())]);
+      out.push(...(this.catalogs[key]?.models || []));
+    }
+    return out;
+  }
+
+  /** Where a Kimi Code account's models answer: the region it signed in to. */
+  kimiBase(id) {
+    const record = this.store.subscription(id);
+    return record?.provider === "kimi" ? kimiEnds(this.kimiHome(record)).baseUrl : "";
+  }
+
   /** One conversation with a CLI over its stdout lines; `onLine` answers the value that ends it. */
   catalogCommand(record, args, { input = "", onLine = null, open = false } = {}) {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.bins[record.provider], args, { env: this.environment(record), cwd: record.resident ? this.store.home : this.directory(record), stdio: ["pipe", "pipe", "ignore"] });
+      const child = spawn(...this.command(record.provider, args), { env: this.environment(record), cwd: record.resident ? this.store.home : this.directory(record), stdio: ["pipe", "pipe", "ignore"] });
       let output = "", buffer = "", done = false;
       const finish = (error, value) => {
         if (done) return;
@@ -688,6 +839,17 @@ export class Subscriptions {
             .map((model) => ({ name: model.modelId, label: String(model.displayLabel || model.modelId) }));
         },
       });
+    }
+    if (provider === "kimi") return kimiModels(this.kimiHome(record), { fetchImpl: this.fetchImpl || fetch });
+    if (provider === "pi") {
+      // Pi lists the models its signed-in services can run: a Pi account's, by service.
+      const output = await this.catalogCommand(record, ["--list-models"]);
+      const models = [];
+      for (const line of output.replace(/\x1b\[[0-9;]*m/g, "").split("\n").slice(1)) {
+        const [service, name] = line.trim().split(/\s+/);
+        if (service === record.service && name && /^[\w.:-]{1,100}$/.test(name)) models.push({ name: `${service}/${name}`, label: name, via: `Pi · ${PI_SERVICES[service].label}`, service });
+      }
+      return models;
     }
     if (provider === "gemini") {
       const { code, output } = await this.geminiCommand(record, ["models"]);
@@ -765,7 +927,7 @@ export class Subscriptions {
     try {
       await this.cancel(id);
       const directory = this.directory(record);
-      if (record.provider !== "gemini" || record.status === "ready") await new Promise((resolve, reject) => {
+      if (LOGOUT[record.provider] && (record.provider !== "gemini" || record.status === "ready")) await new Promise((resolve, reject) => {
         const child = spawn(this.bins[record.provider], LOGOUT[record.provider], { env: subscriptionEnvironment(record.provider, directory), cwd: directory, stdio: "ignore" });
         const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new ValidationError("rimozione non riuscita: riprova")); }, 12000);
         child.on("error", () => { clearTimeout(timer); reject(new ValidationError("rimozione non riuscita: riprova")); });

@@ -15,13 +15,13 @@ export const DEEPSEEK_CATALOG = [
 ];
 
 /**
- * The key a Hermes model id needs: ollama or deepseek.
- * Empty means this machine's Ollama, which has no key of its own.
- * `hermes/ollama/<name>` and `hermes/deepseek/<name>` are the keyed forms.
+ * The key a Hermes or Pi model id needs: ollama or deepseek.
+ * Empty means this machine's Ollama, which has no key of its own (or, for Pi, an account).
+ * `hermes|pi/ollama/<name>` and `hermes|pi/deepseek/<name>` are the keyed forms.
  */
 export function hermesKeyBackend(model) {
   const parts = String(model || "").split("/");
-  if (parts[0] !== "hermes" || parts.length < 3) return "";
+  if ((parts[0] !== "hermes" && parts[0] !== "pi") || parts.length < 3) return "";
   return HERMES_KEY_PROVIDERS.includes(parts[1]) ? parts[1] : "";
 }
 
