@@ -37,6 +37,8 @@ const NEEDS = { send: "send", draft: "compose drafts", read: "read the mailbox",
 const hash = (value) => createHash("sha256").update(value).digest("base64url");
 const SECRET = (id) => `CORA_GOOGLE_${id.toUpperCase()}`;
 const header = (value) => (/^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value).toString("base64")}?=`);
+const displayName = (value) => (/^[\x20-\x7e]*$/.test(value) && /[()<>@,;:\\".[\]]/.test(value) ? `"${value.replace(/["\\]/g, "\\$&")}"` : header(value));
+const NAME_TTL = 3600000, NAME_RETRY = 300000;
 
 /** One address as the agent wrote it ("a@b.it" or "Name <a@b.it>"), checked and encoded for a header. */
 function address(value) {
@@ -412,7 +414,7 @@ const TOOLS = [
         reply = await replyContext(args, ctx, ctx.connection);
       }
       const message = await composed({ ...args, ...(args.message ? { to: reply.to, cc: reply.cc, subject: reply.subject } : {}) }, ctx, { needTo: false });
-      const raw = mime({ ...message, from: ctx.connector.fromHeader(ctx.agent, ctx.connection), in_reply_to: reply.in_reply_to, references: reply.references });
+      const raw = mime({ ...message, from: await ctx.connector.fromHeader(ctx.agent, ctx.connection), in_reply_to: reply.in_reply_to, references: reply.references });
       const draft = await ctx.gmail("POST", "/drafts", { body: { message: defined({ raw, threadId: reply.thread }) } });
       return { draft: draft.id, message: draft.message?.id, thread: draft.message?.threadId, to: message.to, subject: message.subject };
     },
@@ -478,7 +480,7 @@ export class ConnectorError extends Error {
 export class GoogleConnector {
   constructor({ store, broker, space, storeSecret, tokenFor, enabled = true, access = "send", api = "https://gmail.googleapis.com/gmail/v1/users/me", driveApi = "https://www.googleapis.com/drive/v3" }) {
     Object.assign(this, { store, enabled, mailAccess: connectorAccess(access), broker: String(broker || "").replace(/\/$/, ""), space, storeSecret, tokenFor, api, driveApi });
-    this.pending = new Map(); this.bundles = new Map(); this.access = new Map();
+    this.pending = new Map(); this.bundles = new Map(); this.access = new Map(); this.names = new Map();
     this.stopped = false;
     if (store?.db) {
       store.db.exec(`CREATE TABLE IF NOT EXISTS gmail_scheduled (
@@ -529,7 +531,7 @@ export class GoogleConnector {
     const id = old?.id || `gc_${randomBytes(8).toString("hex")}`;
     const bundle = { refresh_token: result.refresh_token, grant: result.grant };
     await this.storeSecret(SECRET(id), JSON.stringify(bundle));
-    this.bundles.set(id, bundle); this.access.delete(id);
+    this.bundles.set(id, bundle); this.access.delete(id); this.names.delete(id);
     const connection = { id, email: result.email, scope: result.scope, agents: old?.agents || [], connectedBy: user.id, connectedAt: new Date().toISOString(), disconnected: false };
     this.store.setValue("googleConnectors", [...this.records().filter((item) => item.id !== id), connection]);
     return connection;
@@ -546,7 +548,7 @@ export class GoogleConnector {
     const records = this.records(), connection = records.find((item) => item.id === id);
     if (!connection) throw new ConnectorError("Account Google non trovato.", 404);
     connection.disconnected = true; connection.agents = [];
-    this.access.delete(id); this.bundles.delete(id);
+    this.access.delete(id); this.bundles.delete(id); this.names.delete(id);
     this.store.setValue("googleConnectors", records);
   }
   async token(connection) {
@@ -559,8 +561,26 @@ export class GoogleConnector {
     this.access.set(connection.id, { token: result.access_token, until: Date.now() + Math.min(3600, Number(result.expires_in) || 300) * 1000 });
     return result.access_token;
   }
-  /** The From header: the agent's name and the account's address. */
-  fromHeader(agent, connection) { return `${header(agent.name)} <${connection.email}>`; }
+  /** The From header: the name the account itself sends with in Gmail (Send mail as), never the agent's; the bare address when Gmail does not tell it. */
+  async fromHeader(agent, connection) {
+    const name = await this.senderName(connection);
+    return name ? `${displayName(name)} <${connection.email}>` : connection.email;
+  }
+
+  /** The display name of the account's own address in Gmail's Send mail as settings, kept for an hour; reading it needs a read scope. */
+  async senderName(connection) {
+    if (!capabilities(connection).read) return "";
+    const cached = this.names.get(connection.id);
+    if (cached && cached.until > Date.now()) return cached.name;
+    let name = "", ttl = NAME_TTL;
+    try {
+      const { sendAs = [] } = await this.gmail(connection, "GET", "/settings/sendAs");
+      const own = sendAs.find((item) => String(item.sendAsEmail || "").toLowerCase() === connection.email.toLowerCase()) || sendAs.find((item) => item.isPrimary);
+      name = String(own?.displayName || "").replace(/[\r\n\0]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+    } catch { ttl = NAME_RETRY; }
+    this.names.set(connection.id, { name, until: Date.now() + ttl });
+    return name;
+  }
 
   /** One call to the Gmail or Drive API of an account, with Cora's access token; a refusal becomes a message the agent can act on.
    * as "bytes" answers the body as it is, as "location" the upload session Google opens; upload goes to the Drive upload host, session to that session. */
@@ -603,7 +623,7 @@ export class GoogleConnector {
 
   /** Sends a composed message from an account the agent is still authorised on. */
   async deliver(agent, connection, message) {
-    const raw = mime({ ...message, from: this.fromHeader(agent, connection) });
+    const raw = mime({ ...message, from: await this.fromHeader(agent, connection) });
     await this.token(connection);
     this.identity(agent, connection.id);
     return this.sendRaw(connection, raw, message.thread);
@@ -621,10 +641,10 @@ export class GoogleConnector {
   }
 
   /** Keeps a composed message to send from an account at a later time: Cora's timer sends it, not the agent. */
-  schedule(agent, connection, message, sendAt) {
+  async schedule(agent, connection, message, sendAt) {
     if (!this.store.db) throw new ToolError("scheduled sends are not available on this Cora");
     this.identity(agent, connection.id);
-    const raw = mime({ ...message, from: this.fromHeader(agent, connection) });
+    const raw = mime({ ...message, from: await this.fromHeader(agent, connection) });
     const id = `gmail_scheduled_${randomBytes(12).toString("hex")}`;
     const data = defined({ from: connection.email, to: message.to, cc: message.cc?.length ? message.cc : undefined, bcc: message.bcc?.length ? message.bcc : undefined, subject: message.subject, thread: message.thread, attachments: message.attachments?.length || undefined, createdAt: new Date().toISOString() });
     this.store.db.prepare("INSERT INTO gmail_scheduled(id,agent_id,connection_id,send_at,status,data,raw) VALUES(?,?,?,?,?,?,?)").run(id, agent.id, connection.id, sendAt, "scheduled", JSON.stringify(data), raw);
