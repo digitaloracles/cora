@@ -4,6 +4,8 @@ import { encode, decode } from "@msgpack/msgpack";
 
 const ASR_URL = "wss://api.fish.audio/v1/asr/realtime";
 const TTS_URL = "wss://api.fish.audio/v1/tts/live";
+const ASR_FILE_URL = "https://api.fish.audio/v1/asr";
+const AUDIO_FILE_LIMIT = 25 * 1024 * 1024;
 const FRAME_LIMIT = 1024 * 1024;
 const RATES = new Set([8000, 12000, 16000, 22050, 24000, 32000, 44100, 48000]);
 
@@ -231,8 +233,8 @@ class FishSession extends EventEmitter {
 }
 
 export class FishLive {
-  constructor({ key = "", sttUrl = ASR_URL, ttsUrl = TTS_URL, ttsModel = "s2.1-pro", socketFactory = (url, options) => new WebSocket(url, options), connectTimeoutMs = 15000, finishTimeoutMs = 30000, keepaliveMs = 10000, maxBufferedBytes = FRAME_LIMIT * 2 } = {}) {
-    Object.assign(this, { key, sttUrl, ttsUrl, ttsModel, socketFactory, connectTimeoutMs, finishTimeoutMs, keepaliveMs, maxBufferedBytes });
+  constructor({ key = "", sttUrl = ASR_URL, ttsUrl = TTS_URL, asrFileUrl = ASR_FILE_URL, ttsModel = "s2.1-pro", asrFileModel = "transcribe-1-pro", socketFactory = (url, options) => new WebSocket(url, options), connectTimeoutMs = 15000, finishTimeoutMs = 30000, keepaliveMs = 10000, maxBufferedBytes = FRAME_LIMIT * 2, fileTimeoutMs = 120000 } = {}) {
+    Object.assign(this, { key, sttUrl, ttsUrl, asrFileUrl, ttsModel, asrFileModel, socketFactory, connectTimeoutMs, finishTimeoutMs, keepaliveMs, maxBufferedBytes, fileTimeoutMs });
   }
 
   get enabled() { return Boolean(this.key); }
@@ -249,6 +251,26 @@ export class FishLive {
       context: { history: contextItems(history), terms },
       ...(reference ? { client_reference_id: String(reference).slice(0, 256) } : {}),
     }, signal);
+  }
+
+  /** A recorded voice message as text, with the language Fish heard it in: one upload, nothing kept on Fish. */
+  async transcribe(bytes, { filename = "voice.ogg" } = {}) {
+    if (!this.enabled) throw new FishLiveError("Fish Audio is not configured", { code: "missing_key" });
+    if (!bytes?.length) throw new FishLiveError("audio vuoto", { code: "empty_audio" });
+    if (bytes.length > AUDIO_FILE_LIMIT) throw new FishLiveError("audio troppo lungo", { code: "too_large" });
+    const form = new FormData();
+    form.append("audio", new Blob([bytes]), String(filename).replace(/[^\w.-]/g, "_").slice(-80) || "voice.ogg");
+    form.append("ignore_timestamps", "true");
+    let response;
+    try {
+      response = await fetch(this.asrFileUrl, { method: "POST", headers: { Authorization: `Bearer ${this.key}`, model: this.asrFileModel }, body: form, signal: AbortSignal.timeout(this.fileTimeoutMs) });
+    } catch (error) {
+      throw new FishLiveError(error?.name === "TimeoutError" ? "trascrizione Fish troppo lenta" : "Fish non raggiungibile", { code: error?.name === "TimeoutError" ? "timeout" : "connection_error" });
+    }
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new FishLiveError(`Fish ${response.status}${body?.message ? `: ${String(body.message).slice(0, 200)}` : ""}`, { code: "provider_error", status: response.status, requestId: String(body?.request_id || "") });
+    const code = String(body?.language_code || "").toLowerCase();
+    return { text: String(body?.text || "").replace(/<\|speaker:[^|>]*\|>/g, " ").replace(/\s+/g, " ").trim(), language: /^[a-z]{2,3}$/.test(code) ? code : "" };
   }
 
   openTts({ voice = "", language = "", sampleRate = 24000, latency = "normal", speed = 1, signal } = {}) {

@@ -548,18 +548,20 @@ export class Orchestrator {
   }
 
   /**
-   * A voice message, heard: Soniox writes down what was said and the agents read
-   * those words where the attachment was. The message is marked as spoken, and a
-   * spoken message gets a spoken answer. Without Soniox it stays an attachment.
+   * A voice message, heard: Fish writes down what was said (Soniox only where Fish is not
+   * connected) and the agents read those words where the attachment was. The message is
+   * marked as spoken, and a spoken message gets a spoken answer. With neither it stays an attachment.
    */
   async hear(state, item, { placeholder, filename, size = 0, read }) {
-    if (!this.voice?.enabled || (item.kind !== "owner" && item.kind !== "human")) return;
+    if (item.kind !== "owner" && item.kind !== "human") return;
+    const ears = this.callVoice?.speaks ? this.callVoice : this.voice?.enabled ? this.voice : null;
+    if (!ears) return;
     let line;
     try {
       if (size > AUDIO_LIMIT_BYTES) throw new Error("è troppo lungo");
       const audio = await read();
       if (!audio?.length) throw new Error("non riesco a scaricarlo");
-      const heard = await this.voice.transcribe(audio, { filename, languages: this.languagesFor(state), reference: item.id });
+      const heard = await ears.transcribe(audio, { filename, languages: this.languagesFor(state), reference: item.id });
       item.spokenIn = heard.language;
       const words = heard.text.length > TRANSCRIPT_LIMIT ? `${heard.text.slice(0, TRANSCRIPT_LIMIT)}…` : heard.text;
       line = words ? `[messaggio vocale: «${words}»]` : "[messaggio vocale senza parole]";

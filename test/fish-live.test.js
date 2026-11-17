@@ -276,3 +276,39 @@ test("Fish TTS applies requested speaking speed and rejects invalid rates before
   }
   assert.equal(state.headers.length, 1, "invalid rates never reach the provider");
 });
+
+test("Fish hears a recorded voice message in one authenticated upload and gives its language", async (t) => {
+  const seen = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("latin1");
+    seen.push({ method: request.method, url: request.url, auth: request.headers.authorization, model: request.headers.model, type: request.headers["content-type"], body });
+    if (seen.length === 2) {
+      response.writeHead(402, { "Content-Type": "application/json" });
+      return response.end(JSON.stringify({ status: 402, message: "Insufficient balance" }));
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ text: "<|speaker:0|> Ciao Radix, ci sei? <|speaker:1|> Eccomi.", language: "Italian", language_code: "it", duration: 1.2, segments: [] }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const fish = new FishLive({ key: "fixture-fish-key", asrFileUrl: `http://127.0.0.1:${server.address().port}/v1/asr` });
+  const recording = Buffer.concat([Buffer.from("OggS"), Buffer.alloc(2000, 7)]);
+
+  assert.deepEqual(await fish.transcribe(recording, { filename: "voice message.ogg" }), { text: "Ciao Radix, ci sei? Eccomi.", language: "it" });
+  assert.equal(seen[0].model, "transcribe-1-pro", "the recommended file model, not the deprecated transcribe-1");
+  assert.equal(seen[0].method, "POST");
+  assert.equal(seen[0].url, "/v1/asr");
+  assert.equal(seen[0].auth, "Bearer fixture-fish-key");
+  assert.match(seen[0].type, /^multipart\/form-data/);
+  assert.match(seen[0].body, /name="audio"; filename="voice_message\.ogg"/);
+  assert.match(seen[0].body, /name="ignore_timestamps"\r\n\r\ntrue/);
+  assert.ok(seen[0].body.includes(recording.toString("latin1")), "the recording travels whole");
+
+  await assert.rejects(fish.transcribe(recording), (error) => error instanceof FishLiveError && error.status === 402 && /Insufficient balance/.test(error.message) && !error.message.includes("fixture-fish-key"));
+  await assert.rejects(new FishLive().transcribe(recording), { code: "missing_key" });
+  await assert.rejects(fish.transcribe(Buffer.alloc(0)), { code: "empty_audio" });
+  assert.equal(seen.length, 2, "nothing is sent without a key or without audio");
+});
