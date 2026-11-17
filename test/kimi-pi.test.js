@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ToolBridge } from "../src/bridge.js";
-import { kimiAgentFile, piFiles, runKimi, runPi } from "../src/cli.js";
+import { kimiAgentFile, nodeCli, piFiles, runKimi, runPi } from "../src/cli.js";
 import { PI_SERVICES, subscriptionProviderOf } from "../src/harnesses.js";
 import { modelKeyBackend } from "../src/hermes-keys.js";
 import { kimiAccessToken, kimiAccount, kimiModels, kimiRegion } from "../src/kimi-auth.js";
@@ -174,6 +174,13 @@ line({ role: "assistant", content: "Fatto: radix." });
   }
   const agent = kimiAgentFile({ system: "S", tools: false });
   assert.match(agent, /tools: \[\]/);
+  // npm installs Kimi Code and Pi as Node scripts: they start with Cora's own Node, not the PATH's.
+  const mainScript = join(root, "main.mjs");
+  writeFileSync(mainScript, "");
+  const link = join(root, "kimi-link");
+  (await import("node:fs")).symlinkSync(mainScript, link);
+  assert.deepEqual(nodeCli(link), { command: process.execPath, args: [mainScript] });
+  assert.deepEqual(nodeCli(bin), { command: bin, args: [] }, "a native build starts as it is");
 });
 
 test("Pi runs over RPC with Cora's tools only, on the run's key, and reports thoughts and usage", async () => {

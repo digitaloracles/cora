@@ -833,6 +833,19 @@ export async function runMuse({ bin, model, system, prompt, mcp, toolNames, work
   }
 }
 
+/**
+ * How to start a CLI that npm installed as a Node script (Kimi Code, Pi): with Cora's own Node,
+ * as dsh is. A service's PATH may hold an older Node than the one the script needs, and
+ * `#!/usr/bin/env node` would pick that one. Anything else (a native build) starts as it is.
+ */
+export function nodeCli(bin) {
+  const found = String(bin).includes("/") ? bin : (process.env.PATH || "").split(":").map((dir) => dir && join(dir, bin)).find((path) => path && existsSync(path));
+  if (!found) return { command: bin, args: [] };
+  let real = found;
+  try { real = realpathSync(found); } catch {}
+  return /\.(c|m)?js$/.test(real) ? { command: process.execPath, args: [real] } : { command: found, args: [] };
+}
+
 /** The variables Kimi Code fills into an agent file's body: Cora's own text must never be rewritten by them. */
 const KIMI_TEMPLATE_VARS = /\$\{(skills|agents_md|cwd|cwd_listing|os|shell|now|additional_dirs_info|base_prompt|plugin_sections|windows_notes|additional_dirs_section|skills_section)\}/g;
 // Linux refuses a single argument over 128 KiB: a longer request goes into the agent file instead.
@@ -915,7 +928,8 @@ export async function runKimi({ bin, model, system, prompt, mcp, toolNames, work
     }
   };
   try {
-    const out = await run(bin, args, { cwd: workDir, timeoutMs, onLine, env, authEnv, signal });
+    const cli = nodeCli(bin);
+    const out = await run(cli.command, [...cli.args, ...args], { cwd: workDir, timeoutMs, onLine, env, authEnv, signal });
     signal?.throwIfAborted();
     if (out.timedOut) throw cliFailure(`kimi: no answer within ${Math.round(timeoutMs / 1000)}s`, out);
     if (out.code !== 0 || failure) {
@@ -1033,7 +1047,8 @@ export async function runPi({ bin, model, system, prompt, mcp, toolNames, workDi
     if (event.type === "agent_settled") { settled = true; io.close(); }
   };
   try {
-    const out = await run(bin, args, {
+    const cli = nodeCli(bin);
+    const out = await run(cli.command, [...cli.args, ...args], {
       cwd: workDir, timeoutMs, onLine, env, signal,
       interactive: (io) => io.write({ id: "cora-prompt", type: "prompt", message: prompt }),
     });

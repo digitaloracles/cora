@@ -8,6 +8,7 @@ import { HARNESSES, PI_SERVICES, SUBSCRIPTION_PROVIDERS, codexCredentialStore } 
 import { kimiAccessToken, kimiAccount, kimiEnds, kimiModels, kimiSignedIn, kimiUsage } from "./kimi-auth.js";
 import { geminiScope, prepareGeminiProfile } from "./gemini-profile.js";
 import { geminiQuotaMessage } from "./gemini-quota.js";
+import { nodeCli } from "./cli.js";
 
 const LOGIN_MS = 10 * 60 * 1000;
 // How long a provider's model list holds before Cora asks again; an older one is shown while it does.
@@ -216,6 +217,13 @@ export class Subscriptions {
     // The machine's own Muse keeps its sessions where it always has.
     if (record.resident) delete env.XDG_DATA_HOME;
     return env;
+  }
+
+  /** The command and leading arguments a provider's CLI starts with: Kimi Code and Pi on Cora's own Node. */
+  command(provider, args) {
+    if (provider !== "kimi" && provider !== "pi") return [this.bins[provider], args];
+    const cli = nodeCli(this.bins[provider]);
+    return [cli.command, [...cli.args, ...args]];
   }
 
   /** Whether the CLI this account would be used through is installed here at all. */
@@ -428,7 +436,8 @@ export class Subscriptions {
       } else if (record.provider === "pi") {
         // Pi asks in a terminal: a device page and code for ChatGPT, a page whose code is pasted back for Claude.
         if (!PI_SERVICES[record.service]) throw new Error("Pi account without a service");
-        const child = spawn("python3", [TERMINAL_HELPER, this.bins.pi, "auth", "login", record.service, "--no-browser"], { env: { ...env, TERM: "xterm-256color" }, cwd: directory, stdio: ["pipe", "pipe", "pipe"] });
+        const [command, args] = this.command("pi", ["auth", "login", record.service, "--no-browser"]);
+        const child = spawn("python3", [TERMINAL_HELPER, command, ...args], { env: { ...env, TERM: "xterm-256color" }, cwd: directory, stdio: ["pipe", "pipe", "pipe"] });
         login.child = child;
         login.close = () => terminate(child);
         child.stdin.on("error", () => {});
@@ -455,7 +464,7 @@ export class Subscriptions {
         });
       } else if (DEVICE_LOGIN[record.provider]) {
         // Grok, Muse and Kimi Code print a page and a code to confirm there, then wait for the owner.
-        const child = spawn(this.bins[record.provider], DEVICE_LOGIN[record.provider], { env, cwd: directory, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(...this.command(record.provider, DEVICE_LOGIN[record.provider]), { env, cwd: directory, stdio: ["ignore", "pipe", "pipe"] });
         login.close = () => terminate(child);
         let buffer = "";
         const read = (chunk) => {
@@ -648,7 +657,7 @@ export class Subscriptions {
   readPi(record, signal) {
     if (!PI_SERVICES[record.service]) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
-      const child = spawn(this.bins.pi, ["auth", "check", "--provider", record.service, "--json"], { env: this.environment(record), cwd: this.directory(record), stdio: ["ignore", "pipe", "ignore"], signal: signal || undefined });
+      const child = spawn(...this.command("pi", ["auth", "check", "--provider", record.service, "--json"]), { env: this.environment(record), cwd: this.directory(record), stdio: ["ignore", "pipe", "ignore"], signal: signal || undefined });
       let output = "";
       const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("provider timeout")); }, 20000);
       child.stdout.on("data", (chunk) => { if (output.length < 32000) output += chunk; });
@@ -762,7 +771,7 @@ export class Subscriptions {
   /** One conversation with a CLI over its stdout lines; `onLine` answers the value that ends it. */
   catalogCommand(record, args, { input = "", onLine = null, open = false } = {}) {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.bins[record.provider], args, { env: this.environment(record), cwd: record.resident ? this.store.home : this.directory(record), stdio: ["pipe", "pipe", "ignore"] });
+      const child = spawn(...this.command(record.provider, args), { env: this.environment(record), cwd: record.resident ? this.store.home : this.directory(record), stdio: ["pipe", "pipe", "ignore"] });
       let output = "", buffer = "", done = false;
       const finish = (error, value) => {
         if (done) return;
