@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,8 @@ import { after, before, describe, test } from "node:test";
 import { createCloud } from "../cloud/src/app.js";
 import { createMailer } from "../cloud/src/mail.js";
 import { CloudStore, validSlug } from "../cloud/src/store.js";
-import { verifyPass } from "../src/pass.js";
+import { passKeys, verifyPass } from "../src/pass.js";
+import { sendSpaceInvitation } from "../cloud/src/invitation-mail.js";
 import { tempHome, waitFor } from "./helpers.js";
 
 const DOMAIN = "usecora.test";
@@ -764,5 +765,79 @@ test("sign-in links go out through Resend from usecora.space when its key is the
     assert.equal(await createMailer({}).send({ to: "x@y.test", subject: "s", text: "t", html: "h" }), false, "without a key nothing goes out");
   } finally {
     server.close();
+  }
+});
+
+test("the invitation link opens the space for the invited address, and a person signed in as someone else can switch account", async () => {
+  const invited = "invited@example.test", wrong = "someone.else@example.test", nonce = "B".repeat(43), messages = [];
+  let claimed = false;
+  // The space behind the invitation: the invitation callback and the access check answer with its own list.
+  const spaceServer = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    const json = (status, value) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
+    if (req.url === "/api/cloud/invitation") {
+      const proof = verifyPass(cloud.publicKey, body.pass, { audience: "invitation:invited.usecora.test" });
+      if (!proof || proof.nonce !== nonce || claimed) return json(403, {});
+      claimed = true;
+      return json(200, { email: invited, language: "en", invitedBy: "Space owner" });
+    }
+    if (req.url === "/api/cloud/access") {
+      const proof = verifyPass(cloud.publicKey, body.pass, { audience: "access:invited.usecora.test" });
+      return json(200, { allowed: Boolean(proof && proof.email === invited && proof.emailVerified) });
+    }
+    return json(404, {});
+  });
+  await new Promise((resolve) => spaceServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const owner = store.signIn("google", { subject: "google-invite-owner", email: "owner@invite.test", emailVerified: true, name: "Owner" });
+    store.addSpace({ slug: "invited", accountId: owner.id, upstream: `http://127.0.0.1:${spaceServer.address().port}` });
+    const sent = await sendSpaceInvitation({ space: store.space("invited"), nonce, audience: "invited.usecora.test", origin,
+      privateKey: passKeys(SEED).privateKey, mailer: { enabled: true, send: async (message) => { messages.push(message); return true; } }, allowSend: () => true });
+    assert.equal(sent.sent, true);
+    const link = messages[0].text.match(/https?:\/\/\S+\/go\/invited/)[0];
+    assert.equal(link, `${origin}/go/invited`, "the mail carries the link to the space");
+
+    const sessionKey = Buffer.from(hkdfSync("sha256", Buffer.from(SEED), Buffer.alloc(0), Buffer.from("cora cloud session"), 32));
+    const cookieOfAccount = (account) => {
+      const body = `${account.id}.${account.epoch}.${Date.now() + 3600000}`;
+      return `cora_cloud=${body}.${createHmac("sha256", sessionKey).update(`session.${body}`).digest("base64url")}`;
+    };
+    const wrongAccount = store.signIn("google", { subject: "google-wrong", email: wrong, emailVerified: true, name: "Someone else" });
+    const invitedAccount = store.signIn("google", { subject: "google-invited", email: invited, emailVerified: true, name: "Invited" });
+
+    const anonymous = await request(new URL(link).pathname);
+    assert.equal(anonymous.status, 302, "the invite link is a page, not a 404");
+    assert.equal(anonymous.headers.location, "/login?next=%2Fgo%2Finvited");
+    const loginPage = await request(anonymous.headers.location);
+    assert.equal(loginPage.status, 200);
+    assert.match(loginPage.body, /Sign in to open <b>invited<\/b>/);
+    assert.match(loginPage.body, /invitation was sent to/);
+
+    const denied = await request(new URL(link).pathname, { headers: { cookie: cookieOfAccount(wrongAccount) } });
+    assert.equal(denied.status, 403);
+    assert.match(denied.body, /signed in as <b>someone\.else@example\.test<\/b>/);
+    assert.match(denied.body, /If your invitation was sent to a different address/);
+    assert.match(denied.body, /action="[^"]*\/go\/invited\/switch"/);
+
+    const switched = await request("/go/invited/switch", { method: "POST", headers: { cookie: cookieOfAccount(wrongAccount), origin, "content-type": "application/x-www-form-urlencoded" } });
+    assert.equal(switched.status, 302);
+    assert.equal(switched.headers.location, "/go/invited", "switching comes back to the same space");
+    assert.equal(cookieOf(switched, "cora_cloud"), "cora_cloud=", "the old session is gone");
+    assert.equal((await request("/go/invited/switch", { method: "POST", headers: { cookie: cookieOfAccount(wrongAccount), origin: "https://evil.example" } })).status, 403);
+
+    const entered = await request(new URL(link).pathname, { headers: { cookie: cookieOfAccount(invitedAccount) } });
+    assert.equal(entered.status, 302, "the invited address enters the space");
+    const target = new URL(entered.headers.location);
+    assert.equal(target.origin, `http://invited.${DOMAIN}:${port}`);
+    assert.equal(target.pathname, "/auth/cloud");
+    const pass = verifyPass(cloud.publicKey, target.searchParams.get("pass"), { audience: `invited.${DOMAIN}` });
+    assert.equal(pass.email, invited);
+    assert.equal(pass.role, "member");
+    assert.equal((await request("/go/invited")).status, 302, "an anonymous visit asks to sign in");
+  } finally {
+    spaceServer.closeAllConnections();
+    await new Promise((resolve) => spaceServer.close(resolve));
   }
 });
