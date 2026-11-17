@@ -196,6 +196,7 @@ export function startCora(overrides = {}) {
   });
   vault.knowledge = knowledge;
   googleConnector.knowledge = knowledge;
+  googleConnector.log = activity;
   // Connectors that take a key or an app: the value is checked with the service and kept in the vault.
   const keyConnectors = new KeyConnectors({ store, vault, google: googleConnector, log: activity });
   brain.connectors = keyConnectors;
@@ -339,6 +340,7 @@ export function startCora(overrides = {}) {
     }, 60000);
     scheduler.start();
     email.start();
+    googleConnector.start();
     if (cfg.startBoxes !== false) {
       for (const agent of store.agents()) {
         if (agent.enabled && agent.tools) boxes.ensure(agent, { upgrade: true }).catch((error) => activity({ type: "error", agentId: agent.id, text: `desktop: ${error.message}` }));
@@ -357,6 +359,7 @@ export function startCora(overrides = {}) {
     scheduler.stop();
     github.stop();
     await email.stop();
+    await googleConnector.stop();
     await librarian.stop();
     await subscriptions.usage.close();
     await subscriptions.close();

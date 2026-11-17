@@ -3,6 +3,7 @@ import http from "node:http";
 import { test } from "node:test";
 import { GoogleConnectorBroker } from "../cloud/src/google-connector.js";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { GMAIL_SCOPES, GoogleConnector, htmlText } from "../src/connectors/google.js";
 
 const b64 = (value) => Buffer.from(value).toString("base64url");
@@ -53,7 +54,8 @@ async function world(t) {
     { id: "gc_full", email: "seb@dopamina.it", scope: FULL, agents: ["nico"], disconnected: false },
     { id: "gc_send", email: "info@dopamina.it", scope: GMAIL_SCOPES.send, agents: ["nico", "vera"], disconnected: false },
   ] };
-  const store = { value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; }, agent: (id) => ({ id }), agents: () => [] };
+  const disabled = new Set();
+  const store = { db: new DatabaseSync(":memory:"), value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; }, agent: (id) => ({ id, enabled: !disabled.has(id), tools: true }), agents: () => [] };
   const google = new GoogleConnector({ store, broker: "http://broker", space: "s", storeSecret: async () => {}, tokenFor: () => "", api: `http://127.0.0.1:${server.address().port}/gmail` });
   google.token = async (connection) => (connection.id === "gc_full" ? "access-full" : "access-send");
   const files = new Map([["/home/agent/work/report.pdf", Buffer.from("%PDF-1.4 report")]]), written = new Map();
@@ -63,14 +65,14 @@ async function world(t) {
     return answer.startsWith("error:") ? answer : JSON.parse(answer);
   };
   const sentRaw = () => Buffer.from(calls.filter((call) => call.path === "/messages/send").at(-1).body.raw, "base64url").toString("utf8");
-  return { calls, google, run, written, sentRaw };
+  return { calls, google, run, written, sentRaw, store, disabled, values };
 }
 
 test("Gmail tools appear by what each account granted: reading only where Google allowed it", async (t) => {
   const { google } = await world(t);
   const names = (agent) => google.toolsFor({ id: agent }).map((tool) => tool.name);
-  assert.equal(names("nico").length, 15);
-  assert.deepEqual(names("vera"), ["gmail_accounts", "gmail_send", "gmail_reply"]);
+  assert.equal(names("nico").length, 17);
+  assert.deepEqual(names("vera"), ["gmail_accounts", "gmail_send", "gmail_reply", "gmail_scheduled", "gmail_cancel_scheduled"]);
   assert.deepEqual(names("orca"), []);
   const search = google.toolsFor({ id: "nico" }).find((tool) => tool.name === "gmail_search");
   assert.match(search.description, /Only seb@dopamina\.it allow it/);
@@ -203,4 +205,97 @@ test("a space set to mail access asks the broker for the whole mailbox, a defaul
   assert.equal(begin("mail"), "mail");
   assert.equal(begin(undefined), null);
   assert.equal(begin("everything"), null);
+});
+
+test("gmail_send with send_at keeps the message in the database and Cora's timer sends it once at its time", async (t) => {
+  const w = await world(t);
+  const sends = () => w.calls.filter((call) => call.path === "/messages/send");
+  const later = new Date(Date.now() + 30 * 60000).toISOString().replace("Z", "+00:00");
+  const queued = await w.run("vera", "gmail_send", { to: ["anna@acme.it"], subject: "Più tardi", body_text: "Ciao", send_at: later });
+  assert.equal(queued.scheduled, true);
+  assert.match(queued.id, /^gmail_scheduled_[a-f0-9]{24}$/);
+  assert.equal(queued.from, "info@dopamina.it");
+  assert.equal(queued.send_at, new Date(later).toISOString());
+  assert.equal(sends().length, 0);
+  assert.deepEqual((await w.run("vera", "gmail_scheduled", {})).map((item) => [item.id, item.status, item.subject]), [[queued.id, "scheduled", "Più tardi"]]);
+  assert.deepEqual(await w.run("nico", "gmail_scheduled", {}), []);
+  await w.google.dispatchDue(Date.now());
+  assert.equal(sends().length, 0);
+  await Promise.all([w.google.dispatchDue(Date.now() + 31 * 60000), w.google.dispatchDue(Date.now() + 31 * 60000)]);
+  await w.google.dispatchDue(Date.now() + 32 * 60000);
+  assert.equal(sends().length, 1);
+  assert.equal(sends()[0].auth, "Bearer access-send");
+  const raw = w.sentRaw();
+  assert.match(raw, /^From: Vera <info@dopamina\.it>/m);
+  assert.match(raw, /^To: anna@acme\.it/m);
+  assert.match(raw, /^Subject: =\?UTF-8\?B\?/m);
+  const [done] = await w.run("vera", "gmail_scheduled", { status: "sent" });
+  assert.equal(done.id, queued.id);
+  assert.match(done.message, /^sent\d+$/);
+  assert.equal(w.store.db.prepare("SELECT raw FROM gmail_scheduled WHERE id=?").get(queued.id).raw, "");
+});
+
+test("a scheduled Gmail reply keeps its thread, and a cancelled send never leaves", async (t) => {
+  const w = await world(t);
+  const sends = () => w.calls.filter((call) => call.path === "/messages/send");
+  const at = new Date(Date.now() + 3600000).toISOString();
+  const reply = await w.run("nico", "gmail_reply", { from: "seb@dopamina.it", message: "m1", body_text: "Ricevuto", send_at: at });
+  assert.equal(reply.scheduled, true);
+  assert.deepEqual(reply.to, ["desk@acme.it"]);
+  const cancelled = await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["luca@acme.it"], subject: "Annullata", body_text: "x", send_at: at });
+  assert.equal((await w.run("vera", "gmail_cancel_scheduled", { id: cancelled.id })).startsWith("error:"), true);
+  assert.equal((await w.run("nico", "gmail_cancel_scheduled", { id: cancelled.id })).status, "cancelled");
+  assert.match(await w.run("nico", "gmail_cancel_scheduled", { id: cancelled.id }), /no longer waiting: it is cancelled/);
+  await w.google.dispatchDue(Date.now() + 2 * 3600000);
+  assert.equal(sends().length, 1);
+  assert.equal(sends()[0].body.threadId, "t1");
+  const raw = w.sentRaw();
+  assert.match(raw, /^In-Reply-To: <abc@acme\.it>/m);
+  assert.match(raw, /^Subject: Re: Preventivo/m);
+  assert.doesNotMatch(raw, /Annullata/);
+});
+
+test("send_at is refused when it is past, without a timezone, or more than a year ahead, and nothing is queued", async (t) => {
+  const w = await world(t);
+  for (const send_at of ["2020-01-01T09:00:00+01:00", "2030-01-01T09:00:00", new Date(Date.now() + 400 * 86400000).toISOString(), "domani"]) {
+    assert.match(await w.run("vera", "gmail_send", { to: ["anna@acme.it"], subject: "x", body_text: "y", send_at }), /^error: send_at/);
+  }
+  assert.equal(w.store.db.prepare("SELECT count(*) AS n FROM gmail_scheduled").get().n, 0);
+});
+
+test("a scheduled send is not made when the agent lost the account, and one cut by a restart is never repeated", async (t) => {
+  const w = await world(t);
+  const sends = () => w.calls.filter((call) => call.path === "/messages/send");
+  const at = new Date(Date.now() + 60000).toISOString();
+  const lost = await w.run("vera", "gmail_send", { to: ["anna@acme.it"], subject: "Revocata", body_text: "x", send_at: at });
+  const off = await w.run("nico", "gmail_send", { from: "info@dopamina.it", to: ["anna@acme.it"], subject: "Agente spento", body_text: "x", send_at: at });
+  w.values.googleConnectors.find((item) => item.id === "gc_send").agents = ["nico"];
+  w.disabled.add("nico");
+  await w.google.dispatchDue(Date.now() + 120000);
+  assert.equal(sends().length, 0);
+  const status = (id) => w.store.db.prepare("SELECT status,data FROM gmail_scheduled WHERE id=?").get(id);
+  assert.equal(status(lost.id).status, "failed");
+  assert.match(JSON.parse(status(lost.id).data).error, /non è autorizzato/);
+  assert.equal(status(off.id).status, "failed");
+  w.disabled.delete("nico");
+  const cut = await w.run("nico", "gmail_send", { from: "info@dopamina.it", to: ["anna@acme.it"], subject: "Interrotta", body_text: "x", send_at: at });
+  w.store.db.prepare("UPDATE gmail_scheduled SET status='dispatching' WHERE id=?").run(cut.id);
+  const again = new GoogleConnector({ store: w.store, broker: "http://broker", space: "s", storeSecret: async () => {}, tokenFor: () => "", api: w.google.api });
+  again.token = w.google.token;
+  await again.dispatchDue(Date.now() + 120000);
+  assert.equal(sends().length, 0);
+  assert.equal(status(cut.id).status, "uncertain");
+});
+
+test("Cora's own timer sends a due Gmail message without anyone calling a tool", async (t) => {
+  const w = await world(t);
+  const at = new Date(Date.now() + 1500).toISOString();
+  await w.run("vera", "gmail_send", { to: ["anna@acme.it"], subject: "Timer", body_text: "x", send_at: at });
+  w.google.start(200);
+  t.after(() => w.google.stop());
+  const deadline = Date.now() + 5000;
+  while (!w.calls.some((call) => call.path === "/messages/send") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  const sent = w.calls.find((call) => call.path === "/messages/send");
+  assert.ok(sent, "the timer sent it");
+  assert.equal((await w.run("vera", "gmail_scheduled", { status: "sent" })).length, 1);
 });
