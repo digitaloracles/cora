@@ -653,7 +653,8 @@ export class Orchestrator {
    * human was just talking to. Addressed messages keep the others quiet.
    */
   async address(state, item) {
-    const available = this.agentsFor(state.id).filter((agent) => !this.brain.knowledge || this.brain.knowledge.acceptsMessage(agent, item, state.id));
+    const listening = this.agentsFor(state.id);
+    const available = listening.filter((agent) => !this.brain.knowledge || this.brain.knowledge.acceptsMessage(agent, item, state.id));
     if (!state.focus) state.focus = this.engagements[state.id] || null;
     if (state.focus) {
       const ids = state.focus.ids.filter((id) => available.some((agent) => agent.id === id));
@@ -688,6 +689,8 @@ export class Orchestrator {
     item.addressed = recipients.filter((id) => available.some((agent) => agent.id === id));
     // Called by name where they do not listen, or while switched off: they cannot answer, so Cora says why.
     item.deaf = direct ? [] : this.store.agents().filter((agent) => !available.some((candidate) => candidate.id === agent.id) && calls(agent)).map((agent) => agent.id);
+    // Of those, the ones that do listen here but may not take this person's messages.
+    item.refused = item.deaf.filter((id) => listening.some((agent) => agent.id === id));
     item.handledBy = [...leaving];
     item.toOthers = !named.length && Boolean(item.others?.length);
     item.disengaged = leaving;
@@ -1338,9 +1341,14 @@ export class Orchestrator {
     const english = this.store.settings.language === "en";
     for (const id of item.deaf || []) {
       const agent = this.store.agent(id);
-      const key = `${state.id}:${id}`;
+      const refused = Boolean(item.refused?.includes(id));
+      const key = refused ? `${state.id}:${id}:${item.authorId}` : `${state.id}:${id}`;
       if (!agent || (this.offered.get(key) || 0) > now - 30 * 60000) continue;
       this.offered.set(key, now);
+      if (refused) {
+        await this.notice(state.id, this.permissionNotice(agent, item, english));
+        continue;
+      }
       const transport = transportOf(state.id);
       const where = agent.channelIds.filter((channelId) => transportOf(channelId) === transport).map((channelId) => this.channelMeta(channelId)?.name).filter(Boolean).map((name) => `#${name}`);
       const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/profilo` : "";
@@ -1368,6 +1376,18 @@ export class Orchestrator {
         : (english ? `To have it answer here, open it in the panel${link ? ` (${link})` : ""} and add this channel under Listening.` : `Per farlo rispondere qui aprilo nel pannello${link ? ` (${link})` : ""} e aggiungi questo canale in Ascolto.`);
       await this.notice(state.id, `${why} ${how}`);
     }
+  }
+
+  /** It listens here, but the person who called it has no permission on it: who can grant it, and where. */
+  permissionNotice(agent, item, english) {
+    const ownerId = this.brain.knowledge?.ownerId?.(agent);
+    const person = ownerId ? this.store.panelUser(ownerId) : null;
+    const owner = person && !person.blocked ? person.name || person.email : "";
+    const who = item.authorName || (english ? "this person" : "questa persona");
+    const link = this.instanceUrl ? `${this.instanceUrl}/#/agent/${agent.id}/autorizzazioni` : "";
+    return english
+      ? `**${agent.name}** does not answer ${who}: they have no permission to work with it. ${owner || "Its owner"} can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
+      : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
   }
 
   /** A button pressed on one of Cora's messages: only the owner may put an agent to listen. */
