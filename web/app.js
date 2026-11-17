@@ -4164,14 +4164,17 @@ function renderNew() {
 async function renderAgent() {
   const [, legacyAgent, legacyTab, legacyChat] = route();
   if (legacyTab === "chat" && legacyChat === "cifrata") history.replaceState(null, "", `#/agent/${legacyAgent}/chat`);
-  const view = location.hash;
   S.live = null;
-  const [, id, asked = "impostazioni", askedSub] = route();
+  // A chat may glue the sentence's full stop or bracket to a link Cora sent: it is not part of the address.
+  const [, id, asked = "impostazioni", askedSub] = route().map((part) => part.replace(/[.,;:!)\]]+$/, ""));
+  const glued = /[.,;:!)\]]$/.test(location.hash);
   // Links already sent by Cora name a settings section as if it were a tab: open that section.
   const section = ["ascolto", "autorizzazioni"].includes(asked) ? asked : "";
   const requested = section ? "impostazioni" : asked, sub = section || askedSub;
   const tab = requested === "profilo" ? "impostazioni" : requested;
-  if (requested === "profilo" || section) history.replaceState(null, "", `#/agent/${id}/impostazioni${sub ? "/" + sub : ""}`);
+  const canonical = requested === "profilo" || section ? `#/agent/${id}/${tab}${sub ? "/" + sub : ""}` : glued ? location.hash.replace(/[.,;:!)\]]+$/, "") : "";
+  if (canonical) history.replaceState(null, "", canonical);
+  const view = location.hash;
   const agent = S.data.agents.find((item) => item.id === id);
   if (!agent) {
     shell(panel({ icon: "alert", title: "Agente non trovato" }, btn("Torna agli agenti", { icon: "back", href: "#/agenti" })), { title: "Agente", back: "#/agenti" });

@@ -1380,7 +1380,8 @@ test("an agent that listens here but may not take this person's messages: Cora n
   await f.app.orchestrator.ingest(state, { id: "refused-call-1", kind: "human", authorId: TG_STRANGER, authorName: "Virginia", content: "@Nico qual è il link?", at: Date.now() });
   await waitFor(() => sent().length > before, { what: "Cora's notice" });
   const notice = sent().slice(before).join("\n");
-  assert.match(notice, /Nico\*\* non risponde a Virginia: non ha il permesso di farlo lavorare/);
+  assert.match(notice, /<b>Nico<\/b> non risponde a Virginia: non ha il permesso di farlo lavorare/, "Telegram shows the name in bold, not between asterisks");
+  assert.doesNotMatch(notice, /\*\*/);
   assert.match(notice, /in Autorizzazioni nel pannello/);
   assert.ok(notice.includes(`https://cora.example/#/agent/${nico.id}/impostazioni/autorizzazioni`), "the link opens the Permissions section itself");
   assert.doesNotMatch(notice, /non è in ascolto|non è su|è spento/, "it does listen here: no false reason");
@@ -5896,12 +5897,15 @@ describe("talking with the agents", () => {
     const zara = (await call("/api/agents", { method: "POST", body: { name: "Zara", model: "ollama/test-model", chattiness: 1, tools: false, channelIds: [OTHER_CHANNEL] } })).data;
     t.after(() => app.store.deleteAgent(zara.id));
     replies.set("Zara", () => ({ content: "Eccomi, ora vi sento." }));
+    app.orchestrator.instanceUrl = "https://cora.example";
+    t.after(() => { app.orchestrator.instanceUrl = ""; });
     const before = discord.state.botPosts.length;
     const asking = discord.say({ content: "@Zara, ci sei?" });
     await waitFor(() => discord.state.botPosts.slice(before).some((item) => item.components), { what: "Cora's offer" });
     const offer = discord.state.botPosts.slice(before).find((item) => item.components);
     assert.equal(offer.channelId, CHANNEL);
     assert.match(offer.content, /\*\*Zara\*\* non è in ascolto in questo canale/);
+    assert.ok(offer.content.includes(`oppure in Ascolto nel pannello: <https://cora.example/#/agent/${zara.id}/impostazioni/ascolto>.`), "the panel link opens Listening, without a preview card");
     const button = offer.components[0].components[0];
     assert.equal(button.label, "Metti Zara in ascolto qui");
     assert.equal(button.custom_id, `cora:listen:${zara.id}:${asking.id}`);
@@ -7777,7 +7781,8 @@ describe("agents in Telegram", () => {
       discord.say({ content: "@Dino, ci sei?" });
       await waitFor(() => discord.state.webhookPosts.some((item) => item.username === "Dino" && item.content === "Dino da Discord."), { what: "Dino on Discord" });
       const notice = await waitFor(() => telegram.state.sent.find((item) => /Dino/.test(item.text || "")), { what: "Cora's word about Dino on Telegram" });
-      assert.match(notice.text, /Dino\W{0,6} non è su Telegram\. Per farlo rispondere qui .*accendi Telegram in Ascolto/s, "Cora says Dino is not on Telegram at all");
+      assert.match(notice.text, /<b>Dino<\/b> non è su Telegram\. Per farlo rispondere qui .*accendi Telegram in Ascolto/s, "Cora says Dino is not on Telegram at all");
+      assert.doesNotMatch(notice.text, /\*\*/, "Telegram shows the name in bold, not between asterisks");
       assert.ok(notice.text.includes(`https://cora.example/#/agent/${dino.id}/impostazioni/ascolto`), "the link opens the Listening section itself");
       assert.equal(notice.token, MAIN_TG);
       await quiet();
@@ -7991,6 +7996,19 @@ describe("agents in Slack", () => {
     slack.say({ text: "@Silvia, rispondi a Kim" });
     const post = await waitFor(() => slack.postsIn(SLACK_CHANNEL)[0], { what: "Silvia's answer" });
     assert.equal(post.text, `<@${SLACK_STRANGER}> ci penso io, a &lt; b.`);
+    await quiet();
+  });
+
+  test("on Slack an agent that is not there: Cora says so in mrkdwn, with the link to its Listening section", async (t) => {
+    const ottavia = (await call("/api/agents", { method: "POST", body: { name: "Ottavia", model: "ollama/test-model", chattiness: 1, tools: false, enabled: true, platformsOff: ["slack"] } })).data;
+    t.after(() => app.store.deleteAgent(ottavia.id));
+    app.orchestrator.instanceUrl = "https://cora.example";
+    t.after(() => { app.orchestrator.instanceUrl = ""; });
+    slack.state.posts.length = 0;
+    slack.say({ text: "@Ottavia, ci sei?" });
+    const notice = await waitFor(() => slack.postsIn(SLACK_CHANNEL).find((post) => /Ottavia/.test(post.text || "")), { what: "Cora's notice about Ottavia" });
+    assert.match(notice.text, /^\*Ottavia\* non è su Slack\. Per farlo rispondere qui aprilo nel pannello \(https:\/\/cora\.example\/#\/agent\/ag_[a-f0-9]+\/impostazioni\/ascolto\) e accendi Slack in Ascolto\.$/);
+    assert.ok(notice.text.includes(`/#/agent/${ottavia.id}/impostazioni/ascolto`));
     await quiet();
   });
 
@@ -10085,6 +10103,9 @@ test("links Cora sends about an agent open the settings section they name, old o
     [`#/agent/${id}/impostazioni/ascolto`, `#/agent/${id}/impostazioni/ascolto`, "ascolto"],
     [`#/agent/${id}/autorizzazioni`, `#/agent/${id}/impostazioni/autorizzazioni`, "autorizzazioni"],
     [`#/agent/${id}/ascolto`, `#/agent/${id}/impostazioni/ascolto`, "ascolto"],
+    [`#/agent/${id}/impostazioni/autorizzazioni.`, `#/agent/${id}/impostazioni/autorizzazioni`, "autorizzazioni"],
+    [`#/agent/${id}/impostazioni/ascolto)`, `#/agent/${id}/impostazioni/ascolto`, "ascolto"],
+    [`#/agent/${id}/autorizzazioni.`, `#/agent/${id}/impostazioni/autorizzazioni`, "autorizzazioni"],
   ]) {
     await panel.navigate(hash);
     await waitFor(() => openId() === `section-tab-${section}`, { what: `${hash} opens ${section}` });
