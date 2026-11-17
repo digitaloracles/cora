@@ -1455,6 +1455,11 @@ function brainPanel(agent) {
   let remoteNote = "";
   let draftSecret = "";
   let draftLabel = "";
+  const addOpen = { ollama: false, deepseek: false };
+  // The key the agent runs on now, as saved: "" the space key, a key_* id its own, null not on this endpoint.
+  const savedKey = (backend) => (startedOn === backend ? agent.credentialId || "" : null);
+  let modelQuery = "";
+  let queryFocused = false;
   const modelInput = h("input", { type: "hidden", name: "model", value: chosen });
   const hostInput = h("input", { type: "hidden", name: "ollamaHost", value: agent.ollamaHost || "" });
   const custom = h("input", {
@@ -1546,6 +1551,42 @@ function brainPanel(agent) {
     });
   }
 
+  const byName = (a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id), undefined, { numeric: true, sensitivity: "base" });
+
+  /** A long list gets a search field above it; the filter hides rows, so typing never redraws the panel. */
+  function modelList(models, rowOf, first = null) {
+    const words = new Map();
+    const rows = models.map((model) => {
+      const row = rowOf(model);
+      words.set(row, `${model.label || ""} ${model.id}`.toLowerCase());
+      return row;
+    });
+    const list = h("div", { class: "rows", role: "radiogroup", "aria-label": "Modello" }, first, ...rows);
+    if (rows.length <= 8) return [list];
+    const none = h("small", { class: "muted model-search-none" }, "Nessun modello con questo nome.");
+    const search = h("input", {
+      type: "search", placeholder: "Cerca un modello", "aria-label": "Cerca un modello",
+      autocomplete: "off", autocapitalize: "off", spellcheck: "false", maxlength: 120, value: modelQuery,
+    });
+    const apply = () => {
+      const terms = modelQuery.toLowerCase().split(/\s+/).filter(Boolean);
+      let shown = 0;
+      for (const row of rows) {
+        const hit = terms.every((term) => words.get(row).includes(term));
+        row.hidden = !hit;
+        if (hit) shown += 1;
+      }
+      none.hidden = shown > 0;
+    };
+    search.addEventListener("input", () => { modelQuery = search.value; apply(); });
+    search.addEventListener("focus", () => { queryFocused = true; });
+    search.addEventListener("blur", () => { queryFocused = false; });
+    apply();
+    // The list can redraw under the cursor when the key's catalog arrives: keep typing where it was.
+    if (queryFocused) requestAnimationFrame(() => { search.focus(); search.setSelectionRange?.(search.value.length, search.value.length); });
+    return [h("label", { class: "search model-search" }, icon("search"), search), list, none];
+  }
+
   function cloudSide() {
     const out = [];
     const models = modelsOf(harness, "cloud");
@@ -1561,10 +1602,11 @@ function brainPanel(agent) {
     // Under a subscription the provider is the harness itself: saying it on every row is noise.
     const subtitleOf = (model) => (SUBSCRIPTION_HARNESSES.includes(harness) ? "" : tr(model.via || PROVIDERS[model.provider] || model.provider));
     const sees = !models.every((model) => model.vision);
-    const rows = models.map((model) => modelRow(model, { subtitle: subtitleOf(model), selected: model.id === chosen, quiet: unpaired, sees }));
+    // A subscription's models come in the provider's own order; the open catalogs are sorted by name.
+    const listed = SUBSCRIPTION_HARNESSES.includes(harness) ? models : [...models].sort(byName);
     const first = defaultRow({ quiet: unpaired });
-    if (!rows.length && !first) out.push(h("small", { class: "muted" }, tr("Nessun modello nel cloud per questo harness.")));
-    else out.push(h("div", { class: "rows", role: "radiogroup", "aria-label": "Modello" }, first, ...rows));
+    if (!listed.length && !first) out.push(h("small", { class: "muted" }, tr("Nessun modello nel cloud per questo harness.")));
+    else out.push(...modelList(listed, (model) => modelRow(model, { subtitle: subtitleOf(model), selected: model.id === chosen, quiet: unpaired, sees }), first));
     return out;
   }
 
@@ -1691,11 +1733,13 @@ function brainPanel(agent) {
     const chooseSpace = () => { keyChoice[backend] = ""; remoteStamp[backend] = ""; drawRight(); };
     const chooseOwn = (id) => { keyChoice[backend] = id; remoteStamp[backend] = ""; drawRight(); };
     const spaceChosen = !selected && spaceOn;
+    const inUse = savedKey(backend);
+    const using = (id) => (inUse === id ? badge("in uso", "on", "check") : null);
     const spaceRow = h("button", {
       type: "button", class: `row-link hermes-key${spaceChosen ? " on" : ""}`, role: "radio", "aria-checked": String(spaceChosen),
       disabled: !spaceOn, onclick: spaceOn ? chooseSpace : undefined,
     }, h("span", { class: "hermes-key-dot", "aria-hidden": "true" }), h("span", { class: "hermes-key-text" },
-      h("span", { class: "hermes-key-name" }, "Chiave dello space"),
+      h("span", { class: "hermes-key-name" }, h("span", {}, "Chiave dello space"), using("")),
       h("span", { class: "hermes-key-meta" }, spaceOn ? "pronta in Impostazioni" : "non configurata")));
     const ownRows = mine.map((item) => {
       const on = selected === item.id;
@@ -1703,7 +1747,7 @@ function brainPanel(agent) {
         type: "button", class: `row-link hermes-key${on ? " on" : ""}`, role: "radio", "aria-checked": String(on),
         onclick: () => chooseOwn(item.id),
       }, h("span", { class: "hermes-key-dot", "aria-hidden": "true" }), h("span", { class: "hermes-key-text" },
-        h("span", { class: "hermes-key-name" }, raw(item.label || tr("La tua chiave"))),
+        h("span", { class: "hermes-key-name" }, h("span", {}, raw(item.label || tr("La tua chiave"))), using(item.id)),
         h("span", { class: "hermes-key-meta" }, tr("La tua chiave"), " · ", raw(`···${item.last4 || ""}`))));
     });
     const secret = h("input", {
@@ -1725,10 +1769,12 @@ function brainPanel(agent) {
       const { models, ...saved } = record;
       S.data.credentials = [...(S.data.credentials || []).filter((item) => item.id !== saved.id), saved];
       keyChoice[backend] = saved.id;
+      addOpen[backend] = false;
       remoteModels[backend] = models || [];
       remoteStamp[backend] = `${backend}:${saved.id}`;
       remoteNote = "";
       drawRight();
+      toast(tr("Chiave aggiunta: Salva per usarla"));
     } });
     const remove = selected ? btn("Rimuovi", { icon: "trash", cls: "ghost sm", onclick: async () => {
       if (!await guard(api(`/api/credentials/${selected}`, { method: "DELETE" }), "Chiave rimossa")) return;
@@ -1737,12 +1783,22 @@ function brainPanel(agent) {
       remoteStamp[backend] = "";
       drawRight();
     } }) : null;
-    const form = h("div", { class: "stack-sm hermes-key-form" }, h("div", { class: "input-row hermes-key-add" }, pasteField(secret, { confirm: add }), label), h("div", { class: "row" }, add));
     const hasKey = spaceOn || mine.length > 0;
+    const cancel = hasKey ? btn("Annulla", { cls: "ghost sm", onclick: () => { addOpen[backend] = false; draftSecret = ""; draftLabel = ""; drawRight(); } }) : null;
+    const form = h("div", { class: "stack-sm hermes-key-form" }, h("div", { class: "input-row hermes-key-add" }, pasteField(secret, { confirm: add }), label), h("div", { class: "row" }, add, cancel));
+    const open = !hasKey || addOpen[backend] || Boolean(draftSecret);
+    const opener = btn("Aggiungi la tua chiave", { icon: "plus", cls: "sm hermes-key-open", onclick: () => { addOpen[backend] = true; drawRight(); } });
+    // What is chosen here counts only after Salva: say so, or the agent seems to run on a key it does not use.
+    const pending = selected !== inUse && (selected || spaceOn)
+      ? h("p", { class: "notice warn hermes-key-pending", role: "status" }, icon("alert"), h("span", {}, inUse === null
+        ? tr("L'agente non gira ancora qui: Salva per usare questa chiave.")
+        : tr("Scelta non ancora salvata: Salva per usare questa chiave.")))
+      : null;
     return h("div", { class: "stack-sm hermes-keys" },
       h("div", { class: "hermes-keys-head" }, h("span", { class: "label" }, "Chiave"), remove),
       h("div", { class: "hermes-key-list", role: "radiogroup", "aria-label": "Chiave" }, spaceRow, ...ownRows),
-      hasKey ? h("details", { class: "brain-custom", ...(draftSecret ? { open: "" } : {}) }, h("summary", {}, tr("Aggiungi la tua chiave")), form) : form);
+      pending,
+      open ? form : h("div", { class: "row" }, opener));
   }
 
   function keyedSide(backend) {
@@ -1755,16 +1811,19 @@ function brainPanel(agent) {
     });
     const rows = [...known, ...extra];
     if (chosen && hermesPlaceOf(chosen) === backend && !rows.some((model) => model.id === chosen)) {
-      rows.unshift({ id: chosen, label: chosen.split("/").slice(2).join("/") || chosen, tools: true });
+      rows.push({ id: chosen, label: chosen.split("/").slice(2).join("/") || chosen, tools: true });
     }
+    rows.sort(byName);
     const out = [keyBox(backend)];
     if (remoteNote) out.push(h("p", { class: "notice warn", role: "status" }, icon("alert"), h("span", {}, tr(remoteNote))));
-    out.push(rows.length
-      ? h("div", { class: "rows", role: "radiogroup", "aria-label": "Modello" }, ...rows.map((model) => modelRow(model, {
+    if (rows.length) {
+      out.push(...modelList(rows, (model) => modelRow(model, {
         subtitle: tr(model.via || (backend === "deepseek" ? "DeepSeek" : "Ollama Cloud")),
         selected: model.id === chosen,
-      })))
-      : h("small", { class: "muted" }, backend === "deepseek" ? "I modelli compaiono appena la chiave risponde." : "Scrivi il nome del modello, oppure aspetta l'elenco della chiave."));
+      })));
+    } else {
+      out.push(h("small", { class: "muted" }, backend === "deepseek" ? "I modelli compaiono appena la chiave risponde." : "Scrivi il nome del modello, oppure aspetta l'elenco della chiave."));
+    }
     const typed = h("input", {
       type: "text", class: "hermes-model-name", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
       placeholder: backend === "deepseek" ? "deepseek-flash" : "qwen3-coder:480b", "aria-label": "Nome del modello",

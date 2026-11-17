@@ -438,7 +438,9 @@ input[type=color] { width: 64px; height: 44px; padding: 4px; background: var(--w
 .hermes-key.on .hermes-key-dot { border-color: var(--amber); }
 .hermes-key.on .hermes-key-dot::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 6px var(--amber-glow); }
 .hermes-key-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.hermes-key-name { font: 600 15px/1.2 var(--display); letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.hermes-key-name { font: 600 15px/1.2 var(--display); letter-spacing: -0.02em; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hermes-key-pending { margin: 0; }
+.model-row[hidden], .model-search-none[hidden] { display: none; }
 .hermes-key-meta { color: var(--faint); font: 400 11px/1.4 var(--mono); }
 .hermes-key-form { margin-top: 10px; }
 @media (max-width: 600px) {
