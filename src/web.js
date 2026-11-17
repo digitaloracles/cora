@@ -230,7 +230,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
    */
   const githubReturn = async (res, url) => {
     const page = (status, title, text, agentId = "") => {
-      const back = agentId ? `/#/agent/${encodeURIComponent(agentId)}/profilo` : "/";
+      const back = agentId ? `/#/agent/${encodeURIComponent(agentId)}/impostazioni/github` : "/";
       const esc = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
       res.writeHead(status, {
         "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
