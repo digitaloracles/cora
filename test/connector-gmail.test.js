@@ -324,6 +324,33 @@ test("mail from an account carries the account's own Gmail name, never the agent
   assert.equal(sendAsCalls(), 1, "Gmail is asked the name once, then it is kept");
 });
 
+test("from_name sets the sender name on send, reply, draft and scheduled, over the Gmail name and when Gmail has none", async (t) => {
+  const w = await world(t);
+  const fromLine = () => w.sentRaw().match(/^From: (.*?)\r?$/m)[1];
+  w.sendAs.list = [{ sendAsEmail: "seb@dopamina.it", displayName: "" }];
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y" });
+  assert.equal(fromLine(), "seb@dopamina.it");
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y", from_name: "Sebastiano Cataudo" });
+  assert.equal(fromLine(), "Sebastiano Cataudo <seb@dopamina.it>");
+  await w.run("nico", "gmail_reply", { from: "seb@dopamina.it", message: "m1", body_text: "Ricevuto", from_name: "Sebastiano Cataudo" });
+  assert.equal(fromLine(), "Sebastiano Cataudo <seb@dopamina.it>");
+  await w.run("nico", "gmail_create_draft", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "Bozza", body_text: "x", from_name: "Sebastiano Cataudo" });
+  const draft = Buffer.from(w.calls.filter((call) => call.path === "/drafts" && call.method === "POST").at(-1).body.message.raw, "base64url").toString("utf8");
+  assert.match(draft, /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "Dopo", body_text: "x", from_name: "Sebastiano Cataudo", send_at: new Date(Date.now() + 60000).toISOString() });
+  await w.google.dispatchDue(Date.now() + 120000);
+  assert.equal(fromLine(), "Sebastiano Cataudo <seb@dopamina.it>");
+  w.sendAs.list = [{ sendAsEmail: "seb@dopamina.it", displayName: "Ufficio" }];
+  w.google.names.clear();
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y", from_name: "Niccolò Città" });
+  assert.equal(fromLine(), `=?UTF-8?B?${Buffer.from("Niccolò Città").toString("base64")}?= <seb@dopamina.it>`);
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y", from_name: "Riga\r\nBcc: x@y.it <z@w.it>" });
+  assert.equal(fromLine(), '"Riga Bcc: x@y.it z@w.it" <seb@dopamina.it>', "a line break or an address in the name never becomes a header");
+  assert.doesNotMatch(w.sentRaw(), /^Bcc:/m);
+  await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y", from_name: "  " });
+  assert.equal(fromLine(), "Ufficio <seb@dopamina.it>", "an empty from_name keeps the Gmail name");
+});
+
 test("the account's Gmail name is quoted or encoded as RFC 5322 needs, and a failed lookup falls back to the bare address", async (t) => {
   const w = await world(t);
   const from = async () => { w.google.names.clear(); await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y" }); return w.sentRaw().match(/^From: (.*?)\r?$/m)[1]; };

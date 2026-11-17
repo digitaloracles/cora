@@ -147,6 +147,7 @@ const COMPOSE = {
   body_html: { type: "string", description: "the message as HTML" },
   body_text: { type: "string", description: "the message as plain text; give this, body_html or both" },
   attachments: { type: "array", items: { type: "string" }, description: "absolute paths of files on your computer to attach, e.g. /home/agent/work/report.pdf (at most 25 MB in all)" },
+  from_name: { type: "string", description: "optional: the sender name shown in From, e.g. \"Sebastiano Cataudo\"; default the name the address has in Gmail (Send mail as), or the bare address when it has none" },
 };
 const BODY_RULE = "Send only what the person asked for, to the recipients they named; a send is final, so never retry one whose result is uncertain: check the Sent folder or ask first.";
 const SEND_AT = { type: "string", description: "optional: send later, at this ISO 8601 date-time with timezone (e.g. 2026-12-01T09:00:00+01:00), at most a year ahead. Cora keeps the message and sends it by itself at that time, even if you are not running; gmail_scheduled lists what waits, gmail_cancel_scheduled cancels it" };
@@ -164,6 +165,8 @@ export function sendTime(value, now = Date.now()) {
 }
 
 /** The message an agent composed: checked addresses, both bodies, attachments read from its computer. */
+const senderLabel = (value) => String(value || "").replace(/[\r\n\0]/g, " ").replace(/[<>"]/g, "").replace(/\s+/g, " ").trim().slice(0, 200);
+
 async function composed(args, ctx, { needTo = true } = {}) {
   const to = addresses(args.to, "to", { required: needTo }), cc = addresses(args.cc, "cc"), bcc = addresses(args.bcc, "bcc");
   if (to.length + cc.length + bcc.length > 100) fail("at most 100 recipients in all");
@@ -181,7 +184,7 @@ async function composed(args, ctx, { needTo = true } = {}) {
     attachments.push(file);
   }
   return {
-    to, cc, bcc, subject, attachments,
+    to, cc, bcc, subject, attachments, fromName: senderLabel(args.from_name),
     body_html: bodyHtml || escapeHtml(bodyText).replace(/\n/g, "<br>"),
     body_text: bodyText || htmlText(bodyHtml),
   };
@@ -414,7 +417,7 @@ const TOOLS = [
         reply = await replyContext(args, ctx, ctx.connection);
       }
       const message = await composed({ ...args, ...(args.message ? { to: reply.to, cc: reply.cc, subject: reply.subject } : {}) }, ctx, { needTo: false });
-      const raw = mime({ ...message, from: await ctx.connector.fromHeader(ctx.agent, ctx.connection), in_reply_to: reply.in_reply_to, references: reply.references });
+      const raw = mime({ ...message, from: await ctx.connector.fromHeader(ctx.agent, ctx.connection, message.fromName), in_reply_to: reply.in_reply_to, references: reply.references });
       const draft = await ctx.gmail("POST", "/drafts", { body: { message: defined({ raw, threadId: reply.thread }) } });
       return { draft: draft.id, message: draft.message?.id, thread: draft.message?.threadId, to: message.to, subject: message.subject };
     },
@@ -561,9 +564,9 @@ export class GoogleConnector {
     this.access.set(connection.id, { token: result.access_token, until: Date.now() + Math.min(3600, Number(result.expires_in) || 300) * 1000 });
     return result.access_token;
   }
-  /** The From header: the name the account itself sends with in Gmail (Send mail as), never the agent's; the bare address when Gmail does not tell it. */
-  async fromHeader(agent, connection) {
-    const name = await this.senderName(connection);
+  /** The From header: the name given with the message, else the name the account itself sends with in Gmail (Send mail as), never the agent's; the bare address when neither is known. */
+  async fromHeader(agent, connection, given = "") {
+    const name = senderLabel(given) || await this.senderName(connection);
     return name ? `${displayName(name)} <${connection.email}>` : connection.email;
   }
 
@@ -623,7 +626,7 @@ export class GoogleConnector {
 
   /** Sends a composed message from an account the agent is still authorised on. */
   async deliver(agent, connection, message) {
-    const raw = mime({ ...message, from: await this.fromHeader(agent, connection) });
+    const raw = mime({ ...message, from: await this.fromHeader(agent, connection, message.fromName) });
     await this.token(connection);
     this.identity(agent, connection.id);
     return this.sendRaw(connection, raw, message.thread);
@@ -644,7 +647,7 @@ export class GoogleConnector {
   async schedule(agent, connection, message, sendAt) {
     if (!this.store.db) throw new ToolError("scheduled sends are not available on this Cora");
     this.identity(agent, connection.id);
-    const raw = mime({ ...message, from: await this.fromHeader(agent, connection) });
+    const raw = mime({ ...message, from: await this.fromHeader(agent, connection, message.fromName) });
     const id = `gmail_scheduled_${randomBytes(12).toString("hex")}`;
     const data = defined({ from: connection.email, to: message.to, cc: message.cc?.length ? message.cc : undefined, bcc: message.bcc?.length ? message.bcc : undefined, subject: message.subject, thread: message.thread, attachments: message.attachments?.length || undefined, createdAt: new Date().toISOString() });
     this.store.db.prepare("INSERT INTO gmail_scheduled(id,agent_id,connection_id,send_at,status,data,raw) VALUES(?,?,?,?,?,?,?)").run(id, agent.id, connection.id, sendAt, "scheduled", JSON.stringify(data), raw);
