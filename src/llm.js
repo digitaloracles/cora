@@ -154,7 +154,7 @@ const MUSE_MODELS = [
 ];
 
 /** What Kimi Code runs when the account has not listed its models yet: the alias its docs name. */
-const KIMI_MODELS = [{ name: "kimi-for-coding", label: "Kimi for Coding" }];
+const KIMI_MODELS = [{ name: "kimi-for-coding", label: "Kimi for Coding", vision: true }];
 
 /** What each subscription CLI can do with a model; which models it runs, its provider says. */
 const CLI_TRAITS = {
@@ -545,12 +545,12 @@ export class LLM {
     }));
     for (const [provider, listed] of catalogs) {
       for (const model of listed) {
-        const traits = CLI_TRAITS[provider] || { vision: !/^gpt-oss-/i.test(model.name), thinking: true };
+        const traits = { ...(CLI_TRAITS[provider] || { vision: !/^gpt-oss-/i.test(model.name), thinking: true }), ...(typeof model.vision === "boolean" ? { vision: model.vision } : {}) };
         models.push({ ...(provider === "gemini" ? model : {}), id: `${provider}/${model.name}`, provider, label: model.label, tools: true, ...traits });
       }
     }
     if (available.deepseek) {
-      for (const model of DEEPSEEK_MODELS) models.push({ id: `deepseek/${model.name}`, provider: "deepseek", label: model.label, tools: true, vision: false, thinking: true });
+      for (const model of DEEPSEEK_MODELS) models.push({ id: `deepseek/${model.name}`, provider: "deepseek", label: model.label, tools: true, vision: model.vision, thinking: true });
     }
     if (available.ollama) {
       // One place decides what a model is and what it can do, asking the model when the
@@ -581,10 +581,11 @@ export class LLM {
           const size = Number(model.size) || 0;
           const local = !CLOUD_NAME.test(model.name) && size > 0;
           const window = local ? await this.contextLength(`ollama/${model.name}`, root) : 0;
+          const caps = Array.isArray(model.capabilities) ? model.capabilities : await this.modelCapabilities(root, model.name);
           return {
             id: `hermes/${model.name}`, provider: "hermes", label: model.name,
             local, size, ...(local ? {} : { via: PROVIDERS.ollama }),
-            tools: true, vision: false, thinking: false,
+            tools: true, vision: caps.includes("vision"), thinking: false,
             ...(window && window < HERMES_MIN_CONTEXT ? { usable: false, reason: HERMES_TOO_SHORT } : {}),
           };
         })));
@@ -618,20 +619,20 @@ export class LLM {
         const cloud = CLOUD_NAME.test(name) ? name : name.includes(":") ? `${name}-cloud` : `${name}:cloud`;
         if (!seen.has(`hermes/${cloud}`)) {
           seen.add(`hermes/${cloud}`);
-          models.push({ id: `hermes/${cloud}`, provider: "hermes", label: cloud, via: PROVIDERS.ollama, local: false, tools: model.tools, vision: false, thinking: false });
+          models.push({ id: `hermes/${cloud}`, provider: "hermes", label: cloud, via: PROVIDERS.ollama, local: false, tools: model.tools, vision: Boolean(model.vision), thinking: false });
         }
         // The same cloud model, addressed with a key: the person's or the space's, not the local proxy.
         const keyed = `hermes/ollama/${name}`;
         if (!seen.has(keyed)) {
           seen.add(keyed);
-          models.push({ id: keyed, provider: "hermes", label: name, via: PROVIDERS.ollama, backend: "ollama", local: false, tools: model.tools, vision: false, thinking: false });
+          models.push({ id: keyed, provider: "hermes", label: name, via: PROVIDERS.ollama, backend: "ollama", local: false, tools: model.tools, vision: Boolean(model.vision), thinking: false });
         }
       }
       for (const model of DEEPSEEK_MODELS) {
         const id = `hermes/deepseek/${model.name}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        models.push({ id, provider: "hermes", label: model.label, via: "DeepSeek", backend: "deepseek", local: false, tools: true, vision: model.name === "deepseek-flash", thinking: true });
+        models.push({ id, provider: "hermes", label: model.label, via: "DeepSeek", backend: "deepseek", local: false, tools: true, vision: model.vision, thinking: true });
       }
       for (const model of models.filter((item) => ROUTERS[item.provider])) {
         const id = `hermes/${model.provider}/${splitModel(model.id).name}`;
@@ -647,14 +648,14 @@ export class LLM {
       for (const harness of ["hermes", "pi"]) {
         if (!available[harness]) continue;
         for (const model of kimiListed) {
-          models.push({ id: `${harness}/kimi/${splitModel(model.id).name}`, provider: harness, label: model.label, via: PROVIDERS.kimi, backend: "kimi", local: false, tools: true, vision: harness === "pi" && model.vision, thinking: true });
+          models.push({ id: `${harness}/kimi/${splitModel(model.id).name}`, provider: harness, label: model.label, via: PROVIDERS.kimi, backend: "kimi", local: false, tools: true, vision: Boolean(model.vision), thinking: true });
         }
       }
     }
     if (available.pi) {
       // Pi with a key: DeepSeek's models and Ollama Cloud's, on the person's key or the space's.
       for (const model of DEEPSEEK_MODELS) {
-        models.push({ id: `pi/deepseek/${model.name}`, provider: "pi", label: model.label, via: "DeepSeek", backend: "deepseek", local: false, tools: true, vision: false, thinking: true });
+        models.push({ id: `pi/deepseek/${model.name}`, provider: "pi", label: model.label, via: "DeepSeek", backend: "deepseek", local: false, tools: true, vision: model.vision, thinking: true });
       }
       for (const model of models.filter((item) => item.provider === "ollama" && !item.local)) {
         const name = splitModel(model.id).name;

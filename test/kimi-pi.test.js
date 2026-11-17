@@ -48,7 +48,7 @@ function kimiApi({ refreshStatus = 200 } = {}) {
     }
     if (!/^Bearer fixture-access-\d+$/.test(auth)) return json(401, { error: "unauthorized" });
     if (pathname.endsWith("/me")) return json(200, { user_id: "u1", email: "owner@example.test", user_level_name: "Plus" });
-    if (pathname.endsWith("/models")) return json(200, { data: [{ id: "k3", display_name: "K3" }, { id: "kimi-for-coding", display_name: "K2.8" }, { id: "bad id" }] });
+    if (pathname.endsWith("/models")) return json(200, { data: [{ id: "k3", display_name: "K3", supports_image_in: true }, { id: "kimi-for-coding", display_name: "K2.8", modalities: { input: ["text"] } }, { id: "bad id" }] });
     if (pathname.endsWith("/usages")) return json(200, { usages: { limit_5h: { used_ratio: 0.25, reset_time: "2026-11-17T20:00:00Z" }, limit_month_total: { used_ratio: 0.5, reset_time: "2026-12-17T00:00:00Z" } } });
     return json(404, { error: "not found" });
   };
@@ -78,7 +78,7 @@ test("Kimi's token is refreshed once under the CLI's own lock, in the CLI's own 
   assert.ok(!existsSync(join(home, "oauth", "kimi-code-env-fixture.lock")), "the lock is released");
   assert.equal(await kimiAccessToken(home, { fetchImpl: api.fetchImpl }), "fixture-access-2", "a fresh token is reused");
   assert.deepEqual(await kimiAccount(home, { fetchImpl: api.fetchImpl }), { email: "owner@example.test", plan: "Plus" });
-  assert.deepEqual((await kimiModels(home, { fetchImpl: api.fetchImpl })).map((model) => model.name), ["k3", "kimi-for-coding"]);
+  assert.deepEqual((await kimiModels(home, { fetchImpl: api.fetchImpl })).map((model) => [model.name, model.vision]), [["k3", true], ["kimi-for-coding", false]], "vision is what the account's model list declares");
 
   const revoked = kimiHome(mkdtempSync(join(tmpdir(), "cora-kimi-")), { expiresIn: 0 });
   await assert.rejects(kimiAccessToken(revoked, { fetchImpl: kimiApi({ refreshStatus: 401 }).fetchImpl }), { code: "KIMI_AUTH" });
@@ -411,6 +411,10 @@ fetch(base + "/chat/completions", { method: "POST", headers: { Authorization: "B
   const models = await app.llm.listModels({ fresh: true });
   assert.deepEqual(models.filter((model) => model.provider === "kimi").map((model) => model.id), ["kimi/k3", "kimi/kimi-for-coding"]);
   assert.deepEqual(models.filter((model) => model.provider === "hermes" && model.backend === "kimi").map((model) => model.id), ["hermes/kimi/k3", "hermes/kimi/kimi-for-coding"]);
+  for (const prefix of ["kimi", "hermes/kimi"]) {
+    assert.equal(models.find((model) => model.id === `${prefix}/k3`).vision, true, `${prefix}/k3 sees images, as Kimi declares`);
+    assert.equal(models.find((model) => model.id === `${prefix}/kimi-for-coding`).vision, false, `${prefix}/kimi-for-coding follows its declared modalities`);
+  }
 
   const agent = await request("/api/agents", { method: "POST", body: { name: "Kimo", model: "hermes/kimi/k3", subscriptionId: created.data.id, tools: false } });
   assert.equal(agent.status, 201);

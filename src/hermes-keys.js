@@ -10,8 +10,8 @@ export const HERMES_ENDS = {
 };
 
 export const DEEPSEEK_CATALOG = [
-  { name: "deepseek-flash", label: "DeepSeek V4.1 Flash" },
-  { name: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+  { name: "deepseek-flash", label: "DeepSeek V4.1 Flash", vision: true },
+  { name: "deepseek-v4-pro", label: "DeepSeek V4 Pro", vision: false },
 ];
 
 /**

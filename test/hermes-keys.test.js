@@ -150,6 +150,8 @@ test("Hermes runs local Ollama, Ollama Cloud and DeepSeek, with the person's key
   const models = await llm.listModels();
   assert.ok(models.some((model) => model.id === "hermes/deepseek/deepseek-flash" && model.backend === "deepseek"));
   assert.ok(models.some((model) => model.id === "hermes/deepseek/deepseek-v4-pro"));
+  assert.equal(models.find((model) => model.id === "hermes/deepseek/deepseek-flash").vision, true, "DeepSeek documents image input on deepseek-flash");
+  assert.equal(models.find((model) => model.id === "hermes/deepseek/deepseek-v4-pro").vision, false);
 });
 
 test("the panel offers the three Hermes ends and both keys, and the API keeps each person's key to themselves", async (t) => {
