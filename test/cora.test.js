@@ -9716,7 +9716,7 @@ describe("email channel", () => {
     const result = await f.app.email.send(f.agent, { to: ["robin+google-recipient@ambox.dev"], subject: "External sender", body_text: "Google fixture email", body_html: "<p>Google fixture email</p>" }, { requester: { kind: "owner" } });
     assert.equal(result.status, "sent");
     assert.equal(google.sent.length, 1);
-    assert.match(google.sent[0], /From: .*<robin\+google@ambox.dev>/);
+    assert.match(google.sent[0], /^From: robin\+google@ambox\.dev\r?$/m, "a send-only account shows its bare address, never the agent's name");
     assert.match(google.sent[0], /multipart\/alternative/);
     assert.equal(f.state.sent.length, 0);
     assert.equal(f.app.email.summary(f.agent).sent, 1);

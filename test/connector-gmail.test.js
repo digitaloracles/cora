@@ -23,6 +23,7 @@ const MESSAGE = {
 
 async function world(t) {
   const calls = [];
+  const sendAs = { status: 200, list: [{ sendAsEmail: "alias@dopamina.it", displayName: "Ufficio" }, { sendAsEmail: "seb@dopamina.it", displayName: "Sebastiano Cataudo", isPrimary: true }] };
   const server = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -46,6 +47,7 @@ async function world(t) {
     if (path === "/drafts/d1" && req.method === "DELETE") { res.writeHead(204); return res.end(); }
     if (path === "/drafts/send") return send(200, { id: "msent", threadId: "t1" });
     if (path === "/settings/filters") return send(200, { filter: [] });
+    if (path === "/settings/sendAs" && req.method === "GET") return send(sendAs.status, sendAs.status === 200 ? { sendAs: sendAs.list } : { error: { message: "backend error" } });
     return send(404, { error: { message: "not found" } });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -65,7 +67,7 @@ async function world(t) {
     return answer.startsWith("error:") ? answer : JSON.parse(answer);
   };
   const sentRaw = () => Buffer.from(calls.filter((call) => call.path === "/messages/send").at(-1).body.raw, "base64url").toString("utf8");
-  return { calls, google, run, written, sentRaw, store, disabled, values };
+  return { calls, google, run, written, sentRaw, store, disabled, values, sendAs };
 }
 
 test("Gmail tools appear by what each account granted: reading only where Google allowed it", async (t) => {
@@ -87,7 +89,8 @@ test("gmail_send builds a real MIME message with UTF-8 subject, Bcc and an attac
   assert.equal(sent.sent, true);
   assert.equal(w.calls.at(-1).auth, "Bearer access-send");
   const raw = w.sentRaw();
-  assert.match(raw, /^From: Nico <info@dopamina\.it>/m);
+  assert.match(raw, /^From: info@dopamina\.it\r?$/m, "a send-only account cannot read its Gmail name: the bare address, never the agent's name");
+  assert.doesNotMatch(raw, /Nico/);
   assert.match(raw, /^To: Anna <anna@acme\.it>/m);
   assert.match(raw, /^Bcc: archivio@dopamina\.it/m);
   assert.match(raw, new RegExp(`^Subject: =\\?UTF-8\\?B\\?${Buffer.from("Città è pronta").toString("base64").replace(/[+/=]/g, (c) => `\\${c}`)}\\?=`, "m"));
@@ -226,7 +229,7 @@ test("gmail_send with send_at keeps the message in the database and Cora's timer
   assert.equal(sends().length, 1);
   assert.equal(sends()[0].auth, "Bearer access-send");
   const raw = w.sentRaw();
-  assert.match(raw, /^From: Vera <info@dopamina\.it>/m);
+  assert.match(raw, /^From: info@dopamina\.it\r?$/m);
   assert.match(raw, /^To: anna@acme\.it/m);
   assert.match(raw, /^Subject: =\?UTF-8\?B\?/m);
   const [done] = await w.run("vera", "gmail_scheduled", { status: "sent" });
@@ -298,4 +301,42 @@ test("Cora's own timer sends a due Gmail message without anyone calling a tool",
   const sent = w.calls.find((call) => call.path === "/messages/send");
   assert.ok(sent, "the timer sent it");
   assert.equal((await w.run("vera", "gmail_scheduled", { status: "sent" })).length, 1);
+});
+
+test("mail from an account carries the account's own Gmail name, never the agent's: send, reply, draft and scheduled", async (t) => {
+  const w = await world(t);
+  const sendAsCalls = () => w.calls.filter((call) => call.path === "/settings/sendAs").length;
+  const lastRaw = (path) => Buffer.from(path === "/drafts" ? w.calls.filter((call) => call.path === "/drafts" && call.method === "POST").at(-1).body.message.raw : w.sentRaw(), "base64url").toString("utf8");
+  assert.equal((await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "Ora", body_text: "x" })).sent, true);
+  assert.match(w.sentRaw(), /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  assert.doesNotMatch(w.sentRaw(), /^From: .*Nico/m);
+  assert.equal((await w.run("nico", "gmail_reply", { from: "seb@dopamina.it", message: "m1", body_text: "Ricevuto" })).sent, true);
+  assert.match(w.sentRaw(), /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  await w.run("nico", "gmail_create_draft", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "Bozza", body_text: "x" });
+  assert.match(lastRaw("/drafts"), /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  const queued = await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "Dopo", body_text: "x", send_at: new Date(Date.now() + 60000).toISOString() });
+  await w.google.dispatchDue(Date.now() + 120000);
+  assert.equal((await w.run("nico", "gmail_scheduled", { status: "sent" }))[0].id, queued.id);
+  assert.match(w.sentRaw(), /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  const channel = await w.google.send({ id: "nico", name: "Nico" }, "gc_full", { to: ["anna@acme.it"], subject: "Canale", body_text: "x" });
+  assert.equal(channel.email, "seb@dopamina.it");
+  assert.match(w.sentRaw(), /^From: Sebastiano Cataudo <seb@dopamina\.it>\r?$/m);
+  assert.equal(sendAsCalls(), 1, "Gmail is asked the name once, then it is kept");
+});
+
+test("the account's Gmail name is quoted or encoded as RFC 5322 needs, and a failed lookup falls back to the bare address", async (t) => {
+  const w = await world(t);
+  const from = async () => { w.google.names.clear(); await w.run("nico", "gmail_send", { from: "seb@dopamina.it", to: ["anna@acme.it"], subject: "x", body_text: "y" }); return w.sentRaw().match(/^From: (.*?)\r?$/m)[1]; };
+  w.sendAs.list = [{ sendAsEmail: "SEB@dopamina.it", displayName: "Cataudo, Sebastiano \\\"Seb\\\"" }];
+  assert.equal(await from(), '"Cataudo, Sebastiano \\\\\\"Seb\\\\\\"" <seb@dopamina.it>');
+  w.sendAs.list = [{ sendAsEmail: "seb@dopamina.it", displayName: "Niccolò Città" }];
+  assert.equal(await from(), `=?UTF-8?B?${Buffer.from("Niccolò Città").toString("base64")}?= <seb@dopamina.it>`);
+  w.sendAs.list = [{ sendAsEmail: "seb@dopamina.it", displayName: "Riga\r\nBcc: x@y.it" }];
+  assert.equal(await from(), '"Riga Bcc: x@y.it" <seb@dopamina.it>', "a line break in the name never becomes a header");
+  w.sendAs.list = [{ sendAsEmail: "seb@dopamina.it", displayName: "" }];
+  assert.equal(await from(), "seb@dopamina.it");
+  w.sendAs.status = 500;
+  assert.equal(await from(), "seb@dopamina.it");
+  const sent = w.calls.filter((call) => call.path === "/messages/send").length;
+  assert.equal(sent, 5, "a failed name lookup never blocks the send");
 });
