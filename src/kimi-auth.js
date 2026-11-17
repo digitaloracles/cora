@@ -203,7 +203,10 @@ export async function kimiModels(home, { fetchImpl = fetch } = {}) {
   const token = await kimiAccessToken(home, { minSeconds: 60, fetchImpl });
   const data = await getJson(`${kimiEnds(home).baseUrl}/models`, token, fetchImpl);
   return (Array.isArray(data.data) ? data.data : [])
-    .map((model) => ({ name: String(model.id || ""), label: String(model.display_name || model.name || model.id || "") }))
+    .map((model) => ({
+      name: String(model.id || ""), label: String(model.display_name || model.name || model.id || ""),
+      vision: model.supports_image_in === true || (Array.isArray(model.modalities?.input) && model.modalities.input.includes("image")),
+    }))
     .filter((model) => /^[\w.:-]{1,80}$/.test(model.name));
 }
 
