@@ -591,7 +591,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       return;
     }
     // The rest reads through the panel's own routes, as this person.
-    const forwarded = /^\/app\/v1\/(traces\/tr_[0-9a-f]+|threads\/[\w:.%-]{3,160}|agents\/[\w-]+\/traces)$/.exec(path);
+    const forwarded = /^\/app\/v1\/(usage|traces\/tr_[0-9a-f]+|threads\/[\w:.%-]{3,160}|agents\/[\w-]+\/traces)$/.exec(path);
     if (forwarded) return api(req, res, new URL(`/api/${forwarded[1]}${url.search}`, "http://cora.internal"), user);
     throw new HttpError(404, "not found");
   }

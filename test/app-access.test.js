@@ -109,6 +109,10 @@ test("the panel pairs the macOS app once and the device token reads only that pe
   assert.equal((await f.read(token, `/app/v1/traces/${foreign.id}`)).status, 403);
   assert.equal((await f.read(token, `/app/v1/agents/${own.id}/traces`)).data[0].id, done.id);
   assert.equal((await f.read(token, `/app/v1/agents/${other.id}/traces`)).status, 403);
+  const history = await f.read(token, "/app/v1/usage?days=365");
+  assert.equal(history.status, 200);
+  assert.equal(history.data.days, 365); assert.match(history.data.today, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(history.data.usage.map((row) => [row.agentId, row.tokensIn, row.tokensOut, row.turns]), [[own.id, 1200, 300, 1]], "a year of daily usage, only the person's own agents");
   const write = await fetch(f.base + "/app/v1/snapshot", { method: "POST", headers: { Authorization: `Bearer ${token}`, "X-Cora": "1" } });
   assert.equal(write.status, 405, "the app only reads");
 
