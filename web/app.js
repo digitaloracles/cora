@@ -3936,6 +3936,53 @@ function panelMcpPane() {
   return root;
 }
 
+function macAppPane() {
+  const state = new URLSearchParams(location.hash.split("?")[1] || "").get("state") || "";
+  const validState = /^[A-Za-z0-9_-]{16,128}$/.test(state);
+  const feedback = h("p", { role: "status", class: "muted" });
+  const rows = h("div", { class: "mcp-token-list" }, h("p", { class: "muted", role: "status" }, "Carico i Mac collegati…"));
+  const open = btn(validState ? "Autorizza questo Mac" : "Apri nell’app", { icon: "link", cls: "primary", onclick: async () => {
+    open.disabled = true; feedback.className = "muted"; feedback.textContent = tr("Apro l’app…");
+    try {
+      const data = await api("/api/app/pairings", { method: "POST", body: validState ? { state } : {} });
+      location.href = data.link;
+      feedback.textContent = tr("Se l’app non si apre, installala e riprova: il collegamento vale due minuti.");
+      setTimeout(load, 4000);
+    } catch (error) { feedback.className = "err-text"; feedback.textContent = tr(error.message); }
+    finally { open.disabled = false; }
+  } });
+  const root = h("div", { class: "stack panel-mcp mac-app" },
+    panel({ icon: "monitor", title: "App per macOS", hint: "Agenti, quote e ragionamento dal vivo nella barra dei menu del Mac." },
+      validState ? h("p", {}, "L’app Cora sul tuo Mac chiede di collegarsi a questo spazio con il tuo account.") : h("p", {}, "Collega l’app al tuo account: vedrà gli agenti, le quote e il lavoro che vedi qui, in sola lettura."),
+      h("p", { class: "muted" }, "L’app non modifica impostazioni e non vede risorse private di altre persone. Puoi scollegare ogni Mac quando vuoi."),
+      h("div", { class: "row" }, open, btn("Scarica l’app", { icon: "download", cls: "ghost", href: "https://github.com/digitaloracles/cora-app/releases/latest", target: "_blank" })),
+      feedback),
+    panel({ icon: "key", title: "Mac collegati", hint: "Ogni Mac ha un accesso suo, valido 180 giorni.", actions: btn("Ricarica", { icon: "refresh", cls: "ghost", onclick: () => load() }) }, rows));
+  const date = value => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat(LOCALE, { dateStyle: "medium" }).format(new Date(value)) : "—";
+  async function load() {
+    try {
+      const data = await api("/api/app/devices");
+      if (!root.isConnected) return;
+      rows.replaceChildren(...(data.devices.length ? data.devices.map(device => {
+        let armed = false;
+        const revoke = btn("Scollega", { icon: "unlink", cls: "ghost danger", onclick: async () => {
+          if (!armed) { armed = true; revoke.textContent = tr("Conferma"); return; }
+          revoke.disabled = true;
+          try { await api(`/api/app/devices/${device.id}`, { method: "DELETE" }); await load(); }
+          catch (error) { feedback.className = "err-text"; feedback.textContent = tr(error.message); revoke.disabled = false; }
+        } });
+        const expired = !(Date.parse(device.expiresAt) > Date.now());
+        return h("article", { class: "mcp-token-row", "data-device-id": device.id },
+          h("div", { class: "stack-sm" }, h("b", {}, raw(device.name)), h("div", { class: "row" }, tag(expired ? "Scaduto" : "Collegato", expired ? "err" : "ok"), tag(device.platform)),
+            h("small", {}, raw(tr("Collegato il {date}", { date: date(device.createdAt) }))),
+            h("small", {}, device.lastUsedAt ? raw(tr("Ultimo accesso: {date}", { date: fmtTime(device.lastUsedAt, true) })) : tr("Mai usato"))), revoke);
+      }) : [h("p", { class: "muted" }, "Nessun Mac collegato. Premi «Apri nell’app» per collegare il primo.")]));
+    } catch (error) { rows.replaceChildren(h("p", { class: "err-text", role: "alert" }, raw(tr(error.message)))); }
+  }
+  root.readyApp = Promise.resolve().then(load);
+  return root;
+}
+
 function emailChannelPane(agent = null, onSections = null, isCurrent = null) {
   const endpoint = agent ? `/api/agents/${agent.id}/email` : "/api/mail/channel";
   const slot = h("div", { class: "stack email-channel", "aria-busy": "true" }, panel({ icon: "mail", title: agent ? "Ricezione e regole" : "E-mail" }, h("p", { role: "status", class: "muted" }, "Carico la posta…")));
@@ -9251,7 +9298,7 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
@@ -9260,6 +9307,7 @@ function renderSettings() {
   page("email", emailChannelPane());
   page("connettori", connectorsPane());
   page("mcp", panelMcpPane());
+  page("app", macAppPane());
 
   /* ---------- Canali ---------- */
   const listenRow = (kind) => platformControls(kind);
@@ -9648,6 +9696,7 @@ function renderSettings() {
     { id: "email", group: "Canali", label: "E-mail", mark: "mail", state: () => [null, tr("Ricezione e regole")] },
     { id: "connettori", group: "Connettori", label: "Connettori", mark: "link", state: () => [null, tr("Google e account esterni")] },
     { id: "mcp", group: "Connettori", label: "Agenti esterni (MCP)", mark: "terminal", state: () => [null, tr("Configura Cora da un altro agente")] },
+    { id: "app", group: "Connettori", label: "App per macOS", mark: "monitor", state: () => [null, tr("Agenti e quote sul tuo Mac")] },
     { id: "server", group: "Intelligenza", label: "Account del server", mark: "monitor", state: () => [null, settings.useResidentSubscriptions ? tr("in uso per chi non sceglie") : tr("non usati")] },
     ...providers.map((provider) => ({ id: provider, group: "Intelligenza", label: SUBSCRIPTION_NAMES[provider], mark: SUBSCRIPTION_ICONS[provider], state: () => providerState(provider) })),
     { id: "harness", group: "Intelligenza", label: "Harness", mark: "terminal", state: harnessState },
@@ -10408,6 +10457,11 @@ async function render() {
   let [page] = route();
   if (page === "domini") {
     history.replaceState(null, "", "#/settings/domini");
+    page = "settings";
+  }
+  if (page === "app") {
+    const query = location.hash.split("?")[1];
+    history.replaceState(null, "", `#/settings/app${query ? `?${query}` : ""}`);
     page = "settings";
   }
   S.live = null;

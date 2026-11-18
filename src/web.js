@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { AccessInvitations } from "./access-invitations.js";
 import { PACKAGE_MAX_BYTES } from "./agent-transfer.js";
+import { AppAccess } from "./app-access.js";
 import { PanelMcp } from "./panel-mcp.js";
 import { drawnAvatar } from "./avatar.js";
 import { passLedger, verifyPass } from "./pass.js";
@@ -483,6 +484,116 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     },
   });
 
+  const appAccess = new AppAccess({ store });
+  const threadScopeFor = (user) => {
+    const privateThreads = Boolean(knowledge?.ownerMemory || store.agents().some((agent) => agent.sealed));
+    if (!privateThreads) return {};
+    return {
+      agentIds: (knowledge?.agentsFor(user) || store.agents()).map((agent) => agent.id),
+      emptyThreadIds: Object.entries(store.value("threadCreators", {})).filter(([, id]) => id === user.id).map(([id]) => id),
+    };
+  };
+  const tokensOf = (rows) => rows.reduce((sum, row) => ({ tokensIn: sum.tokensIn + row.tokensIn, tokensOut: sum.tokensOut + row.tokensOut, turns: sum.turns + row.turns }), { tokensIn: 0, tokensOut: 0, turns: 0 });
+  const lastStep = (steps = []) => {
+    const step = [...steps].reverse().find((item) => ["thinking", "text", "tool", "note"].includes(item.type));
+    return step ? { type: step.type, at: step.at ? new Date(step.at).toISOString() : null, name: step.name || "", text: String(step.text || "").slice(0, 600) } : null;
+  };
+
+  /** What the native app shows: the person's agents, the accounts they run on with their quotas, per-agent usage and live work. */
+  const appSnapshot = async (user, req) => {
+    const agents = quotaAgentsFor(user);
+    const ids = new Set(agents.map((agent) => agent.id));
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone, year: "numeric", month: "2-digit", day: "2-digit" });
+    const today = day.format(new Date()), weekFrom = day.format(new Date(Date.now() - 6 * 86400000));
+    const usage = store.usageByDay(31, config.timezone).filter((row) => ids.has(row.agentId));
+    const board = await orchestrator.threadBoard(threadScopeFor(user));
+    const live = [...(traces?.live.values() || [])].filter((trace) => ids.has(trace.agentId) && ownsEntry(trace.summary(), user));
+    const names = new Map(board.threads.map((thread) => [thread.id, thread]));
+    const records = [
+      ...subscriptions.list().filter((record) => canReadQuota(record, user)).map((record) => ({ record, usage: subscriptions.usage.get(record.id) })),
+      ...providerQuotasFor(user).map((record) => ({ record, usage: record.usage })),
+    ];
+    const accounts = records.map(({ record, usage: quota }) => ({
+      id: record.id, provider: record.provider, label: record.label || "", email: record.email || "", plan: record.plan || "", status: record.status || "",
+      server: Boolean(record.server), resident: Boolean(record.resident), usage: quota || null,
+      agentIds: agents.filter((agent) => usesQuotaAccount(agent, record)).map((agent) => agent.id),
+    }));
+    return {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      timezone: config.timezone,
+      space: { name: config.cloudSpace || config.publicHost || String(req.headers.host || ""), origin: connectorOrigin(req) },
+      user: { id: user.id, name: user.name || user.email || "", email: user.email || "", role: user.role },
+      accounts,
+      agents: agents.map((agent) => {
+        const rows = usage.filter((row) => row.agentId === agent.id);
+        const running = live.filter((trace) => trace.agentId === agent.id).map((trace) => {
+          const full = trace.full(), thread = names.get(trace.channelId);
+          return { traceId: trace.id, kind: trace.kind, channelId: trace.channelId || "", threadName: thread?.name || "", link: thread?.link || "", startedAt: trace.startedAt,
+            model: trace.model || "", goal: trace.goal || "", tokensIn: trace.tokensIn, tokensOut: trace.tokensOut, stepCount: full.stepCount, lastStep: lastStep(full.steps) };
+        });
+        const threads = board.threads.filter((thread) => thread.flows.some((flow) => flow.agentId === agent.id) || (thread.listening || []).some((item) => item.id === agent.id))
+          .map((thread) => {
+            const flow = thread.flows.filter((item) => item.agentId === agent.id).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
+            return { id: thread.id, name: thread.name, kind: thread.kind, link: thread.link || "", open: Boolean(thread.open),
+              listening: (thread.listening || []).some((item) => item.id === agent.id), status: flow?.status || "listening",
+              lastAt: flow?.endedAt || flow?.heartbeatAt || flow?.startedAt || thread.lastAt || "", traceId: flow?.traceId || "", reasoning: flow?.reasoning || "",
+              tokensIn: flow?.tokensIn || 0, tokensOut: flow?.tokensOut || 0 };
+          }).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 12);
+        return {
+          id: agent.id, name: agent.name, color: agent.color || "#f2a93b", enabled: Boolean(agent.enabled), sealed: Boolean(agent.sealed),
+          model: agent.model || store.settings.defaultModel || "", avatar: `/avatars/${agent.id}.png${agent.avatarVersion ? `?v=${encodeURIComponent(agent.avatarVersion)}` : ""}`,
+          state: running.length ? "working" : threads.some((thread) => thread.listening && thread.open) ? "listening" : agent.enabled ? "idle" : "off",
+          accountIds: accounts.filter((account) => account.agentIds.includes(agent.id)).map((account) => account.id),
+          usage: { today: tokensOf(rows.filter((row) => row.day === today)), week: tokensOf(rows.filter((row) => row.day >= weekFrom)), month: tokensOf(rows), days: rows.map(({ day: date, tokensIn, tokensOut, turns }) => ({ day: date, tokensIn, tokensOut, turns })) },
+          live: running,
+          threads,
+        };
+      }),
+    };
+  };
+
+  const APP_EVENTS = new Set(["trace", "subscription-usage", "agents", "agent-owners"]);
+  const appStreams = new Set();
+
+  /** The native app's read-only API: one-time pairing, then a device token on every request. */
+  async function appApi(req, res, url) {
+    const path = url.pathname, method = req.method;
+    if (path === "/app/v1/session" && method === "POST") {
+      const body = await readJson(req, 4096);
+      let paired;
+      try { paired = appAccess.exchange({ code: body.code, name: body.name, platform: body.platform }); }
+      catch (error) { throw new HttpError(error.status || 400, error.message); }
+      activity({ type: "settings", text: `app collegata: ${paired.device.name} (${paired.user.email || paired.user.name || paired.user.id})` });
+      return send(res, 201, { token: paired.token, device: paired.device, server: connectorOrigin(req),
+        user: { id: paired.user.id, name: paired.user.name || paired.user.email || "", email: paired.user.email || "", role: paired.user.role } });
+    }
+    const context = appAccess.authenticate(req);
+    if (!context) return send(res, 401, { error: "Accesso dell’app non valido o revocato." }, { "WWW-Authenticate": 'Bearer realm="Cora app"' });
+    const { user, device } = context;
+    if (path === "/app/v1/session" && method === "DELETE") {
+      appAccess.revoke(user, device.id);
+      for (const stream of appStreams) if (stream.deviceId === device.id) stream.close();
+      return send(res, 200, { ok: true });
+    }
+    if (method !== "GET") throw new HttpError(405, "L’app legge soltanto.");
+    if (path === "/app/v1/snapshot") return send(res, 200, await appSnapshot(user, req));
+    if (path === "/app/v1/events") {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+      res.write("retry: 3000\n\n");
+      res.write(`data: ${JSON.stringify({ type: "hello", at: new Date().toISOString() })}\n\n`);
+      const stream = { res, user, deviceId: device.id, close: () => { appStreams.delete(stream); accessConnections.delete(stream); res.write(`data: ${JSON.stringify({ type: "access-revoked" })}\n\n`); res.end(); } };
+      appStreams.add(stream); accessConnections.add(stream);
+      const ping = setInterval(() => res.write(": ping\n\n"), 25000);
+      req.on("close", () => { clearInterval(ping); appStreams.delete(stream); accessConnections.delete(stream); });
+      return;
+    }
+    // The rest reads through the panel's own routes, as this person.
+    const forwarded = /^\/app\/v1\/(traces\/tr_[0-9a-f]+|threads\/[\w:.%-]{3,160}|agents\/[\w-]+\/traces)$/.exec(path);
+    if (forwarded) return api(req, res, new URL(`/api/${forwarded[1]}${url.search}`, "http://cora.internal"), user);
+    throw new HttpError(404, "not found");
+  }
+
   async function api(req, res, url, actingUser = null) {
     const path = url.pathname;
     const method = req.method;
@@ -566,6 +677,19 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         if (method === "POST" && requestMatch[2]) return send(res, 200, await encrypted.approve(request.id, user, body));
       }
       throw new HttpError(404, "Operazione cifrata non disponibile.");
+    }
+    if (path === "/api/app/pairings" && method === "POST") {
+      if (actingUser) throw new HttpError(403, "Il collegamento dell’app parte dalla sessione del browser.");
+      const body = await readJson(req, 4096);
+      try { return send(res, 201, appAccess.pair(user, { state: body.state || "", origin: connectorOrigin(req) })); }
+      catch (error) { throw new HttpError(error.status || 400, error.message); }
+    }
+    if (path === "/api/app/devices" && method === "GET") return send(res, 200, { devices: appAccess.list(user) });
+    const appDevice = /^\/api\/app\/devices\/([a-f0-9]{16})$/.exec(path);
+    if (appDevice && method === "DELETE") {
+      try { appAccess.revoke(user, appDevice[1]); } catch (error) { throw new HttpError(error.status || 400, error.message); }
+      for (const stream of appStreams) if (stream.deviceId === appDevice[1]) stream.close();
+      return send(res, 200, { ok: true });
     }
     if (path === "/api/mcp/tokens") {
       if (method === "GET") return send(res, 200, panelMcp.view(user, req));
@@ -2262,6 +2386,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
   const clients = new Set();
   const broadcast = (entry) => {
     const line = `data: ${JSON.stringify(entry)}\n\n`;
+    if (APP_EVENTS.has(entry.type)) for (const stream of appStreams) if (ownsEntry(entry, stream.user)) stream.res.write(line);
     for (const client of clients) if (ownsEntry(entry, client.coraUser)) {
       if (knowledge?.ownerMemory && isSalotto(entry.room)) client.write(`data: ${JSON.stringify({ ...entry, room: "web" })}\n\n`);
       else client.write(line);
@@ -2369,6 +2494,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       if (url.pathname === "/api/cloud/notice" && req.method === "POST") return await cloudNotice(req, res);
       if (url.pathname === "/api/cloud/share-access" && req.method === "POST") return await cloudShareAccess(req, res);
       if (url.pathname === "/api/events") return events(req, res);
+      if (url.pathname.startsWith("/app/v1/")) return await appApi(req, res, url);
       const picture = /^\/avatars\/([\w-]+)\.png$/.exec(url.pathname);
       if (picture && (req.method === "GET" || req.method === "HEAD")) return avatarFile(res, url, picture[1]);
       if (url.pathname === "/connectors/google/callback" && googleConnector && req.method === "GET") {
