@@ -653,10 +653,14 @@ test("external configuration MCP uses personal hashed credentials and the curren
   const initialize = await f.rpc(alice, "initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
   assert.equal(initialize.status, 200); assert.equal(initialize.data.result.protocolVersion, "2025-11-25");
   assert.equal(initialize.data.result.serverInfo.name, "cora-panel");
+  const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  assert.match(packageVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(initialize.data.result.serverInfo.version, packageVersion, "the MCP server reports the release in package.json");
   const tools = (await f.rpc(alice, "tools/list")).data.result.tools;
   assert.deepEqual(tools.map(tool => tool.name), ["cora_state", "cora_configurations", "cora_request"]);
   const state = (await f.rpc(alice, "tools/call", { name: "cora_state", arguments: { userId: f.bob.user.id, role: "owner" } }, { headers: f.admin.headers })).data.result;
   assert.equal(state.structuredContent.data.currentUser.id, f.alice.user.id);
+  assert.equal(state.structuredContent.data.version, packageVersion, "/api/state reports the release in package.json");
   assert.equal(state.structuredContent.data.currentUser.role, "member");
   const stored = JSON.stringify(f.app.store.value("panelMcpTokens"));
   assert.ok(!stored.includes(alice.token) && !stored.includes(bob.token));
