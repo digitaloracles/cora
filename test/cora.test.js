@@ -2707,6 +2707,54 @@ describe("panel auth", () => {
     assert.ok(!JSON.stringify(steps).includes("\"value\""), "no cookie or storage value ever reaches the transcript");
   });
 
+  test("browser tab cleanup closes temporary tabs and respects handoffs", async (t) => {
+    const agent = app.store.createAgent({ name: "Tab cleanup", model: "ollama/test-model", tools: true, chattiness: 0 });
+    const original = app.boxes.browser;
+    const openTabs = new Set(["owner"]);
+    const closeCalls = [];
+    app.boxes.browser = async (agentId, action, argument) => {
+      assert.equal(agentId, agent.id);
+      if (action === "open") {
+        const id = new URL(argument).pathname.slice(1);
+        openTabs.add(id);
+        return { id };
+      }
+      if (action === "cleanup") {
+        for (const id of JSON.parse(argument)) {
+          closeCalls.push(id);
+          openTabs.delete(id);
+        }
+        return { remaining: 0 };
+      }
+      assert.equal(action, "close");
+      closeCalls.push(argument);
+      openTabs.delete(argument);
+      return { closed: true };
+    };
+    t.after(() => { app.boxes.browser = original; app.store.deleteAgent(agent.id); replies.delete(agent.name); });
+
+    const actions = [
+      ["open_url", { url: "https://example.test/auto" }],
+      ["open_url", { url: "https://example.test/early" }],
+      ["browser", { action: "close", argument: "early" }],
+      ["open_url", { url: "https://example.test/later" }],
+      ["browser", { action: "keep", argument: "later" }],
+      ["open_url", { url: "https://example.test/handoff", keep_open: true }],
+    ];
+    let step = 0;
+    replies.set(agent.name, () => {
+      if (!actions[step]) return { content: "Verificato." };
+      const [name, args] = actions[step++];
+      return { tool_calls: [{ function: { name, arguments: args } }] };
+    });
+    const turn = { agent, mode: "chat", channel: { id: "web-" + agent.id, place: "test" }, user: "Controlla le pagine.", computer: true, task: false, maxSteps: 12, deadline: Date.now() + 20000, images: [] };
+    const result = await app.brain.loop(turn);
+    assert.equal(result.text, "Verificato.");
+    assert.deepEqual(closeCalls, ["early", "auto"]);
+    assert.deepEqual([...openTabs], ["owner", "later", "handoff"]);
+    assert.ok(app.store.trace(result.traceId).steps.filter((entry) => entry.type === "tool").every((entry) => entry.ok));
+  });
+
   test("unchanging screenshots still stop a real observation loop", async (t) => {
     const agent = app.store.createAgent({ name: "Stuck browser", model: "ollama/test-model", tools: true, chattiness: 0 });
     const original = app.boxes.screenshot;

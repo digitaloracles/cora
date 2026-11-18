@@ -417,6 +417,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
         "Le tue routine (compiti a orari fissi) le gestisci tu con list_routines, set_routine e delete_routine: quando il proprietario te ne chiede una, creala o sistemala subito.",
         "Quando ti danno un compito, lavori finché non è finito e verificato, anche per ore: non ti fermi a metà, non chiedi se continuare e non annunci cosa farai, lo fai. Ti fermi solo quando è finito, quando serve una decisione del proprietario (ask_owner) o quando sei bloccato davvero: allora spieghi cosa ti blocca.",
         "Per navigare preferisci shell con curl quando basta il testo; usa open_url + screenshot + computer quando serve il browser vero.",
+        "Chiudi le tab appena hai finito di usarle: usa browser targets per trovare l’ID e browser close, anche per quelle aperte con mouse, tastiera o shell. A fine compito Cora chiude le tab temporanee di open_url. Usa keep_open o browser keep solo se la tab serve ancora o la stai lasciando al proprietario.",
         "Non inventare risultati: riporta solo quello che hai visto o fatto.",
       ].join("\n"));
     }
@@ -1016,7 +1017,10 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       for (const id of deliveredMessageIds) answeredMessageIds.add(id);
       return result;
     } : null;
+    const temporaryTabs = new Set();
+    const browserCalls = new Set();
     const ctx = {
+      temporaryTabs,
       canEndConversation: mode === "chat" && ["owner", "human"].includes(replyTo?.kind),
       agentDirectory: () => this.conversationDirectory(agent, channel.id),
       agent, attachments, boxes: this.boxes, store: this.store, memory: this.memory, channelId: channel.id, postFile: postFile ? (file, caption) => postFile(file, caption, { replyTo, traceId: trace.id }) : null, log: this.log, push: this.push, companyBrain: selectedBrain, knowledge: this.knowledge, gitAttribution: this.gitAttribution,
@@ -1186,9 +1190,15 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       return before || steer || review ? { ...output, text: [output.text, before, steer, review].filter(Boolean).join("\n\n") } : output;
     };
     const runTool = (name, args) => {
+      if (closed) return Promise.resolve({ text: "error: this task has ended" });
       touched = true;
       activeToolCalls++;
-      return runToolBody(name, args).finally(() => { activeToolCalls--; });
+      const call = runToolBody(name, args).finally(() => {
+        activeToolCalls--;
+        browserCalls.delete(call);
+      });
+      if (name === "open_url" || name === "browser") browserCalls.add(call);
+      return call;
     };
     // New chat messages reach a working agent with its next tool result (or its next step on Ollama).
     const collectNews = () => {
@@ -1569,6 +1579,12 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     } finally {
       closed = true;
       clearInterval(controlTimer);
+      await Promise.allSettled(browserCalls);
+      if (temporaryTabs.size) {
+        const result = await this.boxes.browser(agent.id, "cleanup", JSON.stringify([...temporaryTabs]), { timeoutMs: 12000 }).catch(() => null);
+        const remaining = result?.remaining ?? temporaryTabs.size;
+        if (remaining) this.log?.({ type: "warning", agentId: agent.id, channelId: channel.id, text: "Chromium: schede temporanee non chiuse (" + remaining + ")." });
+      }
       if (this.activeTurns.get(channel.id, agent.id) === control) this.activeTurns.delete(channel.id, agent.id);
       if (task) this.channelGoals.delete(channel.id, agent.id);
     }
