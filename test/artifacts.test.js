@@ -208,6 +208,34 @@ test("restore publishes an older version as a new commit; a direct folder publis
   assert.throws(() => artifacts.createFolder({ path: "comunicati/2026", createdBy: null }), /dentro o sopra la cartella comunicati/);
 });
 
+test("going back to a version saves the served one as a backup branch first, and the backup brings it back", async () => {
+  const { artifacts, store, write } = desktops();
+  const folder = artifacts.createFolder({ path: "listini", description: "Listini", policy: "direct", createdBy: { kind: "user", id: OWNER.id, name: "Owner" } });
+  write(NICO, "l/prezzi.csv", "a,1\n");
+  const one = await artifacts.push({ agent: NICO, folder: "listini", path: "/home/agent/work/l/prezzi.csv" });
+  write(NICO, "l/prezzi.csv", "a,2\n");
+  const two = await artifacts.push({ agent: NICO, folder: "listini", path: "/home/agent/work/l/prezzi.csv" });
+  const back = await artifacts.restore(folder.id, one.commit.id, OWNER);
+  const name = `backup/${two.commit.id.slice(3, 10)}`;
+  assert.deepEqual({ name: back.backup.name, commit: back.backup.commit }, { name, commit: two.commit.id });
+  assert.equal(back.restoredFrom, one.commit.id);
+  assert.equal(artifacts.treeOf(store.artifactFolder(folder.id).head).get("prezzi.csv").sha, sha("a,1\n"));
+  let view = artifacts.folderView(store.artifactFolder(folder.id));
+  assert.deepEqual(view.backups.map((b) => [b.name, b.commit, b.restoredTo, b.restoreCommit, b.served]), [[name, two.commit.id, one.commit.id, back.id, false]]);
+  assert.deepEqual(artifacts.history("listini").backups.map((b) => [b.name, b.commit]), [[name, two.commit.id.slice(3, 10)]]);
+  await assert.rejects(artifacts.restore(folder.id, back.id, OWNER), /già quella servita/);
+  assert.equal(artifacts.folderView(store.artifactFolder(folder.id)).backups.length, 1, "a refused restore saves no backup");
+  const again = await artifacts.restore(folder.id, two.commit.id, OWNER);
+  assert.equal(again.backup.commit, back.id);
+  assert.equal(artifacts.treeOf(store.artifactFolder(folder.id).head).get("prezzi.csv").sha, sha("a,2\n"));
+  await artifacts.restore(folder.id, back.id, OWNER);
+  await artifacts.restore(folder.id, again.id, OWNER);
+  view = artifacts.folderView(store.artifactFolder(folder.id));
+  assert.equal(view.backups.length, 4);
+  assert.deepEqual(view.backups.map((b) => b.served), [false, true, false, true], "a backup with the served files says so");
+  assert.equal(new Set(view.backups.map((b) => b.name)).size, 4, "a version saved twice gets a numbered name");
+});
+
 test("pull writes the served version onto a desktop, and a push from there builds on it", async () => {
   const { artifacts, store, write, homes } = desktops();
   write(NICO, "site/index.html", "home");
