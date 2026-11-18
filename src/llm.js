@@ -779,12 +779,35 @@ export class LLM {
         run?.dispose();
       }
     };
+    this.activeRuns ||= new Map();
+    this.activeRuns.set(provider, (this.activeRuns.get(provider) || 0) + 1);
+    try {
+      return await this.retried(once, { runSignal, onStep, usedCount: () => used });
+    } finally {
+      const left = (this.activeRuns.get(provider) || 1) - 1;
+      if (left) this.activeRuns.set(provider, left);
+      else this.activeRuns.delete(provider);
+    }
+  }
+
+  /** Whether a turn is running on this harness right now. */
+  harnessBusy(provider) {
+    return Boolean(this.activeRuns?.get(provider));
+  }
+
+  /** The model list is asked again on the next look: a new CLI may list new models. */
+  forgetModels() {
+    this.cache = { at: 0, models: [] };
+    this.hostCache?.clear();
+  }
+
+  async retried(once, { runSignal, onStep, usedCount }) {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await once();
       } catch (error) {
         runSignal?.throwIfAborted();
-        if (recoverHarness.getStore() || error.code === "GEMINI_QUOTA_EXHAUSTED" || attempt >= RETRIES || used || !TRANSIENT.test(String(error.message || ""))) throw error;
+        if (recoverHarness.getStore() || error.code === "GEMINI_QUOTA_EXHAUSTED" || attempt >= RETRIES || usedCount() || !TRANSIENT.test(String(error.message || ""))) throw error;
         onStep?.({ type: "note", text: `${error.message} — riprovo (${attempt + 1}/${RETRIES}).` });
         await wait(RETRY_WAIT_MS * (attempt + 1));
       }

@@ -68,6 +68,13 @@ const harnessOf = (model) => {
   return Object.keys(HARNESSES).find((key) => HARNESSES[key].providers.includes(provider)) || "cora";
 };
 
+/** The version this machine runs a harness at, as Cora last read it: empty when unknown. */
+const harnessVersion = (key) => S.data?.harnesses?.find((item) => item.provider === key)?.version || "";
+const harnessName = (key) => {
+  const version = harnessVersion(key);
+  return `${tr(HARNESSES[key]?.label || key)}${version ? ` ${version}` : ""}`;
+};
+
 const PROVIDER_GROUPS = {
   "ollama-local": "Ollama su questa macchina",
   ollama: "Ollama Cloud",
@@ -572,6 +579,14 @@ function connectEvents() {
       return;
     }
     if (entry.type === "subscriptions") return;
+    if (entry.type === "harness-versions" || entry.type === "models") {
+      const view = location.hash;
+      guard(loadState()).then(() => {
+        if (location.hash !== view || route()[0] !== "settings" || route()[1] !== "harness") return;
+        if (!document.activeElement?.matches("input, textarea, select")) renderSettings();
+      });
+      return;
+    }
     if (entry.type === "subscription-usage") {
       if (S.quotaPanel?.node.isConnected) void S.quotaPanel.refresh();
       return;
@@ -1563,7 +1578,7 @@ function brainPanel(agent) {
     harnessInput.replaceChildren(...Object.entries(HARNESSES).map(([key, item]) => {
       const ready = harnessReady(key);
       const status = ready ? "" : tr("non installato");
-      return h("option", { value: key, selected: key === harness }, raw(tr(item.label) + (status ? ` · ${status}` : "")));
+      return h("option", { value: key, selected: key === harness }, raw(harnessName(key) + (status ? ` · ${status}` : "")));
     }));
     harnessInput.value = harness;
     harnessHint.textContent = tr(HARNESSES[harness].hint);
@@ -2080,7 +2095,8 @@ function modelSelect(name, current, { allowDefault = true, harness = "" } = {}) 
   for (const provider of ["ollama-local", ...Object.keys(PROVIDERS)]) {
     const list = groups[provider];
     if (!list?.length) continue;
-    select.append(h("optgroup", { label: tr(PROVIDER_GROUPS[provider] || PROVIDERS[provider] || provider) },
+    const version = harnessVersion(provider);
+    select.append(h("optgroup", { label: `${tr(PROVIDER_GROUPS[provider] || PROVIDERS[provider] || provider)}${version ? ` · ${version}` : ""}` },
       list.map((model) => h("option", { value: model.id, selected: model.id === current, disabled: model.usable === false && model.id !== current },
         `${model.label}${model.size ? ` · ${gbFromBytes(model.size)} GB` : ""}${model.vision ? tr(" · vede") : ""}${model.tools ? "" : tr(" · senza strumenti")}${model.usable === false ? ` · ${tr(model.reason || "non disponibile")}` : ""}`))));
   }
@@ -2809,7 +2825,7 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
   let harness = harnessOf(agent.model || S.data.settings.defaultModel || "");
   const model = wantsBrain ? modelPicker("model", agent.model || "", { harness }) : null;
   const harnessPick = wantsBrain ? h("select", {}, Object.entries(HARNESSES).map(([key, item]) =>
-    h("option", { value: key, selected: key === harness }, tr(item.label)))) : null;
+    h("option", { value: key, selected: key === harness }, raw(harnessName(key))))) : null;
   const harnessHint = wantsBrain ? h("span", {}, tr(HARNESSES[harness].hint)) : null;
   const subscription = wantsBrain ? subscriptionPicker(agent.subscriptionId, { isNew }) : null;
   if (wantsBrain) {
@@ -9141,6 +9157,80 @@ function settingsDisclosures(root, id, expanded, configured = true) {
   return root;
 }
 
+const HARNESS_STATES = {
+  current: ["Aggiornato", "on", "check"],
+  outdated: ["Da aggiornare", "warn", "alert"],
+  updating: ["In aggiornamento", "warn", "refresh"],
+  deferred: ["Aspetta la fine dei turni", "warn", "clock"],
+  failed: ["Aggiornamento non riuscito", "err", "alert"],
+  self: ["Si aggiorna da solo", "on", "check"],
+  missing: ["Non installato", "", "close"],
+  unknown: ["Da controllare", "", "info"],
+};
+const HARNESS_METHODS = { mise: "mise", npm: "npm", command: "aggiornamento proprio", self: "si aggiorna da solo", git: "checkout git", manual: "installato a mano" };
+
+/** The Settings line of the Harness entry: how many are behind, or that all are current. */
+function harnessState() {
+  const list = (S.data.harnesses || []).filter((item) => item.state && item.state !== "missing");
+  const behind = list.filter((item) => ["outdated", "failed", "deferred"].includes(item.state)).length;
+  if (!list.length) return [null, tr("versioni da controllare")];
+  if (behind) return ["warn", behind === 1 ? tr("1 da aggiornare") : tr("{count} da aggiornare", { count: behind })];
+  return ["on", S.data.settings.harnessAutoUpdate === false ? tr("aggiornamento automatico spento") : tr("tutti aggiornati")];
+}
+
+/**
+ * The CLIs agents run on, with the version this machine has and the latest one published:
+ * a harness that is behind sees fewer models. Cora brings them up to date by itself.
+ */
+function harnessPane() {
+  const manage = S.data.access?.canManage !== false;
+  const rows = h("div", { class: "harness-list" });
+  const draw = () => {
+    const list = (S.data.harnesses || []).slice().sort((a, b) => Number(a.state === "missing") - Number(b.state === "missing"));
+    rows.replaceChildren(...list.map((item) => {
+      const [label, cls, mark] = HARNESS_STATES[item.state] || HARNESS_STATES.unknown;
+      const behind = item.latest && item.latest !== item.version && ["outdated", "failed", "deferred"].includes(item.state);
+      const meta = [
+        item.method ? tr(HARNESS_METHODS[item.method] || item.method) : "",
+        item.updatedAt && item.previous ? tr("da {previous} il {when}", { previous: item.previous, when: fmtTime(item.updatedAt, true) }) : "",
+        item.checkedAt ? tr("controllato {when}", { when: fmtTime(item.checkedAt, true) }) : "",
+      ].filter(Boolean).join(" · ");
+      return h("div", { class: `harness-row${item.state === "missing" ? " off" : ""}`, "data-harness": item.provider },
+        h("div", { class: "harness-name" },
+          h("b", {}, raw(item.product || item.provider)),
+          h("span", { class: "harness-version mono" }, raw(item.version || "—"), behind ? h("span", { class: "harness-next" }, raw(` → ${item.latest}`)) : null),
+          meta ? h("small", {}, raw(meta)) : null,
+          item.error ? h("small", { class: "harness-error" }, raw(item.error)) : null,
+          item.method === "git" && item.state === "outdated" ? h("small", {}, tr("Non si aggiorna da solo: l'aggiornamento può toccare modifiche locali.")) : null),
+        badge(tr(label), cls, mark));
+    }));
+  };
+  draw();
+  const toggle = switchInput("harnessAutoUpdate", "", S.data.settings.harnessAutoUpdate !== false);
+  const input = toggle.querySelector("input");
+  input.disabled = !manage;
+  const autoRow = setRow("Aggiornamento automatico", "Ogni 6 ore Cora porta gli harness all'ultima versione. Chi è installato in place aspetta la fine dei turni in corso.", toggle);
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    if (!await saveSettings({ harnessAutoUpdate: input.checked }, autoRow)) input.checked = !input.checked;
+    input.disabled = !manage;
+  });
+  const check = btn("Controlla ora", { icon: "refresh", cls: "ghost sm", disabled: !manage, onclick: async () => {
+    check.disabled = true;
+    check.lastChild.textContent = tr("Controllo…");
+    const fresh = await guard(api("/api/harnesses/check", { method: "POST" }), "Harness controllati");
+    if (fresh) {
+      S.data.harnesses = fresh;
+      await guard(loadState());
+      draw();
+    }
+    check.lastChild.textContent = tr("Controlla ora");
+    check.disabled = !manage;
+  } });
+  return panel({ icon: "terminal", title: "Harness", hint: "I programmi che fanno lavorare gli agenti su questa macchina. Un harness indietro vede meno modelli.", actions: check },
+    setRows(autoRow), rows);
+}
+
 function renderSettings() {
   if (route()[1] === "permessi") { location.hash = "#/agenti"; return; }
   const settings = S.data.settings;
@@ -9157,7 +9247,7 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "connettori", "mcp", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
@@ -9528,6 +9618,8 @@ function renderSettings() {
   page("modelli", panel({ icon: "chip", title: "Modelli e sonno", hint: "Il modello di chi non ne sceglie uno, e l'ora in cui riordinano la memoria." },
     setRows(modelRow, hourRow, setRow("Cosa gira qui", "Gli harness e i provider che questa macchina può usare adesso.", providerBadges, { stack: true }))));
 
+  page("harness", harnessPane());
+
   page("domini", mailDomainsPane());
 
   /* ---------- Persone ---------- */
@@ -9554,6 +9646,7 @@ function renderSettings() {
     { id: "mcp", group: "Connettori", label: "Agenti esterni (MCP)", mark: "terminal", state: () => [null, tr("Configura Cora da un altro agente")] },
     { id: "server", group: "Intelligenza", label: "Account del server", mark: "monitor", state: () => [null, settings.useResidentSubscriptions ? tr("in uso per chi non sceglie") : tr("non usati")] },
     ...providers.map((provider) => ({ id: provider, group: "Intelligenza", label: SUBSCRIPTION_NAMES[provider], mark: SUBSCRIPTION_ICONS[provider], state: () => providerState(provider) })),
+    { id: "harness", group: "Intelligenza", label: "Harness", mark: "terminal", state: harnessState },
     { id: "chiavi-api", group: "Intelligenza", label: "Chiavi API", mark: "key", state: () => [null, tr("{count} chiavi salvate", { count: CONNECTION_KEYS.filter(([provider]) => S.data.keys?.[provider]).length })] },
     { id: "regia", group: "Agenti", label: "Regia", mark: "sliders", state: () => [null, tr("Controllo progressi · obiettivi {goals}", { goals: tr(S.data.settings.goalMode ? "accesi" : "spenti") })] },
     { id: "modelli", group: "Agenti", label: "Modelli e sonno", mark: "chip", state: () => {

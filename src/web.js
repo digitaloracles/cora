@@ -197,7 +197,7 @@ async function readJson(req, limit = 256 * 1024) {
   }
 }
 
-export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null }) {
+export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null }) {
   // Tries of a doc rule across the brains in use: they take a while, so the panel follows them.
   const ruleTests = new Map();
   const encrypted = encryptedSpaceFor(store, { llm, knowledge, artifacts, publicOrigin: config.publicHost ? `https://${config.publicHost}` : "" });
@@ -995,6 +995,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         routines: store.routines().filter((entry) => ownsEntry(entry, user)).map(routineView),
         models,
         providers: llm.providers(),
+        harnesses: harnessUpdates?.status() || [],
         ollamaCloud: llm.cloudAccount || { signedIn: false, signinUrl: "" },
         // Which keys are stored, apart from whether the thing they unlock is reachable some other way.
         keys: { ollama: Boolean(llm.ollamaKey), orcarouter: Boolean(llm.routers.orcarouter.key), typesafe: Boolean(brain.doc?.key), soniox: Boolean(voice?.enabled), deepseek: Boolean(llm.deepseek?.key) },
@@ -1008,6 +1009,12 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         timezone: config.timezone,
         artifacts: artifacts ? { reviews: artifacts.reviewsFor(user).length, ...(user.role === "owner" ? { space: artifacts.space() } : {}) } : null,
       });
+    }
+    if (path === "/api/harnesses/check" && method === "POST") {
+      if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario aggiorna gli harness.");
+      if (!harnessUpdates) throw new HttpError(404, "aggiornamento degli harness non disponibile");
+      await harnessUpdates.checkAll({ update: true });
+      return send(res, 200, harnessUpdates.status());
     }
     if (path === "/api/subscriptions" && method === "GET") return send(res, 200, subscriptions.list().filter((entry) => !knowledge?.ownerMemory || entry.connectedBy?.id === user.id));
     if (path === "/api/subscriptions" && method === "POST") {
