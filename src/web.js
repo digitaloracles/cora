@@ -1,5 +1,6 @@
 import { keyHint } from "./key-hint.js";
 import { panelAssets } from "./panel-assets.js";
+import { VERSION } from "./version.js";
 import { encryptedSpaceFor, encryptedFolder } from "./encrypted-space.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -1116,6 +1117,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         settings: store.settings,
         encryptionRequired: encrypted.enabled,
         build: assets.build(),
+        version: VERSION,
         currentUser: user,
         access: { hosted: Boolean(cloud), canManage: user.role === "owner" },
         transport: channels.active,

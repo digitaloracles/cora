@@ -9,6 +9,7 @@ import { kimiAccessToken, kimiAccount, kimiEnds, kimiModels, kimiSignedIn, kimiU
 import { geminiScope, prepareGeminiProfile } from "./gemini-profile.js";
 import { geminiQuotaMessage } from "./gemini-quota.js";
 import { nodeCli } from "./cli.js";
+import { VERSION } from "./version.js";
 
 const LOGIN_MS = 10 * 60 * 1000;
 // How long a provider's model list holds before Cora asks again; an older one is shown while it does.
@@ -146,7 +147,7 @@ class CodexAccount {
   }
 
   async initialize() {
-    await this.request("initialize", { clientInfo: { name: "cora", version: "0.1.0" }, capabilities: {} });
+    await this.request("initialize", { clientInfo: { name: "cora", version: VERSION }, capabilities: {} });
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
   }
 

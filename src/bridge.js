@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { imageMime } from "./images.js";
+import { VERSION } from "./version.js";
 
 /**
  * Loopback HTTP endpoint that the MCP server (spawned by the Claude Code or
@@ -97,7 +98,7 @@ export class ToolBridge {
     }
     const answer = (result) => reply(200, { jsonrpc: "2.0", id: message.id, result });
     const fail = (code, text) => reply(200, { jsonrpc: "2.0", id: message.id, error: { code, message: text } });
-    if (message.method === "initialize") return answer({ protocolVersion: message.params?.protocolVersion || "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "cora", version: "0.1.0" } });
+    if (message.method === "initialize") return answer({ protocolVersion: message.params?.protocolVersion || "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "cora", version: VERSION } });
     if (message.method === "ping") return answer({});
     if (message.method === "tools/list") return answer({ tools: run.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) });
     if (message.method === "tools/call") {

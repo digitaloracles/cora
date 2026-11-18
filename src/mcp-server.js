@@ -4,6 +4,7 @@
 // cora's loopback tool bridge with the run's token.
 import readline from "node:readline";
 import { imageMime } from "./images.js";
+import { VERSION } from "./version.js";
 
 const BRIDGE_URL = process.env.CORA_BRIDGE_URL;
 const BRIDGE_TOKEN = process.env.CORA_BRIDGE_TOKEN;
@@ -28,7 +29,7 @@ async function handle(message) {
       return {
         protocolVersion: message.params?.protocolVersion || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "cora", version: "0.1.0" },
+        serverInfo: { name: "cora", version: VERSION },
       };
     case "ping":
       return {};
