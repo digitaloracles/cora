@@ -133,7 +133,7 @@ describe("subscription usage", () => {
     assert.equal(f.app.store.subscription(record.id).status, "ready");
   });
 
-  test("private quota and global token APIs include only the viewer's agents, including warm legacy caches", async (t) => {
+  test("private quota and global token APIs include only the viewer's agents and accounts, including warm legacy caches", async (t) => {
     const f = await knowledgeWorld({ subscriptionUsageIntervalMs: 0, subscriptionUsageReader: async () => claude });
     t.after(f.close);
     const records = [];
@@ -151,14 +151,15 @@ describe("subscription usage", () => {
     await f.app.subscriptions.usage.refreshAll();
     for (const { actor, record, agent, tokens } of records) {
       const state = (await f.request(actor, "/api/state")).data;
-      assert.deepEqual(state.quotaAccounts.map(item => item.id), [record.id]);
-      assert.equal(state.quotaAccounts[0].usage.windows.length, 4);
+      const own = actor === f.alice ? [record.id, legacy.id] : [record.id];
+      assert.deepEqual(state.quotaAccounts.map(item => item.id), own, "the person who connected an account reads its quota even when another owner's agent runs on it");
+      assert.ok(state.quotaAccounts.every((item) => item.usage.windows.length === 4));
       assert.ok(state.subscriptions.every(item => !Object.hasOwn(item, "usage")), "management metadata cannot bypass the quota scope");
       const usage = (await f.request(actor, "/api/usage")).data.usage;
       assert.deepEqual(usage.map(item => item.agentId), [agent.id]);
       assert.equal(usage[0].tokensIn + usage[0].tokensOut, tokens);
       for (const other of records.filter(item => item.actor !== actor)) assert.equal((await f.request(actor, `/api/subscriptions/${other.record.id}/usage`)).status, 404);
-      assert.equal((await f.request(actor, `/api/subscriptions/${legacy.id}/usage`)).status, 404);
+      assert.equal((await f.request(actor, `/api/subscriptions/${legacy.id}/usage`)).status, actor === f.alice ? 200 : 404);
     }
     assert.deepEqual((await f.request(f.admin, "/api/usage")).data.usage, []);
     assert.deepEqual((await f.request(f.admin, "/api/state")).data.quotaAccounts, []);
@@ -167,7 +168,7 @@ describe("subscription usage", () => {
     assert.equal(f.app.subscriptions.usage.get(legacy.id).windows.length, 4, "denial holds even with a populated cache");
   });
 
-  test("Agents identifies multiple accounts by email, deduplicates shared assignments and hides unused connections", async (t) => {
+  test("Agents identifies multiple accounts by email, deduplicates shared assignments and shows connected accounts with no agent", async (t) => {
     const f = await subscriptionApp(t);
     const accounts = [];
     for (const email of ["first@example.test", "second@example.test", "unused@example.test"]) {
@@ -177,7 +178,7 @@ describe("subscription usage", () => {
     for (const [index, name] of [[0, "One"], [0, "Two"], [1, "Three"]]) f.app.store.createAgent({ name, model: "claude/test", subscriptionId: accounts[index].id, enabled: false, tools: false });
     f.app.subscriptions.usage.read = async () => claude;
     await f.app.subscriptions.usage.refreshAll();
-    assert.equal(f.app.subscriptions.usage.get(accounts[2].id).fetchedAt, null, "unused accounts are not polled");
+    assert.ok(f.app.subscriptions.usage.get(accounts[2].id).fetchedAt, "a connected account with no agent is still read");
     const panel = panelHarness({ hash: "#/agenti", fetch: async (path, options = {}) => {
       const response = await f.request(path, { method: options.method || "GET", body: options.body ? JSON.parse(options.body) : undefined });
       return { ok: response.status < 400, status: response.status, json: async () => response.data };
@@ -187,14 +188,17 @@ describe("subscription usage", () => {
     assert.ok(panel.app.querySelector(".sk-quotas"), "the quota preference reserves the compact quota outline");
     await boot;
     const quota = panel.app.querySelector(".subscription-usage");
-    assert.equal(quota.querySelector(".quota-tabs").querySelectorAll("button").length, 2);
-    assert.match(quota.querySelector(".quota-tabs").textContent, /first@example.test.*second@example.test/);
-    assert.doesNotMatch(quota.textContent, /unused@example.test/);
+    assert.equal(quota.querySelector(".quota-tabs").querySelectorAll("button").length, 3);
+    assert.match(quota.querySelector(".quota-tabs").textContent, /first@example.test.*second@example.test.*unused@example.test/);
     assert.match(quota.querySelector("article").textContent, /One.*Two/);
+    const unused = [...quota.querySelectorAll("article")].find((item) => /unused@example.test/.test(item.textContent));
+    assert.match(unused.textContent, /unused@example.test/);
+    assert.match(unused.textContent, /Nessun agente/);
+    assert.ok(unused.querySelector(".quota-windows"), "the unused account shows its windows");
     f.app.store.updateSubscription(accounts[1].id, { status: "disconnected" });
     const state = (await f.request("/api/state")).data;
     panel.run(`S.data = ${JSON.stringify(state)}; renderAgents()`);
-    assert.equal(panel.app.querySelector(".quota-tabs").querySelectorAll("button").length, 1);
+    assert.equal(panel.app.querySelector(".quota-tabs").querySelectorAll("button").length, 2);
   });
 
   test("invalidates in-flight reads on reconnect and bounds provider concurrency", async (t) => {

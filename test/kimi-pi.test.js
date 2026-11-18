@@ -11,7 +11,7 @@ import { kimiAccessToken, kimiAccount, kimiModels, kimiRegion } from "../src/kim
 import { startCora } from "../src/main.js";
 import { Store } from "../src/store.js";
 import { subscriptionEnvironment } from "../src/subscriptions.js";
-import { parseSubscriptionUsage } from "../src/subscription-usage.js";
+import { SubscriptionUsage, parseSubscriptionUsage, runsOnAccount } from "../src/subscription-usage.js";
 import { fakeDocker, tempHome, waitFor } from "./helpers.js";
 
 const TOOLS = [
@@ -430,4 +430,32 @@ fetch(base + "/chat/completions", { method: "POST", headers: { Authorization: "B
   await request(`/api/agents/${agent.data.id}`, { method: "DELETE" });
   assert.equal((await request(`/api/subscriptions/${created.data.id}`, { method: "DELETE" })).status, 200);
   assert.ok(!existsSync(join(home, "subscriptions", created.data.id)), "removing the account removes its login");
+});
+
+test("an agent on Hermes or Pi through Kimi counts on its Kimi account, and a connected Kimi account is read even with no agent on it", async () => {
+  assert.equal(runsOnAccount("kimi/k3", "kimi"), true);
+  assert.equal(runsOnAccount("hermes/kimi/k3", "kimi"), true);
+  assert.equal(runsOnAccount("pi/kimi/k3.1-pro", "kimi"), true);
+  assert.equal(runsOnAccount("hermes/deepseek/deepseek-flash", "kimi"), false);
+  assert.equal(runsOnAccount("claude/claude-opus-5-5", "kimi"), false);
+
+  const record = { id: "sub_kimi", provider: "kimi", status: "ready", email: "seb@example.com", connectedBy: { id: "u1" } };
+  const values = new Map(), reads = [];
+  let agents = [{ id: "ag_1", model: "hermes/kimi/k3", subscriptionId: "sub_kimi" }];
+  const store = { settings: {}, agents: () => agents, subscriptions: () => [record], subscription: (id) => id === record.id ? record : null,
+    value: (key, fallback) => values.has(key) ? values.get(key) : fallback, setValue: (key, value) => values.set(key, value) };
+  const subscriptions = { logins: new Map(), busy: new Map(), require: () => record };
+  const usage = new SubscriptionUsage({ store, subscriptions, read: async (item) => { reads.push(item.id); return { usages: { limit_5h: { used_ratio: 1, reset_time: "2026-11-17T21:33:00Z" }, limit_month_total: { used_ratio: 0.12 } } }; } });
+  await usage.refreshAll();
+  assert.deepEqual(reads, ["sub_kimi"]);
+  const view = usage.get("sub_kimi");
+  assert.equal(view.state, "ready");
+  assert.deepEqual(view.windows.map((item) => [item.kind, item.usedPercent]), [["session", 100], ["monthly", 12]]);
+
+  agents = [{ id: "ag_1", model: "hermes/deepseek/deepseek-flash", subscriptionId: "sub_kimi" }];
+  values.clear(); reads.length = 0;
+  await usage.refreshAll();
+  assert.deepEqual(reads, ["sub_kimi"], "a connected account is read even when no agent runs on it");
+  assert.deepEqual(usage.get("sub_kimi").windows.map((item) => [item.kind, item.usedPercent]), [["session", 100], ["monthly", 12]]);
+  await usage.close();
 });

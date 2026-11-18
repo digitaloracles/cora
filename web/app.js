@@ -1146,15 +1146,21 @@ function usagePanels(agents) {
   return { global, individual };
 }
 
+/** Whether a model runs on a provider's account: its own CLI, or Hermes and Pi through Kimi's. */
+function runsOnAccount(model, provider) {
+  const id = String(model || ""), parts = id.split("/");
+  return id.startsWith(`${provider}/`) || (provider === "kimi" && (parts[0] === "hermes" || parts[0] === "pi") && parts[1] === "kimi" && parts.length > 2);
+}
+
 function quotaAgents(record) {
-  return S.data.agents.filter((agent) => String(agent.model || S.data.settings?.defaultModel || "").startsWith(`${record.provider}/`)
+  return S.data.agents.filter((agent) => runsOnAccount(agent.model || S.data.settings?.defaultModel, record.provider)
     && (record.server || agent.subscriptionId === record.id || (record.resident && !agent.subscriptionId)));
 }
 
 function quotaAccounts() {
   return [...new Map([...(S.data.quotaAccounts || S.data.subscriptions || []), ...(S.data.providerUsage || [])].map((record) => [record.id, record])).values()]
     .filter((record) => record.status === "ready" && record.installed !== false && record.usage?.issue !== "AUTH_REQUIRED"
-      && (!record.resident || S.data.settings?.useResidentSubscriptions) && quotaAgents(record).length);
+      && (!record.resident || S.data.settings?.useResidentSubscriptions) && (!record.resident || quotaAgents(record).length));
 }
 
 function quotaSignature(records) {
@@ -1193,7 +1199,7 @@ function subscriptionUsagePanel() {
       h("header", { class: "quota-account-head" },
         h("div", { class: "grow" }, h("h3", {}, raw(record.label || names[record.provider])),
           h("p", {}, raw(record.email || names[record.provider]), assigned.length ? raw(` · ${assigned.map((agent) => agent.name).join(", ")}`) : null)),
-        badge(record.server ? tr("Account dello spazio") : assigned.length === 1 ? tr("1 agente") : tr("{count} agenti", { count: assigned.length }))),
+        badge(record.server ? tr("Account dello spazio") : !assigned.length ? tr("Nessun agente") : assigned.length === 1 ? tr("1 agente") : tr("{count} agenti", { count: assigned.length }))),
       windows.length ? h("div", { class: `quota-windows${stale ? " stale" : ""}` }, windows.map((item) => {
         const available = 100 - Math.min(100, Math.max(0, Number(item.usedPercent) || 0));
         const label = item.kind === "weekly" ? tr("Settimana") : item.kind === "monthly" ? tr("Mese") : item.kind === "session" ? tr("Sessione · 5 ore") : tr("Finestra · {minutes} min", { minutes: item.minutes || "—" });
