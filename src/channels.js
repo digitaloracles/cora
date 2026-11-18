@@ -213,6 +213,19 @@ export class Channels {
     return out;
   }
 
+  /** Every channel any bot can name: the cora's own, then those only an agent's bot sees (Discord hides them from the others). */
+  known() {
+    const out = new Map(this.list().map((channel) => [channel.id, channel]));
+    if (this.on("discord")) {
+      for (const [, entry] of this.bots?.clients || []) {
+        for (const channel of entry.client?.listChannels?.(this.store.settings.guildIds) || []) {
+          if (!out.has(channel.id)) out.set(channel.id, { ...channel, kind: "discord" });
+        }
+      }
+    }
+    return [...out.values()];
+  }
+
   /**
    * The channels an agent is in: on each platform it is on, those chosen for it there, or all of
    * them when none is chosen; on Discord also those its own bot sees.

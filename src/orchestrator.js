@@ -10,7 +10,7 @@ import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } fr
 import { MEMORY_TOOLS } from "./tools.js";
 import { userName } from "./telegram.js";
 import { asksToStop } from "./brain.js";
-import { VOICE_MESSAGE } from "./discord.js";
+import { VOICE_MESSAGE, obfuscated } from "./discord.js";
 import { AUDIO_LIMIT_BYTES, VOICE_LANGUAGES, speechParts } from "./voice.js";
 import { imageMime } from "./images.js";
 import { issueKeys, sharesTopic, topicPlace } from "./thread-topics.js";
@@ -2241,6 +2241,11 @@ export class Orchestrator {
   threadNames(ids, known) {
     const names = this.store.value("threadNames", {});
     let changed = false;
+    for (const [id, saved] of Object.entries(names)) {
+      if (!obfuscated(saved)) continue;
+      delete names[id];
+      changed = true;
+    }
     for (const channel of known.values()) {
       if (!(channel.thread || channel.parentId) || !channel.name) continue;
       const saved = names[channel.id];
@@ -2256,6 +2261,7 @@ export class Orchestrator {
       // Asked once in the background: the page shows the name at its next refresh.
       this.nameMisses.set(id, Date.now());
       this.lookupChannel(id).then((channel) => {
+        if (obfuscated(channel)) return;
         const name = channel?.name || (channel?.type === 1 ? `@${channel.recipients?.[0]?.global_name || channel.recipients?.[0]?.username || "privato"}` : "");
         if (!name) return;
         const saved = this.store.value("threadNames", {});
@@ -2269,15 +2275,24 @@ export class Orchestrator {
 
   /** A channel as Discord describes it: Cora's bot first, then each agent's own bot, which may be the only one inside. */
   async lookupChannel(id) {
-    try { return await this.discord.request("GET", `/channels/${id}`); }
-    catch (error) {
-      for (const agent of this.store.agents()) {
-        const own = this.bots?.client?.(agent.id);
-        if (!own?.request) continue;
-        try { return await own.request("GET", `/channels/${id}`); } catch {}
-      }
-      throw error;
+    let failure = null;
+    let hidden = null;
+    try {
+      const channel = await this.discord.request("GET", `/channels/${id}`);
+      if (!obfuscated(channel)) return channel;
+      hidden = channel;
+    } catch (error) { failure = error; }
+    for (const agent of this.store.agents()) {
+      const own = this.bots?.client?.(agent.id);
+      if (!own?.request) continue;
+      try {
+        const channel = await own.request("GET", `/channels/${id}`);
+        if (!obfuscated(channel)) return channel;
+        hidden ||= channel;
+      } catch {}
     }
+    if (hidden) return hidden;
+    throw failure;
   }
 
   /** The server a Discord channel belongs to when it was never seen: the only server, or the main one. */
@@ -2292,7 +2307,7 @@ export class Orchestrator {
     const emptyVisible = new Set(emptyThreadIds.filter((id) => !this.store.threadParticipantIds(id).length && !this.engagements?.[id]?.ids?.length));
     const labels = this.store.value("threadLabels", {});
     const closed = new Set(this.store.value("closedThreads", []));
-    const known = new Map((this.channels?.list?.() || []).map((channel) => [channel.id, channel]));
+    const known = new Map((this.channels?.known?.() || this.channels?.list?.() || []).map((channel) => [channel.id, channel]));
     const sessions = this.store.threadSessionsByChannel(12, agentIds);
     const ids = [...new Set([...Object.keys(labels), ...sessions.map((session) => session.channelId)])];
     const names = this.threadNames(ids, known);
