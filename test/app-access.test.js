@@ -56,6 +56,12 @@ test("the panel pairs the macOS app once and the device token reads only that pe
   f.app.store.updateSubscription(subscription.id, { status: "ready", email: "alice@claude.test", plan: "max" });
   const own = f.app.store.createAgent({ name: "Alice agent", brainOwnerId: f.alice.user.id, tools: false, enabled: true, model: PLAIN, subscriptionId: subscription.id });
   const other = f.app.store.createAgent({ name: "Bob agent", brainOwnerId: f.bob.user.id, tools: false, enabled: true });
+  const spare = f.app.store.createSubscription({ provider: "codex", label: "ChatGPT", connectedBy: { id: f.alice.user.id, name: "alice" } });
+  f.app.store.updateSubscription(spare.id, { status: "ready", email: "alice@openai.test" });
+  const dropped = f.app.store.createSubscription({ provider: "grok", label: "Grok", connectedBy: { id: f.alice.user.id, name: "alice" } });
+  f.app.store.updateSubscription(dropped.id, { status: "disconnected" });
+  const bobs = f.app.store.createSubscription({ provider: "claude", label: "Claude", connectedBy: { id: f.bob.user.id, name: "bob" } });
+  f.app.store.updateSubscription(bobs.id, { status: "ready", email: "bob@claude.test" });
   const record = f.app.store.subscription(subscription.id);
   f.app.store.setValue(`subscriptionUsage:${subscription.id}`, { identity: f.app.subscriptions.usage.identity(record), state: "ready", fetchedAt: new Date().toISOString(),
     windows: [{ id: "five_hour", kind: "session", group: "", usedPercent: 42, resetsAt: new Date(Date.now() + 3600000).toISOString(), minutes: null }], balances: [] });
@@ -95,6 +101,8 @@ test("the panel pairs the macOS app once and the device token reads only that pe
   const account = snapshot.data.accounts.find((item) => item.id === subscription.id);
   assert.equal(account.email, "alice@claude.test"); assert.deepEqual(account.agentIds, [own.id]);
   assert.equal(account.usage.windows[0].usedPercent, 42);
+  assert.deepEqual(snapshot.data.accounts.map((item) => item.id).sort(), [subscription.id, spare.id].sort(), "every active subscription of the person, none disconnected, none of someone else");
+  assert.deepEqual(snapshot.data.accounts.find((item) => item.id === spare.id).agentIds, [], "a subscription without agents is listed too");
   assert.ok(!JSON.stringify(snapshot.data).includes("privato") && !JSON.stringify(snapshot.data).includes(other.id), "another owner's agent stays private");
 
   assert.equal((await f.read(token, `/app/v1/traces/${done.id}`)).data.output, "fatto");

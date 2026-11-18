@@ -509,9 +509,11 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     const board = await orchestrator.threadBoard(threadScopeFor(user));
     const live = [...(traces?.live.values() || [])].filter((trace) => ids.has(trace.agentId) && ownsEntry(trace.summary(), user));
     const names = new Map(board.threads.map((thread) => [thread.id, thread]));
+    // Every active subscription of this person, with or without agents on it; never someone else's private login.
+    const linked = (record) => !knowledge?.ownerMemory || record.connectedBy?.id === user.id || (record.server && user.role === "owner");
     const records = [
-      ...subscriptions.list().filter((record) => canReadQuota(record, user)).map((record) => ({ record, usage: subscriptions.usage.get(record.id) })),
-      ...providerQuotasFor(user).map((record) => ({ record, usage: record.usage })),
+      ...subscriptions.list().filter((record) => record.status === "ready" && linked(record) && canReadQuota(record, user)).map((record) => ({ record, usage: subscriptions.usage.get(record.id) })),
+      ...providerQuotasFor(user).filter((record) => record.status !== "disconnected").map((record) => ({ record, usage: record.usage })),
     ];
     const accounts = records.map(({ record, usage: quota }) => ({
       id: record.id, provider: record.provider, label: record.label || "", email: record.email || "", plan: record.plan || "", status: record.status || "",
