@@ -197,7 +197,7 @@ async function readJson(req, limit = 256 * 1024) {
   }
 }
 
-export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null }) {
+export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null, skills = null }) {
   // Tries of a doc rule across the brains in use: they take a while, so the panel follows them.
   const ruleTests = new Map();
   const encrypted = encryptedSpaceFor(store, { llm, knowledge, artifacts, publicOrigin: config.publicHost ? `https://${config.publicHost}` : "" });
@@ -407,6 +407,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     owner: store.agentOwner(agent),
     mailbox: store.value(`agentMailbox:${agent.id}`, null),
     memoryCount: agent.brainSource === "external" ? 0 : knowledge?.ownerMemory ? knowledge.ownerKeys(agent.id).reduce((sum, key) => sum + store.memoryCount(key), 0) : store.memoryCount(agent.id),
+    skillCount: skills ? skills.list(agent.id).length : 0,
     box: await boxStatus(agent),
     bot: bots ? bots.status(agent, store.settings.guildIds[0]) : null,
     telegramBot: tgBots ? await tgBots.status(agent, telegramChatId(channels.list()[0]?.id) || store.settings.telegramChatIds[0]) : null,
@@ -1510,12 +1511,52 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       if (method === "DELETE") {
         await boxes.remove(agent.id, { volume: url.searchParams.get("purge") === "1" }).catch(() => {});
         store.deleteAgent(agent.id);
+        skills?.forget(agent.id);
         bots?.sync();
         tgBots?.sync();
         skBots?.sync();
         activity({ type: "agent", text: `eliminato ${agent.name}` });
         return send(res, 200, { ok: true });
       }
+    }
+
+    if (skills && path === "/api/skills/search" && method === "GET") {
+      try { return send(res, 200, await skills.search(url.searchParams.get("q") || "")); }
+      catch (error) { throw new HttpError(error.status || 502, error.message); }
+    }
+    if (skills && path === "/api/skills/discover" && method === "POST") {
+      try { return send(res, 200, await skills.discover((await readJson(req, 4096)).source)); }
+      catch (error) { throw new HttpError(error.status || 502, error.message); }
+    }
+    match = /^\/api\/agents\/([\w-]+)\/skills(?:\/(check|sync)|\/([a-z0-9][a-z0-9._-]{0,63})(?:\/(update|adopt|files))?)?$/.exec(path);
+    if (match && skills) {
+      const agent = store.agent(match[1]);
+      if (!agent) throw new HttpError(404, "Agente non trovato.");
+      if (!(knowledge ? knowledge.canManage(agent, user) : user.role === "owner")) throw new HttpError(403, "Le skill di un agente le gestisce il suo proprietario.");
+      const [, , action, name, sub] = match;
+      const by = { id: user.id, name: user.name || user.email || "" };
+      const done = (status, body) => { broadcast({ type: "skills", agentId: agent.id }); return send(res, status, body); };
+      try {
+        if (!action && !name && method === "GET") return send(res, 200, skills.view(agent.id));
+        if (!action && !name && method === "POST") {
+          const body = await readJson(req, 4096);
+          return done(201, await skills.install(agent, { source: body.source, skill: body.skill }, by));
+        }
+        if (action === "check" && method === "POST") return done(200, await skills.check(agent));
+        if (action === "sync" && method === "POST") return done(200, await skills.sync(agent));
+        if (name && !sub && method === "DELETE") return done(200, await skills.remove(agent, name));
+        if (name && sub === "update" && method === "POST") return done(200, await skills.update(agent, name, by));
+        if (name && sub === "adopt" && method === "POST") return done(201, await skills.adopt(agent, name, by));
+        if (name && sub === "files" && method === "GET") {
+          const read = skills.read(agent.id, name, url.searchParams.get("path") || "SKILL.md");
+          if (read.error) throw new HttpError(404, read.error);
+          return send(res, 200, read);
+        }
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        throw new HttpError(error.status || 500, error.message);
+      }
+      throw new HttpError(405, "method not allowed");
     }
 
     match = /^\/api\/agents\/([\w-]+)\/knowledge(?:\/(check))?$/.exec(path);

@@ -131,6 +131,7 @@ const TABS = [
   ["email", "Email", "mail"],
   ["memoria", "Memoria", "book"],
   ["routine", "Routine e reminder", "clock"],
+  ["skill", "Skill", "skill"],
   ["desktop", "Desktop", "monitor"],
   ["ragionamento", "Ragionamento", "bulb"],
   ["attivita", "Attività", "pulse"],
@@ -149,6 +150,7 @@ const STATE_LABEL = {
 };
 
 const ICONS = {
+  skill: '<path d="M9.5 4.5a2.5 2.5 0 0 1 5 0V6h3A1.5 1.5 0 0 1 19 7.5v3h-1.5a2.5 2.5 0 0 0 0 5H19v3a1.5 1.5 0 0 1-1.5 1.5h-3v-1.5a2.5 2.5 0 0 0-5 0V20h-3A1.5 1.5 0 0 1 5 18.5v-3h1.5a2.5 2.5 0 0 0 0-5H5v-3A1.5 1.5 0 0 1 6.5 6h3z"/>',
   lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/>',
   swap: '<path d="M4 7h16l-4-4M20 17H4l4 4"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M4.5 9v9.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/>',
@@ -4293,7 +4295,7 @@ async function renderAgent() {
     }
   } });
   const compact = tab === "chat";
-  const workspaceTab = ["email", "memoria", "impostazioni", "cervello", "routine"].includes(tab);
+  const workspaceTab = ["email", "memoria", "impostazioni", "cervello", "routine", "skill"].includes(tab);
   shell([
     h("section", { class: `hero${compact ? " compact" : ""}`, vars: { "--ring": agent.color || "#f2a93b" } },
       avatar(agent, compact ? "" : "lg"),
@@ -4308,7 +4310,7 @@ async function renderAgent() {
         !compact && agent.mailbox?.status === "ready" ? h("a", { class: "agent-email", href: `#/agent/${agent.id}/email` }, icon("mail"), raw(agent.mailbox.email)) : null),
       toggle),
     h("nav", { class: "tabs" }, TABS.map(([key, label, name]) => {
-      const count = key === "memoria" ? agent.memoryCount : key === "routine" ? routines.length : null;
+      const count = key === "memoria" ? agent.memoryCount : key === "routine" ? routines.length : key === "skill" ? agent.skillCount : null;
       return h("a", { href: `#/agent/${agent.id}/${key}`, class: key === tab ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "count" }, count) : null);
     })),
     slot,
@@ -4318,6 +4320,7 @@ async function renderAgent() {
   let body;
   if (tab === "memoria") body = await memoryTab(agent);
   else if (tab === "routine") body = await routineTab(agent, routines);
+  else if (tab === "skill") body = await skillsTab(agent);
   else if (tab === "desktop") body = await desktopTab(agent);
   else if (tab === "attivita") body = activityTab(agent);
   else if (tab === "chat") body = await chatPanel(`web-${agent.id}`, { placeholder: tr("Scrivi a {name}…", { name: agent.name }), hint: agent.enabled ? null : "È muto: accendilo per parlarci.", isCurrent });
@@ -4329,6 +4332,227 @@ async function renderAgent() {
     body = agentForm(agent, { only: "profile", knowledge });
   }
   if (isCurrent()) slot.replaceChildren(...[body].flat().filter(Boolean));
+}
+
+/* ---------- skills ---------- */
+const SKILL_RISK = { safe: "ok", low: "ok", medium: "warn", high: "err", critical: "err" };
+const SKILL_HARNESS_ALL = "Claude, Codex, Gemini, Grok, Kimi, Hermes, DeepSeek, Pi, Muse, Ollama";
+const SKILL_STATE = {
+  server: { ok: ["Integra", "ok"], broken: ["Danneggiata", "err"] },
+  desktop: { ok: ["Allineata", "ok"], changed: ["Diversa", "warn"], missing: ["Assente", "err"], off: ["Desktop spento", ""], error: ["Errore", "err"] },
+  upstream: { current: ["Aggiornata", "ok"], behind: ["Da aggiornare", "warn"], gone: ["Sparita", "err"], unknown: ["Sconosciuta", ""], error: ["Non raggiungibile", "err"] },
+  link: { ok: ["collegata", "ok"], copy: ["altra copia", "warn"], other: ["altro link", "warn"], missing: ["manca", "err"] },
+};
+
+function skillState(kind, value) {
+  const [label, cls] = SKILL_STATE[kind]?.[value] || ["—", ""];
+  return h("span", { class: `skill-led ${cls}` }, h("i", { class: "dot" }), h("span", {}, label));
+}
+
+async function skillsTab(agent) {
+  const url = `/api/agents/${agent.id}/skills`;
+  let data = await guard(api(url));
+  if (!data) return panel({ icon: "alert", title: "Skill non disponibili" }, btn("Riprova", { icon: "refresh", onclick: renderAgent }));
+  const installedPane = h("div", { class: "stack" });
+  const addPane = h("div", { class: "stack" });
+  const checkPane = h("div", { class: "stack" });
+  const setCount = () => {
+    const tab = document.querySelector(`.tabs a[href="#/agent/${agent.id}/skill"]`);
+    if (!tab) return;
+    tab.querySelector(".count")?.remove();
+    if (data.skills.length) tab.append(h("i", { class: "count" }, data.skills.length));
+    agent.skillCount = data.skills.length;
+  };
+  const reload = async () => {
+    const next = await guard(api(url));
+    if (next) data = next;
+    draw();
+  };
+  const busy = async (button, work) => {
+    button.disabled = true;
+    button.classList.add("busy");
+    try { return await work(); } finally { button.disabled = false; button.classList.remove("busy"); }
+  };
+  const desktopNote = (desktop) => desktop?.off ? tr("Sul desktop la copierò quando sarà acceso ({reason}).", { reason: tr(desktop.reason || "spento") }) : desktop?.error ? tr("Desktop: {error}", { error: desktop.error }) : "";
+  const install = (source, skill, button) => busy(button, async () => {
+    const done = await guard(api(url, { method: "POST", body: { source, skill } }));
+    if (!done) return;
+    toast(tr(done.updated ? "{name} aggiornata" : "{name} installata", { name: done.skill.name }));
+    const note = desktopNote(done.desktop);
+    if (note) setTimeout(() => toast(note), 3300);
+    await reload();
+  });
+
+  function sourceLine(skill) {
+    if (!skill.source) return h("span", { class: "skill-source" }, icon("monitor"), "Presa dal desktop");
+    const href = `https://github.com/${skill.source}/tree/${encodeURIComponent(skill.ref)}${skill.path ? `/${skill.path.split("/").map(encodeURIComponent).join("/")}` : ""}`;
+    return h("a", { class: "skill-source", href, target: "_blank", rel: "noopener" }, icon("github"), raw(skill.source), skill.path ? h("span", { class: "faint" }, raw(` / ${skill.path}`)) : null);
+  }
+
+  function skillRow(skill) {
+    const result = data.check?.skills?.[skill.name];
+    const preview = h("div", { class: "skill-preview", hidden: true });
+    const read = btn("SKILL.md", { icon: "eye", cls: "sm ghost", onclick: async () => {
+      if (!preview.hidden) { preview.hidden = true; read.setAttribute("aria-expanded", "false"); return; }
+      const file = await guard(api(`${url}/${skill.name}/files`));
+      if (!file) return;
+      preview.replaceChildren(h("div", { class: "skill-files" }, file.files.map((path) => h("code", {}, raw(path)))), h("div", { class: "md skill-md" }, markdown(file.text.replace(/^---[\s\S]*?\n---\s*\n/, ""))));
+      preview.hidden = false;
+      read.setAttribute("aria-expanded", "true");
+    } });
+    read.setAttribute("aria-expanded", "false");
+    const update = result?.upstream === "behind" ? btn("Aggiorna", { icon: "upgrade", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
+      const done = await guard(api(`${url}/${skill.name}/update`, { method: "POST" }), tr("{name} aggiornata", { name: skill.name }));
+      if (done) await reload();
+    }) }) : null;
+    const remove = armedButton("Rimuovi", "Conferma", { onconfirm: async () => {
+      const done = await guard(api(`${url}/${skill.name}`, { method: "DELETE" }), tr("{name} rimossa", { name: skill.name }));
+      if (done) await reload();
+    }, cls: "sm" });
+    const audits = Object.entries(result?.audit || {});
+    return h("li", { class: "skill-row" },
+      h("span", { class: "panel-ico" }, icon("skill")),
+      h("div", { class: "skill-text" },
+        h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(skill.name)), result && skill.source ? skillState("upstream", result.upstream) : null),
+        h("p", { class: "skill-desc" }, raw(skill.description)),
+        h("div", { class: "skill-meta" }, sourceLine(skill), h("span", {}, tr("{files} file · {size}", { files: skill.files, size: fmtBytes(skill.size) })),
+          h("span", {}, tr("aggiornata {when}", { when: fmtTime(new Date(skill.updatedAt).toISOString(), true) }))),
+        audits.length ? h("div", { class: "skill-audits" }, audits.map(([name, audit]) => h("span", { class: `tag ${SKILL_RISK[audit.risk] === "ok" ? "ok" : SKILL_RISK[audit.risk] === "err" ? "err" : SKILL_RISK[audit.risk] === "warn" ? "agent" : ""}`, title: tr("Audit {name} su skills.sh", { name }) }, raw(`${name} ${audit.risk}${audit.alerts ? ` · ${audit.alerts}` : ""}`)))) : null,
+        preview),
+      h("div", { class: "skill-actions row" }, read, update, remove));
+  }
+
+  function foundRow(found) {
+    const adopt = btn("Prendi in Cora", { icon: "download", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
+      const done = await guard(api(`${url}/${found.name}/adopt`, { method: "POST" }), tr("{name} ora è gestita da Cora", { name: found.name }));
+      if (done) await reload();
+    }) });
+    const remove = armedButton("Rimuovi dal desktop", "Conferma", { onconfirm: async () => {
+      const done = await guard(api(`${url}/${found.name}`, { method: "DELETE" }), tr("{name} rimossa dal desktop", { name: found.name }));
+      if (done) { await guard(api(`${url}/check`, { method: "POST" })); await reload(); }
+    }, cls: "sm" });
+    return h("li", { class: "skill-row" },
+      h("span", { class: "panel-ico" }, icon("monitor")),
+      h("div", { class: "skill-text" },
+        h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(found.name))),
+        found.description ? h("p", { class: "skill-desc" }, raw(found.description)) : null,
+        h("div", { class: "skill-meta" }, [...found.where, ...found.linked.map((dir) => `${dir} ↪`)].map((dir) => h("code", {}, raw(`~/${dir}`))))),
+      h("div", { class: "skill-actions row" }, adopt, remove));
+  }
+
+  function drawInstalled() {
+    const found = data.check?.found || [];
+    installedPane.replaceChildren(
+      panel({ icon: "skill", title: "Skill installate", hint: "Ognuna arriva a tutti i modelli: nome e descrizione nel prompt, testo intero con skill_read, file sul desktop in ~/.agents/skills.",
+        actions: btn("Aggiungi", { icon: "plus", cls: "sm", onclick: () => workspace.selectSection("aggiungi") }) },
+        data.skills.length ? h("ul", { class: "skill-list" }, data.skills.map(skillRow))
+          : empty("skill", "Nessuna skill. Cercane una su skills.sh o incolla owner/repo da GitHub.", btn("Aggiungi una skill", { icon: "plus", onclick: () => workspace.selectSection("aggiungi") }))),
+      found.length ? panel({ icon: "monitor", title: "Sul desktop, fuori da Cora", hint: "Le leggono solo gli harness che guardano quella cartella. Prendile in Cora per darle a tutti i modelli." },
+        h("ul", { class: "skill-list" }, found.map(foundRow))) : null);
+  }
+
+  function drawAdd() {
+    const query = h("input", { type: "search", placeholder: "pdf, react, playwright…", "aria-label": "Cerca una skill", autocomplete: "off" });
+    const results = h("div", { class: "skill-results", "aria-live": "polite" });
+    const search = btn("Cerca", { icon: "search", type: "submit" });
+    const installedNames = new Set(data.skills.map((skill) => skill.name));
+    const resultRow = (item, { source = item.source, skill = item.skill, description = "", installs = item.installs, link = item.id ? `https://skills.sh/${item.id}` : "" } = {}) => {
+      const have = installedNames.has(item.name);
+      const button = btn(have ? "Reinstalla" : "Installa", { icon: "download", cls: `sm${have ? " ghost" : ""}`, onclick: (event) => install(source, skill, event.currentTarget) });
+      return h("li", { class: "skill-row result" },
+        h("div", { class: "skill-text" },
+          h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(item.name)), have ? h("span", { class: "tag ok" }, "installata") : null),
+          description ? h("p", { class: "skill-desc" }, raw(description)) : null,
+          h("div", { class: "skill-meta" }, link ? h("a", { class: "skill-source", href: link, target: "_blank", rel: "noopener" }, icon("external"), raw(source)) : h("span", { class: "skill-source" }, icon("github"), raw(source), item.path ? h("span", { class: "faint" }, raw(` / ${item.path}`)) : null),
+            installs ? h("span", {}, tr("{count} installazioni", { count: installs.toLocaleString(LOCALE) })) : null)),
+        h("div", { class: "skill-actions row" }, button));
+    };
+    const form = h("form", { class: "skill-search", onsubmit: async (event) => {
+      event.preventDefault();
+      const q = query.value.trim();
+      if (q.length < 2) { query.focus(); return; }
+      results.replaceChildren(skeleton("rows", 3));
+      const found = await busy(search, () => guard(api(`/api/skills/search?${new URLSearchParams({ q })}`)));
+      results.replaceChildren(!found ? empty("alert", "skills.sh non ha risposto: riprova.")
+        : found.skills.length ? h("ul", { class: "skill-list" }, found.skills.map((item) => resultRow(item)))
+          : empty("search", tr("Nessuna skill per «{q}».", { q })));
+    } }, query, search);
+    const sourceInput = h("input", { type: "text", placeholder: "owner/repo · owner/repo@skill · link GitHub o skills.sh", "aria-label": "Sorgente", autocomplete: "off", spellcheck: "false", class: "mono" });
+    const listed = h("div", { class: "skill-results", "aria-live": "polite" });
+    const show = btn("Mostra le skill", { icon: "list", type: "submit" });
+    const sourceForm = h("form", { class: "skill-search", onsubmit: async (event) => {
+      event.preventDefault();
+      const source = sourceInput.value.trim();
+      if (!source) { sourceInput.focus(); return; }
+      listed.replaceChildren(skeleton("rows", 2));
+      const found = await busy(show, () => guard(api("/api/skills/discover", { method: "POST", body: { source } })));
+      if (!found) { listed.replaceChildren(); return; }
+      listed.replaceChildren(h("p", { class: "muted small" }, tr("{count} skill in {source} · {ref} @ {commit}", { count: found.skills.length, source: found.source, ref: found.ref, commit: found.commit.slice(0, 7) })),
+        h("ul", { class: "skill-list" }, found.skills.map((item) => resultRow(item, { source: `https://github.com/${found.source}/tree/${found.ref}${item.path ? `/${item.path}` : ""}`, skill: item.name, description: item.description, installs: 0, link: "" }))));
+    } }, sourceInput, show);
+    addPane.replaceChildren(
+      panel({ icon: "search", title: "Cerca su skills.sh", hint: "Lo stesso registro di npx skills find, con le installazioni di ogni skill." }, form, results),
+      panel({ icon: "github", title: "Da GitHub", hint: "Un repository pubblico con uno o più SKILL.md. Va bene anche il comando npx skills add … --skill …" }, sourceForm, listed));
+  }
+
+  function drawCheck() {
+    const check = data.check;
+    const run = btn("Verifica ora", { icon: "refresh", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
+      const done = await guard(api(`${url}/check`, { method: "POST" }), "Verifica completata");
+      if (done) await reload();
+    }) });
+    const repair = btn("Riscrivi sul desktop", { icon: "upload", cls: "sm ghost", disabled: !data.skills.length, onclick: (event) => busy(event.currentTarget, async () => {
+      const done = await guard(api(`${url}/sync`, { method: "POST" }));
+      if (!done) return;
+      toast(done.off ? tr("Desktop non disponibile ({reason})", { reason: tr(done.reason) }) : "Skill riscritte sul desktop");
+      await guard(api(`${url}/check`, { method: "POST" }));
+      await reload();
+    }) });
+    const homes = data.homes;
+    const desktopLine = !check ? null : check.desktop.state === "off" ? badge(tr("Desktop non verificato: {reason}", { reason: tr(check.desktop.reason) }), "", "monitor")
+      : check.desktop.state === "error" ? badge(raw(check.desktop.error), "err", "alert") : badge("Desktop verificato", "on", "monitor");
+    const matrix = data.skills.length && check ? h("div", { class: "skill-matrix-wrap" }, h("table", { class: "skill-matrix" },
+      h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Skill"), h("th", { scope: "col" }, "Server"), h("th", { scope: "col" }, "Desktop"),
+        h("th", { scope: "col" }, "Link degli harness"), h("th", { scope: "col" }, "Sorgente"))),
+      h("tbody", {}, data.skills.map((skill) => {
+        const result = check.skills[skill.name];
+        if (!result) return h("tr", {}, h("th", { scope: "row" }, raw(skill.name)), h("td", { colspan: "4" }, h("span", { class: "muted" }, "Installata dopo l'ultima verifica")));
+        const issues = [...(result.broken || []), ...(result.missing || []), ...(result.changed || [])];
+        return h("tr", {},
+          h("th", { scope: "row" }, raw(skill.name), issues.length ? h("small", {}, raw(issues.slice(0, 3).join(", "))) : null),
+          h("td", {}, skillState("server", result.server)),
+          h("td", {}, skillState("desktop", result.desktop)),
+          h("td", {}, result.links ? h("span", { class: "skill-links" }, homes.slice(1).map((home) => {
+            const [label, cls] = SKILL_STATE.link[result.links[home.dir]] || ["—", ""];
+            return h("span", { class: `skill-led ${cls}`, title: `~/${home.dir} · ${home.harnesses.join(", ")} · ${tr(label)}` }, h("i", { class: "dot" }), raw(home.dir.split("/")[0].slice(1)));
+          })) : h("span", { class: "muted" }, "—")),
+          h("td", {}, skill.source ? skillState("upstream", result.upstream) : h("span", { class: "skill-led" }, h("i", { class: "dot" }), h("span", {}, "Dal desktop"))));
+      })))) : null;
+    checkPane.replaceChildren(
+      panel({ icon: "check", title: "Verifica", hint: check ? tr("Ultima verifica {when}", { when: fmtTime(new Date(check.checkedAt).toISOString(), true) }) : "Controlla la copia sul server, quella sul desktop e i link di ogni harness, la sorgente su GitHub e gli audit di skills.sh.", actions: [repair, run] },
+        data.skills.length ? [desktopLine ? h("div", { class: "badges" }, desktopLine) : null, matrix || empty("check", "Non ancora verificate.", null)]
+          : empty("skill", "Nessuna skill da verificare.")),
+      panel({ icon: "layers", title: "Come le vede ogni harness" },
+        setRows(
+          setRow("Tutti i modelli", tr("{list}: nome e descrizione nel prompt, testo e file con skill_read. Non serve il desktop.", { list: SKILL_HARNESS_ALL })),
+          ...homes.map((home) => setRow(h("code", {}, raw(`~/${home.dir}`)), tr(home.dir === ".agents/skills" ? "Copia sul desktop per {list} e per gli script della skill." : "Link alla copia in ~/.agents/skills per {list}.", { list: home.harnesses.join(", ") }))))));
+  }
+
+  function draw() {
+    setCount();
+    drawInstalled();
+    drawCheck();
+  }
+
+  drawAdd();
+  draw();
+  const workspace = sectionWorkspace({ title: "Skill", base: `#/agent/${agent.id}/skill`, current: route()[3], entries: [
+    ["installate", "Installate", "skill", "Le skill di questo agente", [installedPane]],
+    ["aggiungi", "Aggiungi", "plus", "skills.sh o GitHub", [addPane]],
+    ["verifica", "Verifica", "check", "Integrità, desktop, aggiornamenti", [checkPane]],
+  ] });
+  workspace.classList.add("skills-workspace");
+  return workspace;
 }
 
 async function memoryTab(agent) {
