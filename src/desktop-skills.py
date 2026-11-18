@@ -80,6 +80,18 @@ def check(expected):
       (entry["linked"] if os.path.islink(path) else entry["where"]).append(rel)
       if "description" not in entry: entry.update({k:v for k,v in frontmatter(os.path.join(path,"SKILL.md")).items() if k=="description"})
   return {"skills":skills,"found":sorted(found.values(),key=lambda e:e["name"])[:100]}
+def remove(names,everywhere):
+  for name in names:
+    name_ok(name)
+    canonical=os.path.realpath(os.path.join(CANON,name))
+    for rel in LINKS:
+      path=os.path.join(HOME,rel,name)
+      if os.path.islink(path):
+        if os.path.realpath(path)==canonical or everywhere: os.unlink(path)
+      elif os.path.isdir(path) and everywhere: shutil.rmtree(path)
+    path=os.path.join(CANON,name)
+    if os.path.islink(path): os.unlink(path)
+    elif os.path.isdir(path): shutil.rmtree(path)
 if op=="sync":
   os.makedirs(CANON,exist_ok=True)
   for skill in data.get("skills",[]):
@@ -98,19 +110,10 @@ if op=="sync":
     elif os.path.isdir(dest): shutil.rmtree(dest)
     os.rename(temporary,dest)
     link(name)
+  remove(data.get("off",[]),False)
   print(json.dumps(check(data.get("expected",{}))))
 elif op=="remove":
-  for name in data.get("names",[]):
-    name_ok(name)
-    canonical=os.path.realpath(os.path.join(CANON,name))
-    for rel in LINKS:
-      path=os.path.join(HOME,rel,name)
-      if os.path.islink(path):
-        if os.path.realpath(path)==canonical or data.get("everywhere"): os.unlink(path)
-      elif os.path.isdir(path) and data.get("everywhere"): shutil.rmtree(path)
-    path=os.path.join(CANON,name)
-    if os.path.islink(path): os.unlink(path)
-    elif os.path.isdir(path): shutil.rmtree(path)
+  remove(data.get("names",[]),data.get("everywhere"))
   print(json.dumps(check(data.get("expected",{}))))
 elif op=="check":
   print(json.dumps(check(data.get("expected",{}))))

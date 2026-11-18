@@ -2779,6 +2779,9 @@ a.skill-source:hover { color: var(--amber); }
 .skill-source .faint { color: var(--faint); }
 .skill-audits { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.skill-actions .skill-switch { gap: 8px; margin-right: 6px; min-height: 30px; }
+.skill-actions .skill-switch .switch-text { font-size: 13px; color: var(--muted); min-width: 4.2em; }
+.skill-row.off .skill-name, .skill-row.off .skill-desc, .skill-row.off > .panel-ico { opacity: 0.5; }
 .skill-led { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
 .skill-led .dot { width: 7px; height: 7px; }
 .skill-led.ok { color: var(--green); }

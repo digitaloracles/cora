@@ -84,17 +84,19 @@ export class Skills {
   list(agentId) { return this.store.value(`agentSkills:${agentId}`, []); }
   save(agentId, list) { this.store.setValue(`agentSkills:${agentId}`, list.sort((a, b) => a.name.localeCompare(b.name))); }
   find(agentId, name) { return this.list(agentId).find((skill) => skill.name === name) || null; }
+  /** The skills switched on: the only ones in the prompt, in skill_read and on the desktop. */
+  active(agentId) { return this.list(agentId).filter((skill) => !skill.disabled); }
   dir(agentId, name) {
     if (!/^[\w-]+$/.test(agentId) || !SKILL_NAME.test(name)) throw new SkillError(400, "Nome della skill non valido.");
     return join(this.root, agentId, name);
   }
 
   /** What the agent's prompt lists: the name and when to use each skill. */
-  index(agentId) { return this.list(agentId).map(({ name, description }) => ({ name, description })); }
+  index(agentId) { return this.active(agentId).map(({ name, description }) => ({ name, description })); }
 
   view(agentId) {
     return {
-      skills: this.list(agentId).map(({ files, ...skill }) => ({ ...skill, files: files.length, size: files.reduce((sum, file) => sum + file.size, 0) })),
+      skills: this.list(agentId).map(({ files, disabled, ...skill }) => ({ ...skill, enabled: !disabled, files: files.length, size: files.reduce((sum, file) => sum + file.size, 0) })),
       check: this.store.value(`agentSkillsCheck:${agentId}`, null),
       homes: SKILL_HOMES,
     };
@@ -239,7 +241,7 @@ export class Skills {
     const record = {
       name, description: meta.description, ...origin,
       hash: sha256(manifest.map((file) => `${file.path}\0${file.sha256}\n`).join("")), files: manifest,
-      installedAt: before?.installedAt || Date.now(), updatedAt: Date.now(), installedBy: by || before?.installedBy || null,
+      ...(before?.disabled ? { disabled: true } : {}), installedAt: before?.installedAt || Date.now(), updatedAt: Date.now(), installedBy: by || before?.installedBy || null,
     };
     this.save(agent.id, [...this.list(agent.id).filter((skill) => skill.name !== name), record]);
     this.log({ type: "skill", agentId: agent.id, text: `${before ? "skill aggiornata" : "skill installata"}: ${name}${record.source ? ` (${record.source})` : ""}` });
@@ -257,7 +259,7 @@ export class Skills {
   }
 
   expected(agentId, except = "") {
-    return Object.fromEntries(this.list(agentId).filter((skill) => skill.name !== except).map((skill) => [skill.name, Object.fromEntries(skill.files.map((file) => [file.path, file.sha256]))]));
+    return Object.fromEntries(this.active(agentId).filter((skill) => skill.name !== except).map((skill) => [skill.name, Object.fromEntries(skill.files.map((file) => [file.path, file.sha256]))]));
   }
 
   /** One operation of the desktop script; `{off: true}` when there is no desktop running. */
@@ -272,13 +274,27 @@ export class Skills {
 
   /** Write the server copies onto the desktop (all, or the named ones) and link them for every harness. */
   async sync(agent, names = null) {
-    const skills = this.list(agent.id).filter((skill) => !names || names.includes(skill.name)).map((skill) => {
+    const skills = this.active(agent.id).filter((skill) => !names || names.includes(skill.name)).map((skill) => {
       const files = this.serverFiles(agent.id, skill);
       const broken = files.find((file) => !file.ok);
       if (broken) throw new SkillError(409, `La copia sul server di ${skill.name} è danneggiata (${broken.path}): reinstallala.`);
       return { name: skill.name, files: files.map((file) => ({ path: file.path, data: file.data.toString("base64"), exec: file.exec })) };
     });
-    return this.desktop(agent, "sync", { skills, expected: this.expected(agent.id) });
+    const off = this.list(agent.id).filter((skill) => skill.disabled && (!names || names.includes(skill.name))).map((skill) => skill.name);
+    return this.desktop(agent, "sync", { skills, off, expected: this.expected(agent.id) });
+  }
+
+  /** Switch one skill on or off for this agent: off keeps Cora's copy but takes it out of the prompt, skill_read and the desktop. */
+  async setEnabled(agent, name, enabled, by = null) {
+    const record = this.find(agent.id, name);
+    if (!record) throw new SkillError(404, "Skill non trovata.");
+    const next = Boolean(enabled);
+    if (next === !record.disabled) return { skill: this.view(agent.id).skills.find((skill) => skill.name === name), changed: false, desktop: null };
+    const { disabled, ...rest } = record;
+    this.save(agent.id, [...this.list(agent.id).filter((skill) => skill.name !== name), next ? rest : { ...rest, disabled: true }]);
+    this.log({ type: "skill", agentId: agent.id, text: `skill ${next ? "attivata" : "disattivata"}: ${name}${by?.name ? ` da ${by.name}` : ""}` });
+    const desktop = await this.sync(agent, [name]).catch((error) => ({ error: error.message }));
+    return { skill: this.view(agent.id).skills.find((skill) => skill.name === name), changed: true, desktop };
   }
 
   async remove(agent, name) {
@@ -326,7 +342,11 @@ export class Skills {
     }));
     let desktop;
     try { desktop = await this.desktop(agent, "check", { expected: this.expected(agent.id) }); } catch (error) { desktop = { error: error.message }; }
-    for (const name of Object.keys(skills)) {
+    for (const skill of list.filter((item) => item.disabled)) {
+      const left = desktop.off || desktop.error ? null : (desktop.found || []).find((entry) => entry.name === skill.name);
+      skills[skill.name].desktop = desktop.off ? "off" : desktop.error ? "error" : left ? "left" : "disabled";
+    }
+    for (const name of Object.keys(skills).filter((key) => !this.find(agent.id, key)?.disabled)) {
       const found = desktop.skills?.[name];
       skills[name].desktop = desktop.off ? "off" : desktop.error ? "error" : !found?.present ? "missing" : found.missing.length || found.changed.length ? "changed" : "ok";
       if (found) Object.assign(skills[name], { missing: found.missing, changed: found.changed, extra: found.extra, links: found.links });
@@ -352,15 +372,17 @@ export class Skills {
         }
       } catch {}
     }));
-    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found: desktop.found || [] };
+    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found: (desktop.found || []).filter((entry) => !this.find(agent.id, entry.name)) };
     this.store.setValue(`agentSkillsCheck:${agent.id}`, result);
     return result;
   }
 
   /** What `skill_read` gives an agent: SKILL.md (or one of its files) from the server copy, on any harness. */
-  read(agentId, name, file = "SKILL.md") {
+  read(agentId, name, file = "SKILL.md", { panel = false } = {}) {
     const record = this.find(agentId, String(name || ""));
-    if (!record) return { error: `no skill named ${name}; yours are: ${this.list(agentId).map((skill) => skill.name).join(", ") || "none"}` };
+    const yours = () => this.active(agentId).map((skill) => skill.name).join(", ") || "none";
+    if (!record) return { error: `no skill named ${name}; yours are: ${yours()}` };
+    if (record.disabled && !panel) return { error: `${record.name} is switched off for you by the owner; yours are: ${yours()}` };
     const entry = record.files.find((item) => item.path === (file || "SKILL.md"));
     if (!entry) return { error: `${record.name} has no file ${file}; its files: ${record.files.map((item) => item.path).join(", ")}` };
     const data = readFileSync(join(this.dir(agentId, record.name), entry.path));

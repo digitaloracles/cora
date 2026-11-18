@@ -225,3 +225,51 @@ test("GitHub is read once for listing then installing, with the optional token, 
   await skills.discover("acme/kit");
   assert.equal(api().length, 6, "after five minutes GitHub is read again");
 });
+
+test("a skill is switched off and on per agent: off it leaves the prompt, skill_read and the desktop, but stays installed", async (t) => {
+  const { app, call, docker } = await world(t);
+  const agent = app.store.createAgent({ name: "Toggled", model: "hermes/test-model", tools: true });
+  const other = app.store.createAgent({ name: "Other", model: "hermes/test-model", tools: true });
+  const desktop = docker.desktop(agent.id);
+  for (const id of [agent.id, other.id]) assert.equal((await call(`/api/agents/${id}/skills`, { method: "POST", body: { source: "acme/skills", skill: "alpha" } })).status, 201);
+  assert.equal((await call(`/api/agents/${agent.id}/skills`, { method: "POST", body: { source: "acme/skills", skill: "beta" } })).status, 201);
+  assert.deepEqual((await call(`/api/agents/${agent.id}/skills`)).data.skills.map((skill) => [skill.name, skill.enabled]), [["alpha", true], ["beta", true]]);
+
+  assert.equal((await call(`/api/agents/${agent.id}/skills/alpha`, { method: "PATCH", body: {} })).status, 400);
+  assert.equal((await call(`/api/agents/${agent.id}/skills/nope`, { method: "PATCH", body: { enabled: false } })).status, 404);
+  const off = await call(`/api/agents/${agent.id}/skills/alpha`, { method: "PATCH", body: { enabled: false } });
+  assert.equal(off.status, 200, JSON.stringify(off.data));
+  assert.equal(off.data.skill.enabled, false);
+  assert.equal(existsSync(join(desktop, ".agents/skills/alpha")), false, "off: the desktop copy goes");
+  for (const dir of [".claude/skills", ".grok/skills", ".hermes/skills", ".gemini/skills"]) assert.equal(existsSync(join(desktop, dir, "alpha")), false, `off: no ${dir} link`);
+  assert.ok(existsSync(join(desktop, ".agents/skills/beta/SKILL.md")), "the other skill stays");
+  assert.ok(existsSync(join(app.skills.root, agent.id, "alpha", "SKILL.md")), "Cora keeps its copy");
+
+  const prompt = app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true });
+  assert.doesNotMatch(prompt, /ALPHA_CANARY/);
+  assert.match(prompt, /- beta: Beta helper/);
+  assert.match(app.brain.systemPrompt(app.store.agent(other.id), { place: "test", computer: true }), /ALPHA_CANARY/, "only this agent loses it");
+  const ctx = { agent: app.store.agent(agent.id), store: app.store, skills: app.skills };
+  assert.match((await executeTool({ name: "skill_read", args: { name: "alpha" } }, ctx)).text, /^error: alpha is switched off for you by the owner; yours are: beta/);
+  assert.match((await call(`/api/agents/${agent.id}/skills/alpha/files`)).data.text, /# Alpha/, "the panel still previews it");
+
+  let check = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
+  assert.equal(check.skills.alpha.server, "ok");
+  assert.equal(check.skills.alpha.desktop, "disabled");
+  assert.deepEqual(check.found, [], "a skill switched off is not offered as a desktop skill to adopt");
+  await call(`/api/agents/${agent.id}/skills/sync`, { method: "POST" });
+  assert.equal(existsSync(join(desktop, ".agents/skills/alpha")), false, "rewriting the desktop keeps it off");
+  assert.equal((await call(`/api/agents/${agent.id}/skills`, { method: "POST", body: { source: "acme/skills", skill: "alpha" } })).data.skill.enabled, false, "a reinstall keeps the switch");
+
+  await call(`/api/agents/${agent.id}/skills/beta`, { method: "PATCH", body: { enabled: false } });
+  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /## Le tue skill/);
+
+  const on = await call(`/api/agents/${agent.id}/skills/alpha`, { method: "PATCH", body: { enabled: true } });
+  assert.equal(on.data.skill.enabled, true);
+  assert.equal(readFileSync(join(desktop, ".agents/skills/alpha/references/guide.md"), "utf8"), "ALPHA_GUIDE_CANARY\n", "on: written back");
+  assert.ok(lstatSync(join(desktop, ".claude/skills/alpha")).isSymbolicLink());
+  assert.match((await executeTool({ name: "skill_read", args: { name: "alpha" } }, { ...ctx, agent: app.store.agent(agent.id) })).text, /# Alpha/);
+  check = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
+  assert.equal(check.skills.alpha.desktop, "ok");
+  assert.equal(check.skills.beta.desktop, "disabled");
+});

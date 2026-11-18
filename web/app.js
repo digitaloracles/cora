@@ -4339,7 +4339,7 @@ const SKILL_RISK = { safe: "ok", low: "ok", medium: "warn", high: "err", critica
 const SKILL_HARNESS_ALL = "Claude, Codex, Gemini, Grok, Kimi, Hermes, DeepSeek, Pi, Muse, Ollama";
 const SKILL_STATE = {
   server: { ok: ["Integra", "ok"], broken: ["Danneggiata", "err"] },
-  desktop: { ok: ["Allineata", "ok"], changed: ["Diversa", "warn"], missing: ["Assente", "err"], off: ["Desktop spento", ""], error: ["Errore", "err"] },
+  desktop: { ok: ["Allineata", "ok"], changed: ["Diversa", "warn"], missing: ["Assente", "err"], off: ["Desktop spento", ""], error: ["Errore", "err"], disabled: ["Disattivata", ""], left: ["Ancora presente", "warn"] },
   upstream: { current: ["Aggiornata", "ok"], behind: ["Da aggiornare", "warn"], gone: ["Sparita", "err"], unknown: ["Sconosciuta", ""], error: ["Non raggiungibile", "err"] },
   link: { ok: ["collegata", "ok"], copy: ["altra copia", "warn"], other: ["altro link", "warn"], missing: ["manca", "err"] },
 };
@@ -4409,8 +4409,21 @@ async function skillsTab(agent) {
       const done = await guard(api(`${url}/${skill.name}`, { method: "DELETE" }), tr("{name} rimossa", { name: skill.name }));
       if (done) await reload();
     }, cls: "sm" });
+    const toggle = h("input", { type: "checkbox", checked: skill.enabled, "aria-label": tr("{name} attiva per {agent}", { name: skill.name, agent: agent.name }), onchange: async () => {
+      const enabled = toggle.checked;
+      toggle.disabled = true;
+      const done = await guard(api(`${url}/${skill.name}`, { method: "PATCH", body: { enabled } }));
+      toggle.disabled = false;
+      if (!done) { toggle.checked = !enabled; return; }
+      toast(tr(enabled ? "{name} attivata" : "{name} disattivata", { name: skill.name }));
+      const note = desktopNote(done.desktop);
+      if (note) setTimeout(() => toast(note), 3300);
+      await reload();
+    } });
+    const onOff = h("label", { class: "switch skill-switch", title: tr(skill.enabled ? "Attiva: nel prompt, in skill_read e sul desktop" : "Disattivata: resta installata, ma {agent} non la vede", { agent: agent.name }) },
+      toggle, h("span", { class: "rocker" }), h("span", { class: "switch-text" }, skill.enabled ? "Attiva" : "Spenta"));
     const audits = Object.entries(result?.audit || {});
-    return h("li", { class: "skill-row" },
+    return h("li", { class: `skill-row${skill.enabled ? "" : " off"}` },
       h("span", { class: "panel-ico" }, icon("skill")),
       h("div", { class: "skill-text" },
         h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(skill.name)), result && skill.source ? skillState("upstream", result.upstream) : null),
@@ -4419,7 +4432,7 @@ async function skillsTab(agent) {
           h("span", {}, tr("aggiornata {when}", { when: fmtTime(new Date(skill.updatedAt).toISOString(), true) }))),
         audits.length ? h("div", { class: "skill-audits" }, audits.map(([name, audit]) => h("span", { class: `tag ${SKILL_RISK[audit.risk] === "ok" ? "ok" : SKILL_RISK[audit.risk] === "err" ? "err" : SKILL_RISK[audit.risk] === "warn" ? "agent" : ""}`, title: tr("Audit {name} su skills.sh", { name }) }, raw(`${name} ${audit.risk}${audit.alerts ? ` · ${audit.alerts}` : ""}`)))) : null,
         preview),
-      h("div", { class: "skill-actions row" }, read, update, remove));
+      h("div", { class: "skill-actions row" }, onOff, read, update, remove));
   }
 
   function foundRow(found) {
@@ -4443,7 +4456,7 @@ async function skillsTab(agent) {
   function drawInstalled() {
     const found = data.check?.found || [];
     installedPane.replaceChildren(...[
-      panel({ icon: "skill", title: "Skill installate", hint: "Ognuna arriva a tutti i modelli: nome e descrizione nel prompt, testo intero con skill_read, file sul desktop in ~/.agents/skills.",
+      panel({ icon: "skill", title: "Skill installate", hint: "Ognuna attiva arriva a tutti i modelli: nome e descrizione nel prompt, testo intero con skill_read, file sul desktop in ~/.agents/skills. Una skill spenta resta installata ma l'agente non la vede.",
         actions: btn("Aggiungi", { icon: "plus", cls: "sm", onclick: () => workspace.selectSection("aggiungi") }) },
         data.skills.length ? h("ul", { class: "skill-list" }, data.skills.map(skillRow))
           : empty("skill", "Nessuna skill. Cercane una su skills.sh o incolla owner/repo da GitHub.", btn("Aggiungi una skill", { icon: "plus", onclick: () => workspace.selectSection("aggiungi") }))),

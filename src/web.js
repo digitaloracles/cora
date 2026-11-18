@@ -1545,10 +1545,15 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         if (action === "check" && method === "POST") return done(200, await skills.check(agent));
         if (action === "sync" && method === "POST") return done(200, await skills.sync(agent));
         if (name && !sub && method === "DELETE") return done(200, await skills.remove(agent, name));
+        if (name && !sub && method === "PATCH") {
+          const body = await readJson(req, 1024);
+          if (typeof body.enabled !== "boolean") throw new HttpError(400, "Serve enabled: true o false.");
+          return done(200, await skills.setEnabled(agent, name, body.enabled, by));
+        }
         if (name && sub === "update" && method === "POST") return done(200, await skills.update(agent, name, by));
         if (name && sub === "adopt" && method === "POST") return done(201, await skills.adopt(agent, name, by));
         if (name && sub === "files" && method === "GET") {
-          const read = skills.read(agent.id, name, url.searchParams.get("path") || "SKILL.md");
+          const read = skills.read(agent.id, name, url.searchParams.get("path") || "SKILL.md", { panel: true });
           if (read.error) throw new HttpError(404, read.error);
           return send(res, 200, read);
         }
