@@ -18,6 +18,8 @@ const REQUEST_TIMEOUT_MS = 240000;
  * which would fail the same way for ever.
  */
 const TRANSIENT = /\b(at capacity|capacity|rate.?limit|too many requests|429|50[0234]|overloaded|unavailable|temporar\w*|try again)\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|fetch failed|network|timed out|no answer within|returned no content|exited with \d+ and said nothing/i;
+// The provider turned the request away before anything ran: trying again is free, even inside a recoverable harness turn.
+const BUSY = /\b(at capacity|rate.?limit|too many requests|429|overloaded)\b/i;
 const RETRIES = 2;
 /** The largest context we ask a local model for: more is rarely worth the memory it eats. */
 const MAX_CONTEXT = 32_768;
@@ -807,7 +809,8 @@ export class LLM {
         return await once();
       } catch (error) {
         runSignal?.throwIfAborted();
-        if (recoverHarness.getStore() || error.code === "GEMINI_QUOTA_EXHAUSTED" || attempt >= RETRIES || usedCount() || !TRANSIENT.test(String(error.message || ""))) throw error;
+        const message = String(error.message || "");
+        if ((recoverHarness.getStore() && !BUSY.test(message)) || error.code === "GEMINI_QUOTA_EXHAUSTED" || attempt >= RETRIES || usedCount() || !TRANSIENT.test(message)) throw error;
         onStep?.({ type: "note", text: `${error.message} — riprovo (${attempt + 1}/${RETRIES}).` });
         await wait(RETRY_WAIT_MS * (attempt + 1));
       }
