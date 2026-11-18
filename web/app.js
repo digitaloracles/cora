@@ -151,6 +151,8 @@ const STATE_LABEL = {
 const ICONS = {
   lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/>',
   swap: '<path d="M4 7h16l-4-4M20 17H4l4 4"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 4.5-4 6-11 8"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M4.5 9v9.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/>',
   folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2.5h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
   commit: '<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>',
@@ -6792,7 +6794,7 @@ function renderArtifacts() {
     ? [crumbs,
       pageHead(raw(parts.at(-1)), tr("Le cartelle e i livelli dentro {path}. Puoi condividerlo tutto con un solo link.", { path: `${level}/` }), [newButton]), body]
     : [pageHead("Artefatti", "Quello che gli agenti fanno sui loro computer, con tutte le versioni. Ogni caricamento è un commit e va in onda solo quando lo approvi.", [newButton]), body],
-  { title: level ? parts.at(-1) : "Artefatti", back: level ? artifactLevelHref(parts.slice(0, -1).join("/")) : "", mode: level ? "artifacts" : "" });
+  { title: level ? parts.at(-1) : "Artefatti", back: level ? artifactLevelHref(parts.slice(0, -1).join("/")) : "", mode: "artifacts" });
   load();
 }
 
@@ -7487,27 +7489,56 @@ async function removeArtifactPaths(folder, head, paths, after) {
 }
 
 /** The folder's history as takes on a tape: the one on air lit, proposals waiting, the rest as they went. */
+/** «Torna a questa versione»: the served version is saved as a backup first, then this one goes back on air as a new commit. */
+function artifactGoBack(folderId, commitId, { cls = "sm ghost", done = null } = {}) {
+  const button = armedButton("Torna a questa versione", "Conferma: salvo un backup e torno qui", { icon: "undo", cls, onconfirm: async () => {
+    button.disabled = true;
+    const result = await guard(api(`/api/artifacts/folders/${folderId}/restore`, { method: "POST", body: { commit: commitId } }));
+    button.disabled = false;
+    if (!result) return;
+    toast(result.backup ? tr("Tornata a {id}. Backup della versione di prima: {name}", { id: commitId.replace(/^ac_/, "").slice(0, 7), name: result.backup.name }) : tr("Tornata a {id}", { id: commitId.replace(/^ac_/, "").slice(0, 7) }));
+    if (done) done(result);
+    else renderArtifacts();
+  } });
+  button.classList.remove("danger");
+  return button;
+}
+
+/** The backups a «Torna a questa versione» made, newest first: like branches that keep the version it left. */
+function artifactBackups(data) {
+  const backups = data.folder.backups || [];
+  if (!backups.length) return null;
+  return panel({ icon: "branch", title: "Backup", hint: "Ogni volta che torni a una versione, quella che era in onda resta qui. Ci torni quando vuoi." },
+    h("ul", { class: "art-backups" }, backups.map((backup) => h("li", { class: "art-backup" },
+      h("a", { class: "grow art-take-text", href: `#/artefatti/${data.folder.id}/c/${backup.commit}` },
+        h("span", { class: "row tight" }, h("span", { class: "art-backup-name" }, icon("branch"), raw(backup.name)), h("b", { class: "grow" }, raw(backup.message)),
+          backup.served ? h("span", { class: "art-lamp on mini" }, h("i"), h("span", {}, tr("In onda"))) : null),
+        h("small", {}, tr("salvato da {name}", { name: backup.by?.name || "?" }), raw(` · ${fmtTime(new Date(backup.createdAt).toISOString(), true)}`),
+          backup.restoredTo ? h("span", {}, tr("prima di tornare a {id}", { id: backup.restoredTo.replace(/^ac_/, "").slice(0, 7) })) : null)),
+      data.canReview && !backup.served ? artifactGoBack(data.folder.id, backup.commit) : null))));
+}
+
 function artifactTakes(data) {
   const { folder } = data;
+  const backups = new Map((folder.backups || []).map((backup) => [backup.commit, backup]));
   if (!data.commits.length) return panel({ icon: "commit", title: "Commit" }, empty("commit", "Ancora nessun commit."));
-  return panel({ icon: "commit", title: "Commit", hint: "Ogni caricamento, dal più recente. Va in onda quello approvato." },
+  return [artifactBackups(data), panel({ icon: "commit", title: "Commit", hint: "Ogni caricamento, dal più recente. Va in onda quello approvato. «Torna a questa versione» salva prima un backup di quella in onda." },
     h("ol", { class: "art-takes" }, data.commits.map((commit) => {
       const [label, cls] = ARTIFACT_STATUS[commit.status] || [commit.status, ""];
       const live = commit.id === folder.head;
       const waiting = commit.status === "proposed" || commit.status === "conflict";
-      const restore = data.canReview && commit.status === "published" && !live
-        ? armedButton("Ripristina", "Conferma: torna in onda", { icon: "refresh", cls: "sm ghost", onconfirm: async () => {
-          if (await guard(api(`/api/artifacts/folders/${folder.id}/restore`, { method: "POST", body: { commit: commit.id } }), "Versione ripristinata")) renderArtifacts();
-        } }) : null;
+      const restore = data.canReview && commit.status === "published" && !live ? artifactGoBack(folder.id, commit.id) : null;
+      const saved = backups.get(commit.id);
       return h("li", { class: `art-take ${commit.status}${live ? " live" : ""}` },
         h("i", { class: "art-take-mark", "aria-hidden": "true" }),
         h("a", { class: "grow art-take-text", href: `#/artefatti/${folder.id}/c/${commit.id}` },
           h("span", { class: "row tight" }, h("code", {}, raw(commit.short)), h("b", { class: "grow" }, raw(commit.message)),
+            saved ? h("span", { class: "art-backup-name", title: tr("Backup salvato prima di tornare a un'altra versione") }, icon("branch"), raw(saved.name)) : null,
             live ? h("span", { class: "art-lamp on mini" }, h("i"), h("span", {}, tr("In onda"))) : badge(label, cls)),
           h("small", {}, artifactAuthor(commit.author), raw(` · ${fmtTime(new Date(commit.createdAt).toISOString(), true)}`), artifactCounts(commit.changes),
             commit.review?.note ? h("span", { class: "art-take-note" }, raw(`«${commit.review.note}»`)) : null)),
         waiting ? btn("Rivedi", { icon: "check", cls: "sm primary", href: `#/artefatti/${folder.id}/c/${commit.id}` }) : restore);
-    })));
+    })))].filter(Boolean);
 }
 
 const SHARE_STATE = { active: ["Attivo", "on"], proposed: ["Da attivare", "warn"], revoked: ["Revocato", "err"] };
@@ -7942,33 +7973,205 @@ function artifactPermissions(data, { settings = false } = {}) {
     : panel({ icon: "shield", title: "Permessi", hint: data.encrypted ? "Il permesso non consegna la chiave: completa l’accesso nella scheda Condivisione. Gli agenti ricevono solo accessi temporanei autorizzati." : editable ? null : "Li cambiano il proprietario e i revisori della cartella." }, setRows(data.encrypted ? null : writersRow, memberAccessRow, data.encrypted ? null : reviewersRow));
 }
 
-/** One changed file, opened: the lines it lost and gained, or the two pictures side by side. */
-async function artifactChange(commit, change) {
+const ARTIFACT_DIFF_EDITS = 2000;
+const ARTIFACT_DIFF_CONTEXT = 3;
+
+/** Line diff as git does it (Myers): common head and tail first, then the shortest edit script. Null when the files differ in too many places. */
+function artifactLineDiff(a, b) {
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA -= 1; endB -= 1; }
+  const x0 = a.slice(start, endA);
+  const y0 = b.slice(start, endB);
+  const n = x0.length;
+  const m = y0.length;
+  const middle = [];
+  if (n || m) {
+    const max = n + m;
+    const offset = max + 1;
+    const v = new Int32Array(2 * max + 3);
+    const trace = [];
+    let found = false;
+    for (let d = 0; d <= max && !found; d += 1) {
+      if (d > ARTIFACT_DIFF_EDITS) return null;
+      for (let k = -d; k <= d; k += 2) {
+        let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+        let y = x - k;
+        while (x < n && y < m && x0[x] === y0[y]) { x += 1; y += 1; }
+        v[offset + k] = x;
+        if (x >= n && y >= m) { found = true; break; }
+      }
+      trace.push(v.slice(offset - d, offset + d + 1));
+    }
+    let x = n;
+    let y = m;
+    for (let d = trace.length - 1; d > 0; d -= 1) {
+      const prev = trace[d - 1];
+      const at = (k) => prev[k + d - 1];
+      const k = x - y;
+      const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+      const prevX = at(prevK);
+      const prevY = prevX - prevK;
+      while (x > prevX && y > prevY) { middle.push(["=", start + x - 1, start + y - 1]); x -= 1; y -= 1; }
+      if (prevK === k + 1) middle.push(["+", -1, start + y - 1]);
+      else middle.push(["-", start + x - 1, -1]);
+      x = prevX;
+      y = prevY;
+    }
+    while (x > 0 && y > 0) { middle.push(["=", start + x - 1, start + y - 1]); x -= 1; y -= 1; }
+    middle.reverse();
+  }
+  const ops = [];
+  for (let i = 0; i < start; i += 1) ops.push(["=", i, i]);
+  ops.push(...middle);
+  for (let i = 0; i < a.length - endA; i += 1) ops.push(["=", endA + i, endB + i]);
+  return ops;
+}
+
+/** The changed lines with three lines around them, cut into hunks like `git diff`. */
+function artifactHunks(ops, context = ARTIFACT_DIFF_CONTEXT) {
+  const changed = [];
+  ops.forEach((op, index) => { if (op[0] !== "=") changed.push(index); });
+  const hunks = [];
+  for (const index of changed) {
+    const last = hunks.at(-1);
+    if (last && index - last.to <= context * 2 + 1) last.to = index;
+    else hunks.push({ from: index, to: index });
+  }
+  return hunks.map(({ from, to }) => {
+    const lines = ops.slice(Math.max(0, from - context), Math.min(ops.length, to + context + 1));
+    const olds = lines.filter((op) => op[0] !== "+");
+    const news = lines.filter((op) => op[0] !== "-");
+    const firstOld = olds.length ? olds[0][1] + 1 : (ops.slice(0, from).filter((op) => op[0] !== "+").length);
+    const firstNew = news.length ? news[0][2] + 1 : (ops.slice(0, from).filter((op) => op[0] !== "-").length);
+    return { header: `@@ -${firstOld}${olds.length === 1 ? "" : `,${olds.length}`} +${firstNew}${news.length === 1 ? "" : `,${news.length}`} @@`, lines };
+  });
+}
+
+const artifactLines = (text) => {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  if (lines.length && lines.at(-1) === "") lines.pop();
+  return lines;
+};
+
+const ARTIFACT_DIFF_OPEN_LINES = 1500;
+
+/** A file's diff as GitHub shows it: line numbers on both sides, hunks with three lines around each change. */
+function artifactDiffTable(hunks, before, after) {
+  const cell = (cls, text) => h("td", { class: cls }, text);
+  const marked = (text, other) => {
+    if (other === undefined || text === other) return [raw(text)];
+    let head = 0;
+    while (head < text.length && head < other.length && text[head] === other[head]) head += 1;
+    let tail = 0;
+    while (tail < text.length - head && tail < other.length - head && text[text.length - 1 - tail] === other[other.length - 1 - tail]) tail += 1;
+    if (head + tail < Math.min(text.length, other.length) / 3) return [raw(text)];
+    return [raw(text.slice(0, head)), h("span", { class: "art-diff-word" }, raw(text.slice(head, text.length - tail))), raw(text.slice(text.length - tail))];
+  };
+  const rows = (lines) => {
+    const out = [];
+    for (let at = 0; at < lines.length;) {
+      if (lines[at][0] !== "-") { out.push([lines[at], undefined]); at += 1; continue; }
+      let dels = at;
+      while (dels < lines.length && lines[dels][0] === "-") dels += 1;
+      let adds = dels;
+      while (adds < lines.length && lines[adds][0] === "+") adds += 1;
+      const removed = lines.slice(at, dels);
+      const added = lines.slice(dels, adds);
+      const paired = removed.length === added.length;
+      removed.forEach((line, n) => out.push([line, paired ? after[added[n][2]] : undefined]));
+      added.forEach((line, n) => out.push([line, paired ? before[removed[n][1]] : undefined]));
+      at = adds;
+    }
+    return out;
+  };
+  return h("div", { class: "art-diff-scroll" }, h("table", { class: "art-diff-table" }, h("tbody", {}, hunks.flatMap((hunk) => [
+    h("tr", { class: "art-diff-hunk" }, cell("art-diff-num", ""), cell("art-diff-num", ""), h("td", { class: "art-diff-code" }, raw(hunk.header))),
+    ...rows(hunk.lines).map(([[kind, i, j], other]) => h("tr", { class: kind === "+" ? "art-diff-add" : kind === "-" ? "art-diff-del" : "" },
+      cell("art-diff-num", i >= 0 ? String(i + 1) : ""), cell("art-diff-num", j >= 0 ? String(j + 1) : ""),
+      h("td", { class: "art-diff-code" }, h("span", { class: "art-diff-sign", "aria-hidden": "true" }, kind === "=" ? " " : kind === "-" ? "-" : "+"), marked(kind === "+" ? after[j] : before[i], other)))),
+  ]))));
+}
+
+function artifactDiffStat(add, del) {
+  const total = add + del;
+  const greens = total ? Math.round((add / total) * 5) : 0;
+  const reds = total ? Math.min(5 - greens, Math.max(del ? 1 : 0, Math.round((del / total) * 5))) : 0;
+  return h("span", { class: "art-diff-stat", title: tr("{add} righe aggiunte, {del} tolte", { add, del }) },
+    h("b", { class: "add" }, raw(`+${add}`)), h("b", { class: "del" }, raw(`−${del}`)),
+    h("span", { class: "art-diff-bar", "aria-hidden": "true" }, Array.from({ length: 5 }, (_, n) => h("i", { class: n < greens ? "add" : n < greens + reds ? "del" : "" }))));
+}
+
+/** One changed file: its diff, the before and after pictures, or the two downloads when it cannot be read as text. */
+async function artifactChange(commit, change, stat) {
   const after = change.after ? `/api/artifacts/commits/${commit.id}/files/${artifactPath(change.path)}` : null;
   const before = change.before ? `/api/artifacts/commits/${commit.id}/objects/${change.before.sha}?name=${encodeURIComponent(change.path.split("/").at(-1))}` : null;
   const kind = artifactKind(change.path);
+  const downloads = (text) => h("div", { class: "art-noview row" }, icon("file"),
+    h("p", { class: "grow" }, raw(text || [change.before ? tr("prima {size}", { size: fmtBytes(change.before.size) }) : "", change.after ? tr("dopo {size}", { size: fmtBytes(change.after.size) }) : ""].filter(Boolean).join(" · "))),
+    before ? btn("Prima", { icon: "download", cls: "sm ghost", href: `${before}&download=1` }) : null,
+    after ? btn(change.before ? "Dopo" : "Scarica", { icon: "download", cls: "sm ghost", href: `${after}?download=1` }) : null);
   if (kind === "image") {
     return h("div", { class: "art-compare" },
       before ? h("figure", {}, h("figcaption", { class: "label" }, "Prima"), h("div", { class: "art-media checker" }, h("img", { src: before, alt: "" }))) : null,
       after ? h("figure", {}, h("figcaption", { class: "label" }, change.before ? "Dopo" : "Nuovo"), h("div", { class: "art-media checker" }, h("img", { src: after, alt: "" }))) : null);
   }
-  const small = (file) => !file || file.size <= 400 * 1024;
-  if (kind === "text" && small(change.before) && small(change.after)) {
-    const read = async (url) => {
-      if (!url) return "";
-      const response = await fetch(url, { credentials: "same-origin" });
-      if (!response.ok || !/^text\/plain/.test(response.headers.get("content-type") || "")) throw new Error("binary");
-      return response.text();
+  const small = (file) => !file || file.size <= 2 * 1024 * 1024;
+  if (!small(change.before) || !small(change.after)) return downloads(tr("File troppo grande per mostrare le differenze qui."));
+  const read = async (url) => {
+    if (!url) return "";
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (!response.ok || !/^text\/plain/.test(response.headers.get("content-type") || "")) throw new Error("binary");
+    return response.text();
+  };
+  let texts;
+  try { texts = await Promise.all([read(before), read(after)]); }
+  catch { return downloads(tr("File binario: le differenze non si leggono come testo.")); }
+  const [a, b] = texts.map(artifactLines);
+  const ops = artifactLineDiff(a, b);
+  if (!ops) return downloads(tr("Le differenze sono troppe per mostrarle qui."));
+  const add = ops.filter((op) => op[0] === "+").length;
+  const del = ops.filter((op) => op[0] === "-").length;
+  stat.replaceChildren(artifactDiffStat(add, del));
+  if (!add && !del) return h("p", { class: "art-diff-empty" }, raw(tr("Stesse righe: cambiano solo i byte (spazi a fine file o a capo).")));
+  const hunks = artifactHunks(ops);
+  if (add + del <= ARTIFACT_DIFF_OPEN_LINES) return artifactDiffTable(hunks, a, b);
+  const slot = h("div", { class: "art-diff-large row" }, h("p", { class: "grow" }, raw(tr("Diff grande: {count} righe cambiate.", { count: add + del }))),
+    btn("Mostra la diff", { icon: "eye", cls: "sm ghost", onclick: () => slot.replaceWith(artifactDiffTable(hunks, a, b)) }));
+  return slot;
+}
+
+/** «Cosa cambia»: every changed file as a GitHub diff, each loaded as it comes near the screen. */
+function artifactDiffs(commit) {
+  const lazy = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+    for (const entry of entries) if (entry.isIntersecting) { lazy.unobserve(entry.target); entry.target.load(); }
+  }, { rootMargin: "800px 0px" }) : null;
+  const files = commit.changed.map((change) => {
+    const stat = h("span", { class: "art-diff-size" }, raw(change.kind === "added" ? tr("nuovo · {size}", { size: fmtBytes(change.after.size) }) : change.kind === "deleted" ? tr("eliminato") : `${fmtBytes(change.before.size)} → ${fmtBytes(change.after.size)}`));
+    const body = h("div", { class: "art-diff-body" }, skeleton("rows", 2));
+    const toggle = h("button", { type: "button", class: "art-diff-toggle", "aria-expanded": "true", title: tr("Comprimi") }, icon("next"));
+    const card = h("section", { class: `art-diff ${change.kind}` },
+      h("header", { class: "art-diff-head" }, toggle,
+        h("i", { class: "art-change-kind", "aria-hidden": "true" }, change.kind === "added" ? "A" : change.kind === "deleted" ? "D" : "M"),
+        h("code", { class: "grow" }, raw(change.path)), stat),
+      body);
+    toggle.addEventListener("click", () => {
+      const open = card.classList.toggle("closed") === false;
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.title = tr(open ? "Comprimi" : "Espandi");
+    });
+    let loaded = false;
+    card.load = async () => {
+      if (loaded) return;
+      loaded = true;
+      body.replaceChildren(await artifactChange(commit, change, stat));
     };
-    try {
-      const [a, b] = await Promise.all([read(before), read(after)]);
-      if (a.split("\n").length + b.split("\n").length <= 4000) return brainDiff(a, b);
-    } catch {}
-  }
-  return h("div", { class: "art-noview row" }, icon("file"),
-    h("p", { class: "grow" }, raw([change.before ? tr("prima {size}", { size: fmtBytes(change.before.size) }) : "", change.after ? tr("dopo {size}", { size: fmtBytes(change.after.size) }) : ""].filter(Boolean).join(" · "))),
-    before ? btn("Prima", { icon: "download", cls: "sm ghost", href: `${before}&download=1` }) : null,
-    after ? btn(change.before ? "Dopo" : "Scarica", { icon: "download", cls: "sm ghost", href: `${after}?download=1` }) : null);
+    if (lazy) lazy.observe(card); else card.load();
+    return card;
+  });
+  return h("div", { class: "art-diffs" }, files);
 }
 
 /** A commit page's head: its message stays on top on a phone too, where page titles give way to the app bar. */
@@ -7980,7 +8183,7 @@ function artifactCommitHead(head) {
 async function renderArtifactCommit(folderId, commitId) {
   const view = location.hash;
   const slot = h("div", { class: "stack" }, panel({}, skeleton("rows", 4)));
-  shell([slot], { title: "Commit", back: `#/artefatti/${folderId}/commit` });
+  shell([slot], { title: "Commit", back: `#/artefatti/${folderId}/commit`, mode: "artifacts" });
   let commit;
   try { commit = await api(`/api/artifacts/commits/${commitId}`); }
   catch (error) { slot.replaceChildren(empty("commit", error.message, btn("Torna alla cartella", { icon: "back", href: `#/artefatti/${folderId}` }))); return; }
@@ -8010,25 +8213,12 @@ async function renderArtifactCommit(folderId, commitId) {
     : merge.state === "rebase"
       ? h("p", { class: "notice" }, icon("layers"), h("span", {}, "Nel frattempo è andata in onda un'altra versione, ma ha toccato file diversi: le modifiche di questo commit si aggiungono sopra."))
       : h("div", { class: "notice warn" }, icon("alert"), h("span", {}, "Gli stessi file sono cambiati anche nella versione in onda:", h("span", { class: "art-conflicts" }, merge.conflicts.map((path) => h("code", {}, raw(path))))));
-  const changes = commit.changed.map((change) => {
-    const details = h("details", { class: `art-change ${change.kind}` },
-      h("summary", {}, h("i", { class: "art-change-kind", "aria-hidden": "true" }, change.kind === "added" ? "A" : change.kind === "deleted" ? "D" : "M"),
-        h("code", { class: "grow" }, raw(change.path)),
-        h("small", {}, raw(change.kind === "added" ? tr("nuovo · {size}", { size: fmtBytes(change.after.size) }) : change.kind === "deleted" ? tr("eliminato") : `${fmtBytes(change.before.size)} → ${fmtBytes(change.after.size)}`))),
-      h("div", { class: "art-change-body" }, skeleton("rows", 1)));
-    let loaded = false;
-    details.addEventListener("toggle", async () => {
-      if (!details.open || loaded) return;
-      loaded = true;
-      details.lastChild.replaceChildren(await artifactChange(commit, change));
-    });
-    return details;
-  });
   const deleted = commit.changed.filter((change) => change.kind === "deleted").length;
   slot.replaceChildren(...[
     commit.folder ? artifactTrail([...artifactLevelSteps(commit.folder.path), { label: commit.folder.path.split("/").at(-1), href: `#/artefatti/${commit.folder.id}/commit`, icon: "folder" }, { label: commit.short }]) : null,
     artifactCommitHead(pageHead(raw(commit.message), h("span", { class: "art-head-meta" }, h("code", {}, raw(commit.short)), badge(label, cls)),
-      commit.previewUrl ? [btn("Apri anteprima", { icon: "external", cls: "ghost", href: commit.previewUrl, target: "_blank" })] : null)),
+      [commit.previewUrl ? btn("Apri anteprima", { icon: "external", cls: "ghost", href: commit.previewUrl, target: "_blank" }) : null,
+        commit.canReview && commit.status === "published" && commit.folder && commit.folder.head !== commit.id ? artifactGoBack(commit.folder.id, commit.id, { cls: "", done: (result) => { location.hash = `#/artefatti/${folderId}/c/${result.id}`; } }) : null].filter(Boolean))),
     h("div", { class: "art-byline" }, artifactAuthor(commit.author),
       commit.requestedBy?.name ? h("small", {}, tr("chiesto da {name}", { name: commit.requestedBy.name })) : null,
       h("small", {}, raw(fmtTime(new Date(commit.createdAt).toISOString(), true))), artifactCounts(commit.changes),
@@ -8036,11 +8226,13 @@ async function renderArtifactCommit(folderId, commitId) {
     commit.review ? h("p", { class: `notice${commit.status === "rejected" ? " warn" : ""}` }, icon(commit.status === "rejected" ? "close" : commit.status === "ignored" ? "eye" : "check"),
       h("span", {}, tr(commit.review.decision === "reject" ? "Rifiutato da {name}" : commit.review.decision === "force" ? "Forzato in onda da {name}" : commit.review.decision === "ignore" ? "Ignorato da {name}" : "Approvato da {name}", { name: commit.review.by?.name || "?" }),
         raw(` · ${fmtTime(new Date(commit.review.at).toISOString(), true)}`), commit.review.note ? h("q", { class: "art-review-note" }, raw(commit.review.note)) : null)) : null,
+    commit.restoredFrom ? h("p", { class: "notice" }, icon("undo"), h("span", {}, tr("Torna alla versione {id}.", { id: commit.restoredFrom.replace(/^ac_/, "").slice(0, 7) }),
+      commit.backup ? h("span", {}, " ", tr("Prima è stato salvato il backup"), " ", h("a", { class: "art-backup-name", href: `#/artefatti/${folderId}/c/${commit.backup.commit}` }, icon("branch"), raw(commit.backup.name)), raw(".")) : null)) : null,
     mergeNotice,
     decideBar,
     panel({ icon: "layers", title: tr("Cosa cambia"), hint: commit.comparedWith ? tr("Rispetto alla versione {id}.", { id: commit.comparedWith.replace(/^ac_/, "").slice(0, 7) }) : tr("È il primo commit della cartella."),
       actions: deleted ? badge(tr("{count} eliminati", { count: deleted }), "err", "trash") : null },
-      changes.length ? h("div", { class: "art-changes" }, changes) : empty("check", "Nessun file cambiato.")),
+      commit.changed.length ? artifactDiffs(commit) : empty("check", "Nessun file cambiato.")),
     panel({ icon: "file", title: tr("Tutti i file ({count})", { count: commit.tree.length }) },
       h("details", { class: "art-alltree" }, h("summary", {}, tr("Mostra l'elenco")), h("ul", {}, commit.tree.map((file) => h("li", {}, h("code", {}, raw(file.path)), h("small", {}, raw(fmtBytes(file.size))))))))].filter(Boolean));
 }
@@ -9111,6 +9303,73 @@ function switchList(items, chosen, key, row) {
   return list;
 }
 
+function discordOwnersRow() {
+  const people = new Map();
+  const owners = h("div");
+  const select = h("select", { "aria-label": "Aggiungi un proprietario di Discord" });
+  const id = h("input", { class: "mono grow", type: "text", inputmode: "numeric", pattern: "[0-9]{5,25}", required: true, autocomplete: "off", "aria-label": "ID utente Discord", placeholder: "ID utente Discord" });
+  const manual = h("details", { class: "raw" }, h("summary", {}, "Aggiungi tramite ID"),
+    h("form", { class: "row" }, id, btn("Aggiungi", { type: "submit", cls: "ghost" })));
+  const status = h("p", { class: "muted", role: "status", hidden: true });
+  const controls = h("div", { hidden: true }, h("div", { class: "stack-sm" }, owners, select, manual));
+  const row = setRow("Proprietari", "Le persone selezionate possono far usare il computer agli agenti. Se l’elenco è vuoto, possono farlo tutti.", h("div", {}, status, controls), { stack: true });
+
+  const draw = () => {
+    const chosen = S.data.settings.ownerIds || [];
+    owners.hidden = chosen.length === 0;
+    owners.replaceChildren(chosen.length ? h("div", { class: "set-switches" }, chosen.map((personId) => {
+      const toggle = switchInput("discordOwner", raw(people.get(personId) || personId), true);
+      const input = toggle.querySelector("input");
+      toggle.title = personId;
+      input.addEventListener("change", () => save(chosen.filter((entry) => entry !== personId)));
+      return toggle;
+    })) : "");
+    const available = [...people].filter(([personId]) => !chosen.includes(personId)).sort((a, b) => a[1].localeCompare(b[1]));
+    const names = available.map(([, name]) => name);
+    const duplicateNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
+    select.replaceChildren(h("option", { value: "" }, "Scegli una persona…"),
+      ...available.map(([personId, name]) => h("option", { value: personId }, raw(duplicateNames.has(name) ? name + " · " + personId : name))));
+    select.disabled = available.length === 0;
+  };
+  const save = async (ids) => {
+    const fields = [...controls.querySelectorAll("input, select, button")].filter((field) => !field.disabled);
+    fields.forEach((field) => { field.disabled = true; });
+    const saved = await saveSettings({ ownerIds: ids }, row);
+    fields.forEach((field) => { field.disabled = false; });
+    draw();
+    return saved;
+  };
+  select.addEventListener("change", () => {
+    if (select.value) save([...S.data.settings.ownerIds, select.value]);
+  });
+  manual.querySelector("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (S.data.settings.ownerIds.includes(id.value)) {
+      id.value = "";
+      return;
+    }
+    if (await save([...S.data.settings.ownerIds, id.value])) id.value = "";
+  });
+  let loading = false;
+  row.loadPeople = async () => {
+    if (loading) return;
+    loading = true;
+    status.hidden = false;
+    status.textContent = tr("Caricamento…");
+    try {
+      const data = await api("/api/settings/discord/people");
+      for (const person of data.people) people.set(person.id, person.name);
+      status.hidden = true;
+    } catch (error) {
+      status.textContent = error.message;
+      loading = false;
+    }
+    draw();
+    controls.hidden = false;
+  };
+  return row;
+}
+
 /** A text field of ids (the owners); the page saves it when it is left. */
 function idsInput(key, label) {
   return h("input", { type: "text", class: "mono", value: (S.data.settings[key] || []).join(", "), autocomplete: "off", spellcheck: "false", "aria-label": label });
@@ -9328,6 +9587,7 @@ function renderSettings() {
   const guilds = discord.guilds;
   const listening = S.data.agents.find((agent) => agent.bot?.user && agent.bot.user.id === discord.user?.id);
   let guildRow;
+  const discordOwners = manage ? discordOwnersRow() : null;
   page("discord",
     panel({ icon: "hash", title: "Discord", hint: "Un bot ascolta i server accesi; ogni agente scrive col suo.", actions: channelBadge("discord") },
       setRows(listenRow("discord"),
@@ -9341,7 +9601,7 @@ function renderSettings() {
       setRows(
         guildRow = setRow("Server", guilds.length ? "Gli altri server vengono ignorati." : "Discord non è collegato adesso: i server compaiono quando lo è.",
           guilds.length ? switchList(guilds.map((guild) => ({ id: guild.id, name: guild.name, sub: guild.id, mono: true })), settings.guildIds, "guildIds", () => guildRow) : null, { stack: true }),
-        ownersRow("ownerIds", "ID utente Discord, separati da virgole. Solo loro possono far usare il computer agli agenti; vuoto = tutti."))));
+        discordOwners)));
 
   const telegram = S.data.telegram;
   let chatRow;
@@ -9747,6 +10007,7 @@ function renderSettings() {
     drawNav();
     if (updateRoute) history.replaceState(null, "", current ? `#/settings/${current}` : "#/settings");
     if (updateRoute && current === "connettori") pages.get(current).querySelector(".connectors-pane")?.openCatalog?.();
+    if ((current || fallback()) === "discord") discordOwners?.loadPeople();
   }
   // The addresses before the list: a tab, or Collegamenti and one of its entries.
   const [, first = "", second = ""] = route();

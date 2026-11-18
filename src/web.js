@@ -985,6 +985,17 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       }
       return send(res, 200, view);
     }
+    if (path === "/api/settings/discord/people" && method === "GET") {
+      if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce le impostazioni dello spazio.");
+      const people = new Map(store.speakers(300, { transport: "discord" })
+        .map(({ userId, name }) => [userId, { id: userId, name }]));
+      for (const id of store.settings.ownerIds) {
+        if (people.has(id)) continue;
+        const { name } = store.agentOwner({ ownerId: "discord:" + id });
+        people.set(id, { id, name });
+      }
+      return send(res, 200, { people: [...people.values()] });
+    }
     if (path === "/api/permissions") {
       if (method === "PUT") {
         if (user.role !== "owner") throw new HttpError(403, "solo l'owner può dare permessi agli agenti");

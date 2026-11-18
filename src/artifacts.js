@@ -109,6 +109,15 @@ export function mergeTrees(base, head, mine, { force = false } = {}) {
 
 const brief = (list) => ({ count: list.length, paths: list.slice(0, 300) });
 const short = (id) => String(id || "").replace(/^ac_/, "").slice(0, 7);
+const BACKUPS_KEPT = 200;
+/** A backup's name, like a git branch: backup/<short id of the saved version>, numbered when that version was saved before. */
+const backupName = (backups, head) => {
+  const base = `backup/${short(head)}`;
+  const taken = new Set(backups.map((backup) => backup.name));
+  let name = base;
+  for (let n = 2; taken.has(name); n += 1) name = `${base}-${n}`;
+  return name;
+};
 
 export class Artifacts {
   constructor({ store, home, boxes = null, companyBrain = null, push = null, log = () => {}, notice = null, instanceUrl = "", shareSuffix = "" }) {
@@ -596,7 +605,17 @@ export class Artifacts {
       shares: this.store.artifactShares(folder.id).filter((share) => share.status === "active").length,
       proposedShares: this.store.artifactShares(folder.id).filter((share) => share.status === "proposed").length,
       lastActivity: commits[0]?.createdAt || folder.updatedAt,
+      backups: this.backupsOf(folder),
     };
+  }
+
+  /** The versions a restore moved away from, newest first, each kept like a branch that still points at it. */
+  backupsOf(folder) {
+    const served = folder.head ? this.store.artifactCommit(folder.head)?.tree || "" : "";
+    return (folder.backups || []).map((backup) => {
+      const commit = this.store.artifactCommit(backup.commit);
+      return commit ? { ...backup, short: short(commit.id), message: commit.message, served: commit.tree === served } : null;
+    }).filter(Boolean).reverse();
   }
 
   folders() {
@@ -628,7 +647,7 @@ export class Artifacts {
       status: commit.status, createdAt: commit.createdAt, publishedAt: commit.publishedAt || null, review: commit.review || null,
       files: commit.files, bytes: commit.bytes, changes: { added: commit.changes?.added?.count || 0, modified: commit.changes?.modified?.count || 0, deleted: commit.changes?.deleted?.count || 0 },
       base: commit.base || "", parent: commit.parent || "", to: commit.to || "", mirror: Boolean(commit.mirror), conflicts: commit.conflicts || [], rebasedFrom: commit.rebasedFrom || null,
-      supersededBy: commit.supersededBy || "",
+      supersededBy: commit.supersededBy || "", restoredFrom: commit.restoredFrom || "", backup: commit.backup || null,
     };
   }
 
@@ -1092,7 +1111,7 @@ export class Artifacts {
     return { ...result, commit: this.commitView(commitId) };
   }
 
-  /** Publishes an older version again as a new commit on top of the current head. */
+  /** Publishes an older version again as a new commit on top of the current head, after saving the head as a backup. */
   async restore(folderId, commitId, user) {
     this.assertPlaintextAllowed(folderId);
     const folder = this.store.artifactFolder(folderId);
@@ -1109,17 +1128,23 @@ export class Artifacts {
       const tree = this.readTree(target.tree);
       const delta = treeDelta(this.treeOf(head), tree);
       const now = Date.now();
+      const backups = current.backups || [];
+      const backup = head ? { name: backupName(backups, head), commit: head, createdAt: now, by } : null;
       const commit = {
         id: `ac_${sha256(`${folderId}\0${target.tree}\0${head}\0${now}\0${randomBytes(8).toString("hex")}`).slice(0, 12)}`,
         folderId, parent: head, base: head, tree: target.tree, to: "", mirror: true,
-        message: `Ripristinata la versione ${short(target.id)}`, author: by, requestedBy: null, channelId: "", traceId: "",
+        message: `Tornata alla versione ${short(target.id)}`, author: by, requestedBy: null, channelId: "", traceId: "",
         status: "proposed", changes: { added: brief(delta.added), modified: brief(delta.modified), deleted: brief(delta.deleted) },
-        files: tree.size, bytes: target.bytes, sent: 0, skipped: 0, createdAt: now, restoredFrom: target.id,
+        files: tree.size, bytes: target.bytes, sent: 0, skipped: 0, createdAt: now, restoredFrom: target.id, backup,
       };
       this.store.writeArtifactCommit(commit);
       this.publishLocked(current, commit, { by, note: "" });
-      this.log({ type: "artifact", text: `${by.name} ha ripristinato ${folder.path} alla versione ${short(target.id)}` });
-      return this.commitView(commit.id);
+      if (backup) {
+        const saved = this.store.artifactFolder(folderId);
+        this.store.writeArtifactFolder({ ...saved, backups: [...(saved.backups || []), { ...backup, restoredTo: target.id, restoreCommit: commit.id }].slice(-BACKUPS_KEPT) });
+      }
+      this.log({ type: "artifact", text: `${by.name} ha riportato ${folder.path} alla versione ${short(target.id)}${backup ? `, backup ${backup.name}` : ""}` });
+      return { ...this.commitView(commit.id), backup };
     });
   }
 
@@ -1153,6 +1178,7 @@ export class Artifacts {
         ...(commit.review ? { review: `${commit.review.decision} by ${commit.review.by?.name}${commit.review.note ? `: ${commit.review.note}` : ""}` } : {}),
         ...(commit.conflicts?.length ? { conflicts: commit.conflicts.slice(0, 10) } : {}),
       })),
+      ...(folder.backups?.length ? { backups: this.backupsOf(folder).slice(0, 20).map((backup) => ({ name: backup.name, commit: backup.short, at: new Date(backup.createdAt).toISOString(), by: backup.by?.name })) } : {}),
     };
   }
 

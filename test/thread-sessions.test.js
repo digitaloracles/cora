@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { ThreadSessions, machineBoot, pidAlive, sessionFailure } from "../src/thread-sessions.js";
 import { fakeDocker, fakeOllama, tempHome } from "./helpers.js";
 import { startCora } from "../src/main.js";
+import { Discord } from "../src/discord.js";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
 
 function sessions() {
@@ -307,6 +308,57 @@ test("past turns fill the history once, each thread keeps its count, and an id-o
   assert.equal(thread.thread, true);
   assert.equal(thread.total, 2);
   assert.equal(board.threads.some((item) => item.id.startsWith("web-")), false);
+});
+
+test("the thread page names a hidden Discord thread from the agent bot that sees it and drops saved fake names", async (t) => {
+  const ollama = await fakeOllama(() => ({ content: "PASS" }));
+  const app = startCora({
+    home: tempHome(), host: "127.0.0.1", port: 0, adminPassword: "fixture-password", sessionKey: "fixture-session", insecureCookies: true,
+    useResidentSubscriptions: false, cloudUrl: "", cloudKey: "", cloudSpace: "", discordToken: "", telegramToken: "", botTokenFor: () => "",
+    ollamaUrl: ollama.url, ollamaKey: "fixture-key", orcaKey: "", claudeBin: "/missing/claude", codexBin: "/missing/codex", hermesBin: "/missing/hermes",
+    ownerInstructions: "/missing/AGENTS.md", sshAuthorizedKeys: "/missing/keys", docker: fakeDocker().path, startBoxes: false, schedulerTickMs: 3600000,
+  });
+  t.after(async () => { for (const session of app.store.activeThreadSessions()) app.orchestrator.sessions.finish(session); await app.stop(); await ollama.close(); });
+  await app.ready;
+  const { store, orchestrator, channels, discord } = app;
+  const radix = store.createAgent({ name: "Radix" });
+  const guild = "155500000000000900";
+  const parent = "155500000000000400";
+  const seen = "155500000000000401";
+  const fetched = "155500000000000402";
+  store.updateSettings({ transport: "discord", transports: ["discord"], guildIds: [guild] });
+  for (const id of [seen, fetched]) orchestrator.sessions.finish(orchestrator.sessions.begin({ agentId: radix.id, channelId: id, kind: "chat" }));
+  store.setValue("threadNames", {
+    [seen]: { name: "___hidden___", parentId: parent, guildId: guild, thread: true },
+    [fetched]: { name: "___hidden___", parentId: parent, guildId: guild, thread: true },
+  });
+  const hidden = (id, type, extra = {}) => ({ id, name: "___hidden___", type, flags: 1 << 17, ...extra });
+  discord.token = "fixture";
+  discord.dispatch("GUILD_CREATE", { id: guild, name: "notsebworld", channels: [hidden(parent, 0)], threads: [hidden(seen, 11, { parent_id: parent })] });
+  discord.request = async (method, path) => {
+    if (path === `/channels/${fetched}`) return hidden(fetched, 11, { parent_id: parent, guild_id: guild });
+    throw Object.assign(new Error("Missing Access"), { status: 403 });
+  };
+  const own = new Discord({ token: "radix", apiBase: "http://discord.invalid" });
+  own.user = { id: "155500000000000777", username: "Radix" };
+  own.dispatch("GUILD_CREATE", { id: guild, name: "notsebworld", channels: [{ id: parent, name: "strategy", type: 0 }], threads: [{ id: seen, name: "Oauth google", type: 11, parent_id: parent }] });
+  own.request = async (method, path) => {
+    if (path === `/channels/${fetched}`) return { id: fetched, name: "REF-108 archivio", type: 11, parent_id: parent, guild_id: guild };
+    throw Object.assign(new Error("Unknown Channel"), { status: 404 });
+  };
+  channels.bots.clients.set(radix.id, { client: own });
+  await orchestrator.threadBoard();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const board = await orchestrator.threadBoard();
+  const find = (id) => board.threads.find((thread) => thread.id === id);
+  assert.equal(find(seen).name, "Oauth google");
+  assert.equal(find(seen).parentName, "strategy");
+  assert.equal(find(fetched).name, "REF-108 archivio");
+  assert.equal(board.threads.some((thread) => thread.name === "___hidden___" || thread.parentName === "___hidden___"), false);
+  const saved = store.value("threadNames", {});
+  assert.equal(saved[seen].name, "Oauth google");
+  assert.equal(saved[fetched].name, "REF-108 archivio");
+  channels.bots.clients.delete(radix.id);
 });
 
 test("a Slack thread stays live while an agent is engaged in it and goes to the history when they leave", async (t) => {
