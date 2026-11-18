@@ -43,12 +43,17 @@ def link_state(name):
     elif os.path.isdir(path): out[rel]="copy"
     else: out[rel]="missing"
   return out
+def same_tree(a,b):
+  left=files_of(a);right=files_of(b)
+  return left.keys()==right.keys() and all(digest(left[k])==digest(right[k]) for k in left)
 def link(name):
+  canonical=os.path.join(CANON,name)
   for rel in LINKS:
     folder=os.path.join(HOME,rel)
     os.makedirs(folder,exist_ok=True)
     path=os.path.join(folder,name)
     if os.path.islink(path): os.unlink(path)
+    elif os.path.isdir(path) and same_tree(path,canonical): shutil.rmtree(path)
     elif os.path.exists(path): continue
     os.symlink(os.path.relpath(os.path.join(CANON,name),folder),path)
 def check(expected):

@@ -4442,13 +4442,13 @@ async function skillsTab(agent) {
 
   function drawInstalled() {
     const found = data.check?.found || [];
-    installedPane.replaceChildren(
+    installedPane.replaceChildren(...[
       panel({ icon: "skill", title: "Skill installate", hint: "Ognuna arriva a tutti i modelli: nome e descrizione nel prompt, testo intero con skill_read, file sul desktop in ~/.agents/skills.",
         actions: btn("Aggiungi", { icon: "plus", cls: "sm", onclick: () => workspace.selectSection("aggiungi") }) },
         data.skills.length ? h("ul", { class: "skill-list" }, data.skills.map(skillRow))
           : empty("skill", "Nessuna skill. Cercane una su skills.sh o incolla owner/repo da GitHub.", btn("Aggiungi una skill", { icon: "plus", onclick: () => workspace.selectSection("aggiungi") }))),
       found.length ? panel({ icon: "monitor", title: "Sul desktop, fuori da Cora", hint: "Le leggono solo gli harness che guardano quella cartella. Prendile in Cora per darle a tutti i modelli." },
-        h("ul", { class: "skill-list" }, found.map(foundRow))) : null);
+        h("ul", { class: "skill-list" }, found.map(foundRow))) : null].filter(Boolean));
   }
 
   function drawAdd() {

@@ -72,10 +72,13 @@ export function parseSource(input) {
   return { owner, repo, ref, path, skill: clean(skill, 100) };
 }
 
+const REPOSITORY_TTL = 5 * 60 * 1000;
+
 export class Skills {
-  constructor({ store, boxes = null, home, githubApi = "https://api.github.com", githubRaw = "https://raw.githubusercontent.com", skillsApi = "https://skills.sh", auditApi = "https://www.skills.sh/tele/audit", fetch = globalThis.fetch, log = () => {} }) {
-    Object.assign(this, { store, boxes, githubApi: githubApi.replace(/\/+$/, ""), githubRaw: githubRaw.replace(/\/+$/, ""), skillsApi: skillsApi.replace(/\/+$/, ""), auditApi, fetchImpl: fetch, log });
+  constructor({ store, boxes = null, home, githubApi = "https://api.github.com", githubRaw = "https://raw.githubusercontent.com", skillsApi = "https://skills.sh", auditApi = "https://www.skills.sh/tele/audit", githubToken = "", fetch = globalThis.fetch, log = () => {}, now = Date.now }) {
+    Object.assign(this, { store, boxes, githubApi: githubApi.replace(/\/+$/, ""), githubRaw: githubRaw.replace(/\/+$/, ""), skillsApi: skillsApi.replace(/\/+$/, ""), auditApi, githubToken, fetchImpl: fetch, log, now });
     this.root = join(home, "skills");
+    this.repositories = new Map();
   }
 
   list(agentId) { return this.store.value(`agentSkills:${agentId}`, []); }
@@ -100,7 +103,8 @@ export class Skills {
   async request(url, { as = "json", accept = "" } = {}) {
     let response;
     try {
-      response = await this.fetchImpl(url, { headers: { "User-Agent": "cora-skills", ...(accept ? { Accept: accept } : {}) }, signal: AbortSignal.timeout(20000) });
+      const auth = this.githubToken && url.startsWith(`${this.githubApi}/`) ? { Authorization: `Bearer ${this.githubToken}` } : {};
+      response = await this.fetchImpl(url, { headers: { "User-Agent": "cora-skills", ...auth, ...(accept ? { Accept: accept } : {}) }, signal: AbortSignal.timeout(20000) });
     } catch (error) {
       throw new SkillError(502, `${new URL(url).host} non risponde (${error.cause?.code || error.name}).`);
     }
@@ -124,8 +128,18 @@ export class Skills {
     };
   }
 
-  /** A repository at one commit, with its whole tree. */
-  async repository({ owner, repo, ref }) {
+  /** A repository at one commit, with its whole tree; kept five minutes so listing then installing reads GitHub once. */
+  async repository(source) {
+    const key = `${source.owner}/${source.repo}@${source.ref || ""}`.toLowerCase();
+    const hit = this.repositories.get(key);
+    if (hit && this.now() - hit.at < REPOSITORY_TTL) return hit.repository;
+    const repository = await this.fetchRepository(source);
+    this.repositories.set(key, { at: this.now(), repository });
+    for (const [other, entry] of this.repositories) if (this.now() - entry.at >= REPOSITORY_TTL) this.repositories.delete(other);
+    return repository;
+  }
+
+  async fetchRepository({ owner, repo, ref }) {
     const api = `${this.githubApi}/repos/${owner}/${repo}`;
     const branch = ref || (await this.request(api)).default_branch;
     const commit = await this.request(`${api}/commits/${encodeURIComponent(branch)}`, { as: "text", accept: "application/vnd.github.sha" });
@@ -296,6 +310,7 @@ export class Skills {
     if (!record) throw new SkillError(404, "Skill non trovata.");
     if (!record.source) throw new SkillError(409, "Skill presa dal desktop: non ha una sorgente da cui aggiornarla.");
     const [owner, repo] = record.source.split("/");
+    for (const key of this.repositories.keys()) if (key.startsWith(`${owner}/${repo}@`.toLowerCase())) this.repositories.delete(key);
     return this.install(agent, { source: `https://github.com/${owner}/${repo}/tree/${record.ref}${record.path ? `/${record.path}` : ""}` }, by);
   }
 

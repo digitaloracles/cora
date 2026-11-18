@@ -5,7 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync,
 import { join } from "node:path";
 import { test } from "node:test";
 import { startCora } from "../src/main.js";
-import { parseFrontmatter, parseSource } from "../src/skills.js";
+import { Skills, parseFrontmatter, parseSource } from "../src/skills.js";
 import { executeTool } from "../src/tools.js";
 import { fakeCli, fakeDocker, fakeOllama, tempHome } from "./helpers.js";
 
@@ -163,10 +163,15 @@ test("an agent's skills: installed from GitHub for every harness, verified, upda
   writeFileSync(join(desktop, ".claude/skills/manual/SKILL.md"), "---\nname: manual\ndescription: MANUAL_CANARY steps\n---\nManual body\n");
   check = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
   assert.deepEqual(check.found, [{ name: "manual", where: [".claude/skills"], linked: [], description: "MANUAL_CANARY steps" }]);
+  mkdirSync(join(desktop, ".grok/skills/manual"), { recursive: true });
+  writeFileSync(join(desktop, ".grok/skills/manual/SKILL.md"), "---\nname: manual\ndescription: GROK_OWN_CANARY\n---\n");
   const adopted = await call(`/api/agents/${agent.id}/skills/manual/adopt`, { method: "POST" });
   assert.equal(adopted.status, 201, JSON.stringify(adopted.data));
   assert.equal(adopted.data.skill.origin, "desktop");
   assert.equal(readFileSync(join(desktop, ".agents/skills/manual/SKILL.md"), "utf8").includes("MANUAL_CANARY"), true);
+  assert.ok(lstatSync(join(desktop, ".claude/skills/manual")).isSymbolicLink(), "the identical hand-made copy becomes a link to the canonical one");
+  assert.match(readFileSync(join(desktop, ".grok/skills/manual/SKILL.md"), "utf8"), /GROK_OWN_CANARY/, "a different copy in a harness folder is never overwritten");
+  assert.deepEqual(adopted.data.desktop.skills.manual.links, { ".claude/skills": "ok", ".grok/skills": "copy", ".hermes/skills": "ok", ".gemini/skills": "ok" });
   assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: false }), /- manual: MANUAL_CANARY steps/);
   assert.equal((await call(`/api/agents/${agent.id}/skills/manual/update`, { method: "POST" })).status, 409, "a desktop skill has no source to update from");
 
@@ -196,4 +201,27 @@ test("skills wait for the desktop when it is off and are forgotten with the agen
   assert.equal((await call(`/api/agents/${agent.id}`, { method: "DELETE" })).status, 200);
   assert.deepEqual(app.skills.list(agent.id), []);
   assert.equal(existsSync(join(app.skills.root, agent.id)), false);
+});
+
+test("GitHub is read once for listing then installing, with the optional token, and an update reads it again", async () => {
+  const calls = [];
+  const fetch = async (url, { headers }) => {
+    calls.push({ url, auth: headers.Authorization || "" });
+    const json = (body) => new Response(JSON.stringify(body), { status: 200 });
+    if (url.endsWith("/repos/acme/kit")) return json({ default_branch: "main" });
+    if (url.includes("/commits/")) return new Response("c".repeat(40), { status: 200 });
+    if (url.includes("/git/trees/")) return json({ sha: "t", tree: [{ type: "blob", path: "SKILL.md", size: 30 }] });
+    return new Response("---\nname: kit\ndescription: d\n---\n", { status: 200 });
+  };
+  let clock = 0;
+  const skills = new Skills({ store: null, home: "/nonexistent", githubApi: "https://gh.test", githubRaw: "https://raw.test", githubToken: "tok", fetch, now: () => clock });
+  await skills.discover("acme/kit");
+  await skills.discover("acme/kit");
+  const api = () => calls.filter((call) => call.url.startsWith("https://gh.test/"));
+  assert.equal(api().length, 3, "repository, commit and tree once");
+  assert.ok(api().every((call) => call.auth === "Bearer tok"), "the token goes to the GitHub API");
+  assert.ok(calls.filter((call) => call.url.startsWith("https://raw.test/")).every((call) => !call.auth), "never to raw files");
+  clock = 5 * 60 * 1000;
+  await skills.discover("acme/kit");
+  assert.equal(api().length, 6, "after five minutes GitHub is read again");
 });

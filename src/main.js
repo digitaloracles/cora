@@ -161,7 +161,7 @@ export function startCora(overrides = {}) {
     gitAttribution: { enabled: cfg.gitAttribution, email: cfg.gitCoauthorEmail },
     mailboxFor,
   });
-  const skills = new Skills({ store, boxes, home: cfg.home, githubApi: cfg.githubApi, githubRaw: cfg.githubRaw, skillsApi: cfg.skillsApi, auditApi: cfg.skillsAuditApi, log: activity });
+  const skills = new Skills({ store, boxes, home: cfg.home, githubApi: cfg.githubApi, githubRaw: cfg.githubRaw, skillsApi: cfg.skillsApi, auditApi: cfg.skillsAuditApi, githubToken: cfg.skillsGithubToken, log: activity });
   brain.skills = skills;
   const filesDir = join(cfg.home, "files");
   const orchestrator = new Orchestrator({ store, discord, brain, log: activity, bots, channels, telegram, tgBots, slack, skBots, emit: live, filesDir, notifier: push, watching: () => web?.watching(), voice });
