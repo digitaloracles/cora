@@ -703,6 +703,14 @@ export class Subscriptions {
 
   catalogFile() { return join(this.store.home, "model-catalogs.json"); }
 
+  /** A provider's catalog is read again on the next look, kept until the new answer arrives. */
+  forgetCatalog(provider) {
+    if (!this.catalogs) return;
+    for (const [key, entry] of Object.entries(this.catalogs)) {
+      if (key === provider || key.startsWith(`${provider}:`)) entry.at = 0;
+    }
+  }
+
   /**
    * The models a provider serves today, as its own CLI lists them for a connected account:
    * a model the provider adds shows up here without a new Cora. The last answer is kept,

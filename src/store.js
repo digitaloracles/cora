@@ -41,6 +41,8 @@ const DEFAULT_SETTINGS = {
   // Goal mode is off until it yields to the owner: a goal it cannot drop fights whoever asked for it.
   goalMode: false,
   useResidentSubscriptions: true,
+  // Cora keeps the harness CLIs at their latest version by itself.
+  harnessAutoUpdate: true,
   sleepHour: 4,
   transport: "discord",
   // Every platform switched on; the one in `transport` is the primary. Empty: the primary alone.
@@ -463,6 +465,7 @@ export function sanitizeSettings(input, previous = DEFAULT_SETTINGS) {
     decisionBackups: cleanBrainBackups(merged.decisionBackups),
     goalMode: Boolean(merged.goalMode),
     useResidentSubscriptions: Boolean(merged.useResidentSubscriptions),
+    harnessAutoUpdate: merged.harnessAutoUpdate !== false,
     sleepHour: Math.round(clampNumber(merged.sleepHour, 0, 23, 4)),
     transport: TRANSPORTS.includes(merged.transport) ? merged.transport : "discord",
     transports: cleanTransports(merged.transports, TRANSPORTS.includes(merged.transport) ? merged.transport : "discord"),

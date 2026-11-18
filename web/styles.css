@@ -678,6 +678,22 @@ input.num { width: 92px; text-align: right; font-family: var(--mono); }
 .set-switches { display: grid; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--well); overflow: hidden; }
 .set-switches > .switch { padding: 10px 14px; }
 .set-switches > .switch + .switch { border-top: 1px solid var(--line); }
+/* Harness versions: one row per CLI in a well, the version in mono and its state on the right. */
+.harness-list { display: grid; margin-top: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--well); overflow: hidden; }
+.harness-row { display: flex; align-items: center; gap: 14px; padding: 12px 14px; }
+.harness-row + .harness-row { border-top: 1px solid var(--line); }
+.harness-row.off { opacity: 0.55; }
+.harness-name { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.harness-name b { font: 600 15px/1.3 var(--body); }
+.harness-version { font: 500 13px/1.3 var(--mono); color: var(--text); }
+.harness-next { color: var(--amber); }
+.harness-name small { color: var(--faint); font: 400 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+.harness-name small.harness-error { color: var(--red); }
+.harness-row > .badge { flex: none; }
+@media (max-width: 480px) {
+  .harness-row { flex-wrap: wrap; gap: 8px; }
+  .harness-row > .badge { margin-left: 0; }
+}
 @media (prefers-reduced-motion: reduce) { .set-saved { transition: none; } }
 @media (max-width: 600px) {
   /* A switch, a number or an hour stays next to its title; a button or a wide control goes under it. */
