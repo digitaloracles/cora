@@ -749,7 +749,10 @@ export class Boxes {
    * storage values never come back — only their names and sizes.
    */
   async browser(agentId, action, argument = "", { timeoutMs = 45000 } = {}) {
-    const result = await runProcess(this.docker, this.execArgs(agentId, ["cora-cdp", String(action), ...(argument ? [String(argument)] : [])]), { timeoutMs });
+    // Use the installed Cora helper even when the desktop predates this release.
+    const helper = readFileSync(new URL("../box/cdp.mjs", import.meta.url));
+    const command = ["node", "--input-type=module", "-", String(action), ...(argument ? [String(argument)] : [])];
+    const result = await runProcess(this.docker, this.execArgs(agentId, command), { input: helper, timeoutMs });
     const output = `${result.stdout.toString("utf8")}${result.stderr}`.trim();
     if (result.code !== 0) throw new Error(clip(output, 300) || `browser ${action} failed`);
     try {

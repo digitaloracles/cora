@@ -77,22 +77,22 @@ export const TOOL_DEFS = [
   },
   {
     name: "browser",
-    description: "Read the Chromium on your desktop: the page's text or elements, what it fetched, which sessions it holds. The screenshot shows you the pixels; this tells you the page. Values of cookies and storage are never returned.",
+    description: "Inspect and manage tabs in Chromium on your desktop. Close tabs you opened as soon as you finish using them. Values of cookies and storage are never returned.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["text", "query", "html", "eval", "cookies", "storage", "network", "targets", "goto"] },
-        argument: { type: "string", description: "CSS selector (query, html), JavaScript (eval), url (goto)" },
+        action: { type: "string", enum: ["text", "query", "html", "eval", "cookies", "storage", "network", "targets", "goto", "close", "keep"] },
+        argument: { type: "string", description: "CSS selector (query, html), JavaScript (eval), URL (goto), tab ID from targets or open_url (close, keep). Keep exempts a tab opened by this task from automatic cleanup." },
       },
       required: ["action"],
     },
   },
   {
     name: "open_url",
-    description: "Open a URL in Chromium on your desktop (the owner can watch and take over from the desktop).",
+    description: "Open a temporary tab in Chromium on your desktop. Cora closes it at the end of this task. To leave it open for the owner or ongoing work, set keep_open or use browser keep.",
     parameters: {
       type: "object",
-      properties: { url: { type: "string" } },
+      properties: { url: { type: "string" }, keep_open: { type: "boolean" } },
       required: ["url"],
     },
   },
@@ -576,22 +576,29 @@ export async function executeTool(call, ctx) {
         return { text: result.code === 0 ? `ok (${action})` : `error: ${result.output}` };
       }
       case "browser": {
-        await boxes.ensure(agent);
         const action = String(args.action || "");
-        try {
-          const result = await boxes.browser(agent.id, action, String(args.argument || ""));
-          return { text: JSON.stringify(result).slice(0, 60000) };
-        } catch (error) {
-          return { text: `error: ${error.message}` };
+        const argument = String(args.argument || "");
+        if (action === "keep") {
+          return { text: ctx.temporaryTabs?.delete(argument) ? "Tab " + argument + " will stay open after this task." : "error: this tab is not managed by the current task" };
         }
+        if (!["text", "query", "html", "eval", "cookies", "storage", "network", "targets", "goto", "close"].includes(action)) return { text: "error: unknown browser action" };
+        if (action === "close" && !argument) return { text: "error: tab ID is required (see browser targets)" };
+        await boxes.ensure(agent);
+        const result = await boxes.browser(agent.id, action, argument);
+        if (action === "close") {
+          if (!result.closed) return { text: "error: Chromium did not close the tab. Check for an unsaved-changes dialog." };
+          ctx.temporaryTabs?.delete(argument);
+        }
+        return { text: JSON.stringify(result).slice(0, 60000) };
       }
       case "open_url": {
         const url = String(args.url || "");
         if (!/^https?:\/\//i.test(url)) return { text: "error: url must start with http:// or https://" };
         await boxes.ensure(agent);
-        const quoted = `'${url.replace(/'/g, "'\\''")}'`;
-        await boxes.shell(agent.id, `nohup chromium ${quoted} >/tmp/chromium.log 2>&1 &`, { timeoutMs: 15000 });
-        return { text: `opened ${url} in Chromium. Take a screenshot in a few seconds to see it.` };
+        const { id } = await boxes.browser(agent.id, "open", url);
+        if (!id) return { text: "error: Chromium did not return a tab ID" };
+        if (args.keep_open !== true) ctx.temporaryTabs?.add(id);
+        return { text: "opened " + url + " in Chromium (tab " + id + "). Take a screenshot to see it." };
       }
       case "remember": {
         // What everyone should know belongs to the company brain, when the instance has one.
