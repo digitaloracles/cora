@@ -2653,7 +2653,7 @@ describe("panel auth", () => {
     assert.ok(!run.tools.includes("shell"));
     assert.match(run.output, /tool shell is not available/);
     assert.equal(run.argv[run.argv.indexOf("-s") + 1], "read-only");
-    assert.match(run.stdin, /gli strumenti per usarlo non sono disponibili in questo turno/);
+    assert.match(run.stdin, /Gli strumenti del desktop sono assenti in questo turno/);
   });
 
   test("the verifier requires connector evidence and preserves a real permission denial", async () => {
