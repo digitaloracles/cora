@@ -1269,10 +1269,11 @@ export class Orchestrator {
     const keys = issueKeys(words);
     const map = this.brain.threadMap ? this.brain.threadMap(agent, target) : { topic: [], others: new Map() };
     // A thread keeps only its own topic: its issue, or without a key a word of its title. A channel keeps a job no thread claims.
+    // An exact issue key goes to that issue's thread anywhere; a guess from words stays inside the same channel.
     const belongs = keys.length ? keys.some((key) => map.topic.includes(key)) : !map.current || sharesTopic(words, map.current.name);
     if (!belongs || !map.current) {
       const here = this.channelMeta(target);
-      const thread = keys.flatMap((key) => map.others.get(key) || []).find((candidate) => listens(candidate.id))
+      const thread = keys.flatMap((key) => (map.owners || map.others).get(key) || []).find((candidate) => listens(candidate.id))
         || (keys.length ? null : topicPlace(this.channels.listFor(agent).filter((place) => listens(place.id)), here, words));
       if (thread) target = thread.id;
       // Never in another topic's thread: the job gets a thread of its own, beside it.

@@ -1123,7 +1123,9 @@ describe("discord hidden channels", () => {
     assert.equal(channels.discordInfo("C2").name, "strategy");
     assert.equal(channels.discordInfo("C3").name, "ragusapass");
     assert.equal(channels.discordInfo("T1").name, "Oauth google");
-    assert.equal(channels.label("T1"), "#Oauth google");
+    assert.equal(channels.label("T1"), "#strategy › Oauth google", "a thread always shows the channel it lives in");
+    assert.equal(channels.info("T1").where, "in #Oauth google, thread del canale #strategy");
+    assert.equal(channels.info("T1").parentName, "strategy");
     assert.equal(channels.info("C3").where, "in #ragusapass");
     assert.deepEqual(channels.list().map((channel) => channel.id), ["C1"], "the main bot lists only what it sees");
     const known = new Map(channels.known().map((channel) => [channel.id, channel.name]));

@@ -14,7 +14,7 @@ import { nextRuns } from "./scheduler.js";
 import { writtenReplyEvidence } from "./voice.js";
 import { attachmentImage } from "./images.js";
 import { agentPersona, agentTagline } from "./character.js";
-import { issueKeys, leakMessage, leakPointer, threadLeak, threadLink, threadTopics } from "./thread-topics.js";
+import { issueKeys, leakMessage, leakPointer, sameChannel, threadLeak, threadLink, threadTopics } from "./thread-topics.js";
 
 /** A conversation without the computer is short; a task runs until it is done, within these bounds. */
 const CHAT_STEPS = 14;
@@ -472,7 +472,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     const elsewhereNote = (text) => {
       if (!topics?.topic?.length) return "";
       const keys = issueKeys(text);
-      const foreign = keys.filter((key) => topics.others.has(key));
+      const foreign = keys.filter((key) => (topics.owners || topics.others).has(key));
       return foreign.length && !keys.some((key) => topics.topic.includes(key)) ? ` (riguarda ${foreign.join(", ")}, che ha il suo thread: contesto, non lavoro di questo thread)` : "";
     };
     parts.push(`Ti torna in mente:\n${facts.length ? facts.map((fact) => `- [${fact.id}] ${fact.text}${fact.scope === "shared" ? " (condiviso)" : ""}${fact.pinned ? " (fissato)" : ""}${elsewhereNote(fact.text)}`).join("\n") : "- (niente di specifico)"}`);
@@ -487,11 +487,30 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       thread: Boolean(live?.thread || saved.thread), parentId: live?.parentId || saved.parentId || null } : live;
   }
 
-  /** The issue a thread is about and the threads of the same server that own the others (src/thread-topics.js). */
+  /** The name of the channel a thread lives in, or "" when Cora does not know it. */
+  parentName(parentId) {
+    if (!parentId) return "";
+    let parent = null;
+    try { parent = this.threadChannel(parentId); } catch {}
+    return parent?.name && parent.name !== parentId ? parent.name : "";
+  }
+
+  /** What list_channels answers: every place the agent may write to; a thread always with the channel it lives in. */
+  postingChannels(agent, channel) {
+    return [...new Map([
+      ...(this.knowledge?.isSealed(agent) ? [] : [{ id: this.knowledge?.ownerMemory ? ownerRoom(this.knowledge.ownerId(agent)) : SALOTTO, name: "salotto", kind: "web" }]), { id: privateRoom(agent.id), name: "la tua chat privata", kind: "web" },
+      ...(this.channels?.listFor?.(agent) || []), { ...channel, id: channel.id, name: channel.name || this.channelLabel(channel.id), kind: channel.kind || "web" },
+    ].map(({ id, name, kind, thread, parentId }) => [id, thread || parentId
+      ? { id, name, kind, thread: true, parent_id: parentId || "", parent_name: this.parentName(parentId) }
+      : { id, name, kind }])).values()];
+  }
+
+  /** The issue a thread is about, its channel, and the threads that own the others (src/thread-topics.js). */
   threadMap(agent, channelId) {
-    if (!this.channels?.info) return { topic: [], others: new Map() };
+    if (!this.channels?.info) return { topic: [], others: new Map(), owners: new Map() };
     let here = null;
-    try { here = this.threadChannel(channelId); } catch { return { topic: [], others: new Map() }; }
+    try { here = this.threadChannel(channelId); } catch { return { topic: [], others: new Map(), owners: new Map() }; }
+    if (here?.parentId) here = { ...here, parentName: this.parentName(here.parentId) };
     const known = [...(this.channels.list?.() || []), ...(this.channels.listFor?.(agent) || [])];
     return threadTopics(known, here);
   }
@@ -504,7 +523,17 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     this.knowledge?.assertCurrent(agent);
     if (agent.brainSource === "external") return "";
     const ids = this.channelIdsFor(agent).filter((id) => id !== channelId);
-    const places = this.store.recentElsewhere(agent.id, ids, Date.now() - ELSEWHERE_MS, { channels: 2, perChannel: 8 }).map((place) => this.knowledge ? { ...place, messages: place.messages.filter((message) => this.knowledge.ownsMessage(agent, message)) } : place).filter((place) => place.messages.length);
+    // In a server, the neighbours are the same channel and its threads only: another channel is another subject.
+    let hereInfo = null;
+    try { hereInfo = this.threadChannel(channelId); } catch {}
+    const inServer = (info) => Boolean(info?.guildId || info?.parentId || info?.thread);
+    const near = (id) => {
+      if (!inServer(hereInfo)) return true;
+      let info = null;
+      try { info = this.threadChannel(id); } catch {}
+      return !inServer(info) || sameChannel({ ...info, id }, { ...hereInfo, id: channelId });
+    };
+    const places = this.store.recentElsewhere(agent.id, ids.filter(near), Date.now() - ELSEWHERE_MS, { channels: 2, perChannel: 8 }).map((place) => this.knowledge ? { ...place, messages: place.messages.filter((message) => this.knowledge.ownsMessage(agent, message)) } : place).filter((place) => place.messages.length);
     if (!places.length) return "";
     const current = topics?.current || this.threadMap(agent, channelId).current;
     const blocks = places.map(({ channelId: id, messages }) => {
@@ -525,7 +554,10 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
   topicNote({ topic, others, current }) {
     if (!topic.length && !current) return "";
     const elsewhere = [...others].slice(0, 12).map(([key, threads]) => `${key} → ${threads.map((thread) => `«${thread.name}» ${threadLink(thread)}`).join(" o ")}`);
-    return `Tema di questo thread: ${topic.length ? topic.join(", ") : `«${current.name}» (channel_id "${current.id}")`}. Qui lavori solo su questo. La richiesta attuale e il lavoro da proseguire sono quelli della cronologia di questo thread. Ricordi e riferimenti ad altre conversazioni non autorizzano a riprenderne il lavoro qui; se il riferimento manca, chiedi chiarimento invece di scegliere un altro compito.${elsewhere.length ? ` Le altre issue hanno il loro thread: ${elsewhere.join("; ")}. Il lavoro su quelle si scrive nel loro thread con say({text, channel_id}); Cora non pubblica qui i messaggi che portano il lavoro di un altro thread.` : ""}`;
+    const parent = current?.parentId ? (current.parentName ? `#${current.parentName}` : `il canale ${current.parentId}`) : "";
+    const where = parent ? ` nel canale ${parent} (channel_id del canale "${current.parentId}")` : "";
+    const subject = parent ? ` Il canale ${parent} è l'argomento di questo thread: i thread e i canali che ti vengono mostrati come vicini sono solo quelli di ${parent}; un thread di un altro canale è un altro argomento, anche se il titolo somiglia, e non ne ricavi mai il tema di questo.` : "";
+    return `Tema di questo thread: ${topic.length ? `${topic.join(", ")} («${current?.name || ""}»)` : `«${current.name}» (channel_id "${current.id}")`}${where}. Qui lavori solo su questo.${subject} La richiesta attuale e il lavoro da proseguire sono quelli della cronologia di questo thread. Ricordi e riferimenti ad altre conversazioni non autorizzano a riprenderne il lavoro qui; se il riferimento manca, chiedi chiarimento invece di scegliere un altro compito.${elsewhere.length ? ` Le altre issue ${parent ? `di ${parent} ` : ""}hanno il loro thread: ${elsewhere.join("; ")}. Il lavoro su quelle si scrive nel loro thread con say({text, channel_id}); Cora non pubblica qui i messaggi che portano il lavoro di un altro thread.` : ""}`;
   }
 
   async chatTurn({ agent, history, channel, forced, computer, authorized = false, requestAuthorized = false, belongsTo = false, computerDenied = false, postFile, say, inbox, replyTo = null, onMessageHandled }) {
@@ -1051,10 +1083,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       },
       channelIds: this.channelIdsFor(agent),
       channelLabel: (id) => this.channelLabel(id),
-      postingChannels: [...new Map([
-        ...(this.knowledge?.isSealed(agent) ? [] : [{ id: this.knowledge?.ownerMemory ? ownerRoom(this.knowledge.ownerId(agent)) : SALOTTO, name: "salotto", kind: "web" }]), { id: privateRoom(agent.id), name: "la tua chat privata", kind: "web" },
-        ...(this.channels?.listFor?.(agent) || []), { id: channel.id, name: channel.name || this.channelLabel(channel.id), kind: channel.kind || "web" },
-      ].map(({ id, name, kind }) => [id, { id, name, kind }])).values()],
+      postingChannels: this.postingChannels(agent, channel),
       formatWhen: (ms) => formatWhen(ms, this.timezone),
     };
     /**

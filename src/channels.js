@@ -290,7 +290,11 @@ export class Channels {
     }
     const info = this.discordInfo(id);
     if (!info) return { id, kind: "discord", name: id, guildId: null, guildName: "", parentId: null, where: `in #${id}`, place: "su Discord" };
-    return { ...info, kind: "discord", where: `in #${info.name}`, place: `su Discord, nel server "${info.guildName}"` };
+    const parent = info.parentId ? this.discordInfo(info.parentId) : null;
+    const parentName = parent?.name || "";
+    return { ...info, kind: "discord", parentName, thread: Boolean(info.parentId),
+      where: info.parentId ? `in #${info.name}, thread del canale ${parentName ? `#${parentName}` : info.parentId}` : `in #${info.name}`,
+      place: `su Discord, nel server "${info.guildName}"` };
   }
 
   label(id) {
@@ -302,7 +306,9 @@ export class Channels {
       return info.threadTs ? `thread in #${info.name} (Slack)` : `#${info.name} (Slack)`;
     }
     const info = this.discordInfo(id);
-    return info ? `#${info.name}` : `#${id}`;
+    if (!info) return `#${id}`;
+    const parent = info.parentId ? this.discordInfo(info.parentId) : null;
+    return parent?.name ? `#${parent.name} › ${info.name}` : `#${info.name}`;
   }
 
   status() {

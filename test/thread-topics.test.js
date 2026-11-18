@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Brain } from "../src/brain.js";
-import { issueKeys, threadLeak, threadTopics, sharesTopic, topicPlace } from "../src/thread-topics.js";
+import { issueKeys, sameChannel, threadLeak, threadTopics, sharesTopic, topicPlace } from "../src/thread-topics.js";
 
 const G = "1521874685690642564";
 const channels = [
@@ -106,4 +106,86 @@ test("a job without a key finds the place whose title speaks of it, never a gene
   assert.equal(topicPlace(places, here, "Verificare e riportare l'esito con le prove reali"), null, "words every job uses tie it to nothing");
   assert.equal(topicPlace(places, here, "Controlla il registro della voce in chiamata"), null, "the place it was asked in is not a candidate");
   assert.equal(topicPlace(places, { id: "x", guildId: "none" }, "Google Drive"), null, "only the same server");
+});
+
+// NOT-63: «Aggiornamento documentazione» under #cora was read as the MTRO thread of another channel.
+const CORA = "1563845389705023658", MTRO = "1564000000000000001";
+const server = [
+  { id: CORA, name: "cora", guildId: G, thread: false },
+  { id: MTRO, name: "mtro", guildId: G, thread: false },
+  { id: "1572632704892276776", name: "Aggiornamento documentazione", guildId: G, thread: true, parentId: CORA },
+  { id: "1570419225351299212", name: "NOT-14 verifica Ada", guildId: G, thread: true, parentId: CORA },
+  { id: "1572632445658861699", name: "Rilascio in produzione e documentazione", guildId: G, thread: true, parentId: MTRO },
+  { id: "1564611871020023878", name: "MTR-1400", guildId: G, thread: true, parentId: MTRO },
+];
+const docsThread = { ...server[2], parentName: "cora" };
+
+test("a thread's neighbours are the threads of its own channel; another channel's issues are only routed by exact key", () => {
+  const map = threadTopics(server, docsThread);
+  assert.deepEqual(map.current, { id: docsThread.id, name: "Aggiornamento documentazione", parentId: CORA, parentName: "cora" });
+  assert.deepEqual([...map.others.keys()], ["NOT-14"], "MTR-1400 lives in #mtro: not a neighbour of a #cora thread");
+  assert.deepEqual([...map.owners.keys()], ["NOT-14", "MTR-1400"]);
+  assert.equal(sameChannel(server[4], docsThread), false);
+  assert.equal(sameChannel(server[3], docsThread), true);
+  assert.equal(sameChannel(server[0], docsThread), true, "the parent channel is the same subject");
+  const notThread = threadTopics(server, { id: "t63", name: "NOT-63 parent channel", guildId: G, thread: true, parentId: CORA });
+  assert.equal(threadLeak("MTR-1400 deploy fatto", notThread).key, "MTR-1400", "work on an exact foreign key is still sent to its thread");
+});
+
+test("the topic line names the parent channel and lists only the issues of that channel", () => {
+  const brain = Object.create(Brain.prototype);
+  const note = brain.topicNote(threadTopics(server, docsThread));
+  assert.match(note, /Tema di questo thread: «Aggiornamento documentazione» \(channel_id "1572632704892276776"\) nel canale #cora \(channel_id del canale "1563845389705023658"\)/);
+  assert.match(note, /un thread di un altro canale è un altro argomento/);
+  assert.match(note, /Le altre issue di #cora hanno il loro thread: NOT-14/);
+  assert.doesNotMatch(note, /MTR-1400|Rilascio in produzione/);
+  const keyed = brain.topicNote(threadTopics(server, { ...server[3], parentName: "cora" }));
+  assert.match(keyed, /Tema di questo thread: NOT-14 \(«NOT-14 verifica Ada»\) nel canale #cora/);
+});
+
+function serverBrain(recent) {
+  const agent = { id: "radix", name: "Radix" };
+  const brain = Object.create(Brain.prototype);
+  brain.timezone = "Europe/Rome";
+  const byId = new Map(server.map((item) => [item.id, item]));
+  brain.channels = { info: (id) => byId.get(id) || (id.startsWith("web-") ? { id, kind: "web", name: "chat privata" } : null), list: () => server, listFor: () => server };
+  brain.channelIdsFor = () => [...byId.keys(), "web-radix"];
+  brain.channelLabel = (id) => {
+    const info = byId.get(id);
+    return info?.parentId ? `#${byId.get(info.parentId).name} › ${info.name}` : info ? `#${info.name}` : id;
+  };
+  brain.store = { recentElsewhere: (_agent, ids) => recent.filter((place) => ids.includes(place.channelId)) };
+  return { brain, agent };
+}
+
+test("other conversations shown in a thread come only from its own channel, plus the panel and private chats", () => {
+  const message = (content) => [{ kind: "agent", agentId: "radix", authorName: "Radix", at: Date.now(), content }];
+  const { brain, agent } = serverBrain([
+    { channelId: "1572632445658861699", messages: message("MTRO docs") },
+    { channelId: "1564611871020023878", messages: message("MTR-1400") },
+    { channelId: "1570419225351299212", messages: message("NOT-14") },
+    { channelId: "web-radix", messages: message("panel") },
+  ]);
+  const text = brain.elsewhere(agent, docsThread.id, brain.threadMap(agent, docsThread.id));
+  assert.doesNotMatch(text, /Rilascio in produzione|MTR-1400|#mtro/);
+  assert.match(text, /#cora › NOT-14 verifica Ada/);
+  assert.match(text, /chat privata|web-radix/);
+});
+
+test("list_channels gives every thread its parent channel", () => {
+  const { brain, agent } = serverBrain([]);
+  const channels = brain.postingChannels(agent, docsThread);
+  assert.deepEqual(channels.find((item) => item.id === docsThread.id), { id: docsThread.id, name: "Aggiornamento documentazione", kind: "web", thread: true, parent_id: CORA, parent_name: "cora" });
+  assert.deepEqual(channels.find((item) => item.id === "1572632445658861699"), { id: "1572632445658861699", name: "Rilascio in produzione e documentazione", kind: undefined, thread: true, parent_id: MTRO, parent_name: "mtro" });
+  assert.deepEqual(channels.find((item) => item.id === CORA), { id: CORA, name: "cora", kind: undefined });
+});
+
+test("words never pick a thread of another channel, even with the same title", () => {
+  const places = [
+    { id: "a", name: "NOT-63 parent channel", guildId: G, thread: true, parentId: CORA },
+    { id: "b", name: "Rilascio in produzione e documentazione", guildId: G, thread: true, parentId: MTRO },
+    { id: "c", name: "Documentazione e rilascio", guildId: G, thread: true, parentId: CORA },
+  ];
+  assert.equal(topicPlace(places, places[0], "Aggiorna la documentazione del rilascio")?.id, "c");
+  assert.equal(topicPlace(places.slice(0, 2), places[0], "Aggiorna la documentazione del rilascio"), null);
 });
