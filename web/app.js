@@ -8213,10 +8213,14 @@ function renderSecrets() {
         } })));
       }
     };
+    const copyName = () => (navigator.clipboard ? navigator.clipboard.writeText(secret.name) : Promise.reject())
+      .then(() => toast(tr("Copiato {name}", { name: secret.name })), () => toast("Non riesco a copiare: selezionalo a mano", true));
     return h("li", { class: "vault-row" },
       h("span", { class: "panel-ico" }, icon("key")),
       h("div", { class: "grow vault-text" },
-        h("div", { class: "row tight" }, h("b", { class: "vault-name" }, raw(secret.name)), secret.source === "request" ? badge("Arrivato da un link", "", "link") : null),
+        h("div", { class: "row tight" }, h("span", { class: "vault-name-line" },
+          h("button", { type: "button", class: "vault-name vault-copy", title: "Copia il nome", onclick: copyName }, raw(secret.name)),
+          btn("", { icon: "copy", cls: "sm ghost vault-copy-btn", title: "Copia il nome", onclick: copyName })), secret.source === "request" ? badge("Arrivato da un link", "", "link") : null),
         secret.description ? h("small", {}, raw(secret.description)) : null,
         h("span", { class: "share-access" }, allowed.length ? allowed.map((name) => h("span", { class: "chip on" }, raw(name))) : h("span", { class: "chip" }, "Nessun agente")),
         h("small", { class: "faint mono" }, secret.uses
