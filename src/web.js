@@ -34,6 +34,7 @@ import { contextSources, writeContextFile } from "./context.js";
 import { brainsInUse, testRule } from "./rule-test.js";
 import { connectorCatalog, KEY_SERVICES } from "./connectors/index.js";
 import { KeyConnectorError } from "./connectors/key-connectors.js";
+import { runsOnAccount } from "./subscription-usage.js";
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 const COOKIE = "cora_session";
@@ -436,9 +437,10 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     return privateOwner(entry) === viewer?.id || (!privateOwner(entry) && !entry.text && !entry.item && !entry.trace && !entry.agentId && !entry.id);
   };
   const quotaAgentsFor = (viewer) => knowledge?.agentsFor(viewer) || store.agents();
-  const usesQuotaAccount = (agent, record) => String(agent.model || store.settings.defaultModel || "").startsWith(`${record.provider}/`)
+  const usesQuotaAccount = (agent, record) => runsOnAccount(agent.model || store.settings.defaultModel, record.provider)
     && (record.server || agent.subscriptionId === record.id || (record.resident && store.settings.useResidentSubscriptions && !agent.subscriptionId));
-  const canReadQuota = (record, viewer) => Boolean(record && (!knowledge?.ownerMemory || quotaAgentsFor(viewer).some((agent) => usesQuotaAccount(agent, record)
+  const canReadQuota = (record, viewer) => Boolean(record && (!knowledge?.ownerMemory || (record.connectedBy?.id && record.connectedBy.id === viewer?.id)
+    || (record.server && viewer?.role === "owner") || quotaAgentsFor(viewer).some((agent) => usesQuotaAccount(agent, record)
     && (record.server || (record.connectedBy?.id && knowledge.proprietorIds(agent).includes(record.connectedBy.id))))));
   const quotaAccountsFor = (viewer) => subscriptions.list().filter((record) => canReadQuota(record, viewer)).map(({ id, provider, label, email, plan, status, resident, installed }) =>
     ({ id, provider, label, email, plan, status, resident, installed, usage: subscriptions.usage.get(id) }));

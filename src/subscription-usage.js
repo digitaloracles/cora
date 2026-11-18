@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { subscriptionProviderOf } from "./harnesses.js";
 
 const INTERVAL = 60 * 1000;
 const number = (value) => value === null || value === undefined || value === "" ? null : Number.isFinite(Number(value)) ? Number(value) : null;
@@ -103,6 +104,11 @@ export function parseSubscriptionUsage(provider, data) {
   return windows;
 }
 
+/** Whether a model runs on a provider's account: its own CLI, or Hermes and Pi through Kimi's. */
+export function runsOnAccount(model, provider) {
+  return String(model || "").startsWith(`${provider}/`) || subscriptionProviderOf(model) === provider;
+}
+
 export function parseSubscriptionBalances(provider, data) {
   const root = object(data), balances = [];
   const add = (kind, currency, value) => {
@@ -170,8 +176,7 @@ export class SubscriptionUsage {
     if (this.closed) return;
     const agents = this.store.agents();
     const records = [...this.store.subscriptions(), ...this.providerRecords()].filter((record) => record.status === "ready" && (!record.resident || this.store.settings.useResidentSubscriptions)
-      && agents.some((agent) => String(agent.model || this.store.settings.defaultModel || "").startsWith(`${record.provider}/`)
-        && (record.server || agent.subscriptionId === record.id || (record.resident && !agent.subscriptionId))));
+      && (!record.resident || agents.some((agent) => runsOnAccount(agent.model || this.store.settings.defaultModel, record.provider) && !agent.subscriptionId)));
     await Promise.allSettled(records.map((record) => this.refresh(record.id)));
     if (!this.closed && records.length) this.emit();
   }
