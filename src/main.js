@@ -42,6 +42,7 @@ import { MailDomains } from "./mail-domains.js";
 import { KnowledgeSources } from "./knowledge.js";
 import { createWeb } from "./web.js";
 import { HarnessUpdates } from "./harness-updates.js";
+import { Skills } from "./skills.js";
 
 export function startCora(overrides = {}) {
   const cfg = { ...config, ...overrides };
@@ -160,6 +161,8 @@ export function startCora(overrides = {}) {
     gitAttribution: { enabled: cfg.gitAttribution, email: cfg.gitCoauthorEmail },
     mailboxFor,
   });
+  const skills = new Skills({ store, boxes, home: cfg.home, githubApi: cfg.githubApi, githubRaw: cfg.githubRaw, skillsApi: cfg.skillsApi, auditApi: cfg.skillsAuditApi, githubToken: cfg.skillsGithubToken, log: activity });
+  brain.skills = skills;
   const filesDir = join(cfg.home, "files");
   const orchestrator = new Orchestrator({ store, discord, brain, log: activity, bots, channels, telegram, tgBots, slack, skBots, emit: live, filesDir, notifier: push, watching: () => web?.watching(), voice });
   knowledge.agentChannels = (agent) => brain.channelIdsFor(agent);
@@ -250,7 +253,7 @@ export function startCora(overrides = {}) {
   // Cora's own app on Slack keeps its name and wears Cora's mark, served by this instance.
   const syncMainSlackApp = (options) => slackApps.sync({ key: "main", botToken: slack.botToken, name: "Cora", iconUrl: instanceUrl ? `${instanceUrl}/assets/icon-512.png` : "" }, options);
   const agentTransfer = new AgentTransfer({ store, knowledge, companyBrain, vault, keyConnectors, activity, timezone: cfg.timezone, allowLocal: cfg.agentImportAllowLocal === true });
-  web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls, harnessUpdates });
+  web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls, harnessUpdates, skills });
 
   discord.on("message", (message) => {
     orchestrator.onMessage(message).catch((error) => activity({ type: "error", channelId: message.channel_id, text: error.message }));
@@ -398,7 +401,7 @@ export function startCora(overrides = {}) {
     await companyBrain.close();
     store.close();
   };
-  return { ready, stop, store, agentTransfer, subscriptions, discord, telegram, slack, channels, orchestrator, scheduler, brain, boxes, llm, bridge, bots, tgBots, skBots, traces, push, voice, companyBrain, librarian, artifacts, vault, github, mailDomains, email, googleConnector, keyConnectors, knowledge, harnessUpdates, server: web.server };
+  return { ready, stop, store, agentTransfer, subscriptions, discord, telegram, slack, channels, orchestrator, scheduler, brain, boxes, llm, bridge, bots, tgBots, skBots, traces, push, voice, companyBrain, librarian, artifacts, vault, github, mailDomains, email, googleConnector, keyConnectors, knowledge, harnessUpdates, skills, server: web.server };
 }
 
 const isMain = (() => {

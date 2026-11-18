@@ -60,6 +60,12 @@ export const config = {
   sonioxApi: setting("SONIOX_API") || "https://api.soniox.com",
   githubApi: setting("GITHUB_API") || "https://api.github.com",
   githubWeb: setting("GITHUB_WEB") || "https://github.com",
+  // Agent skills: GitHub sources, the skills.sh registry search and its audits.
+  githubRaw: setting("GITHUB_RAW") || "https://raw.githubusercontent.com",
+  skillsApi: setting("SKILLS_API") || "https://skills.sh",
+  skillsAuditApi: setting("SKILLS_AUDIT_API") || "https://www.skills.sh/tele/audit",
+  // Optional: lifts the GitHub API limit for skill installs from 60 to 5000 requests an hour.
+  skillsGithubToken: env.SKILLS_GITHUB_TOKEN || "",
   sonioxTtsUrl: setting("SONIOX_TTS_URL") || "https://tts-rt.soniox.com/tts",
   ffmpeg: setting("FFMPEG") || firstExisting(["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg", "ffmpeg"]),
   // doc's checks on what agents publish and say; Jev judges with this instance's TypeSafe key.
