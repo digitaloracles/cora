@@ -1,6 +1,7 @@
 /**
  * A thread named after an issue (REF-23, ACD-73, ...) is that issue's place. Its
- * keys are its topic; the other threads of the same server own theirs. Cora reads
+ * keys are its topic and its channel is its subject: only the threads of the same channel are
+ * its neighbours, a thread of another channel is another subject. Cora reads
  * this map in three places: the prompt (what this thread is about, where the other
  * issues live), the context from other threads (shown as pointers, not as work to
  * continue) and every message an agent sends (work on another thread's issue is
@@ -35,15 +36,31 @@ export function sharesTopic(text, threadName) {
   return Boolean(topic.size) && stems(text).some((word) => topic.has(word));
 }
 
+/** The channel a place belongs to: a thread's parent, otherwise the channel itself. */
+export function channelOf(place) {
+  return String(place?.parentId || place?.id || "");
+}
+
 /**
- * The place of the same server whose title speaks of a job without an issue key: it shares two words
- * of the title, or every word of a short one (a channel named after a project). The closest wins.
+ * Whether two places are the same topic: the same channel, or that channel and its threads.
+ * A thread of another channel is another topic, even on the same server and with a similar title.
+ */
+export function sameChannel(place, here) {
+  return Boolean(place?.id && here?.id) && channelOf(place) === channelOf(here);
+}
+
+/**
+ * The place whose title speaks of a job without an issue key: a thread of the same channel, or a
+ * channel of the same server (a channel named after a project is that project). A thread of another
+ * channel is never a candidate: words do not cross channels. It shares two words of the title, or
+ * every word of a short one. The closest wins.
  */
 export function topicPlace(places, here, text) {
   const words = new Set(stems(text));
   let best = null;
   for (const place of places || []) {
     if (!place?.id || place.id === here?.id || !here?.guildId || place.guildId !== here.guildId) continue;
+    if ((place.thread || place.parentId) && !sameChannel(place, here)) continue;
     const title = [...new Set(stems(place.name))];
     const shared = title.filter((word) => words.has(word)).length;
     if (!shared || (shared < 2 && shared < title.length)) continue;
@@ -57,24 +74,31 @@ export function threadLink(thread) {
 }
 
 /**
- * The topic of `here` and the issues other threads of the same server own.
- * `threads`: every known channel ({ id, name, guildId, thread, parentId }).
+ * The topic of `here`, with the channel it lives in, and the issues other threads own.
+ * `others`: the threads of the same channel only, the ones an agent is shown as its neighbours.
+ * `owners`: every thread of the server by its issue key, used only to send work on an exact key to
+ * the thread of that issue, never as context.
+ * `threads`: every known channel ({ id, name, guildId, thread, parentId }); `here` may carry `parentName`.
  */
 export function threadTopics(threads, here) {
-  const current = here?.thread || here?.parentId ? { id: here.id, name: here.name } : null;
+  const current = here?.thread || here?.parentId ? { id: here.id, name: here.name, parentId: here.parentId || "", parentName: here.parentName || "" } : null;
   const topic = current ? issueKeys(here.name) : [];
   const others = new Map();
-  if (!here?.guildId) return { topic, others, current };
+  const owners = new Map();
+  if (!here?.guildId) return { topic, others, owners, current };
   const seen = new Set();
   for (const thread of threads) {
     if (!thread?.id || seen.has(thread.id) || thread.id === here.id || thread.guildId !== here.guildId || !(thread.thread || thread.parentId)) continue;
     seen.add(thread.id);
+    const near = sameChannel(thread, here);
     for (const key of issueKeys(thread.name)) {
       if (topic.includes(key)) continue;
-      others.set(key, [...(others.get(key) || []), { id: thread.id, name: thread.name, guildId: thread.guildId }]);
+      const entry = { id: thread.id, name: thread.name, guildId: thread.guildId, parentId: thread.parentId || "" };
+      owners.set(key, [...(owners.get(key) || []), entry]);
+      if (near) others.set(key, [...(others.get(key) || []), entry]);
     }
   }
-  return { topic, others, current };
+  return { topic, others, owners, current };
 }
 
 /**
@@ -83,7 +107,8 @@ export function threadTopics(threads, here) {
  * the people here asked about by name (`asked`), and a short pointer that links the
  * other thread. Returns the first foreign issue and its threads, or null.
  */
-export function threadLeak(text, { topic = [], others = new Map(), asked = [] } = {}) {
+export function threadLeak(text, { topic = [], others = new Map(), owners = null, asked = [] } = {}) {
+  others = owners || others;
   if (!topic.length || !others.size) return null;
   const body = String(text || "");
   const mentioned = issueKeys(body);

@@ -151,7 +151,7 @@ export const TOOL_DEFS = [
   { name: "email_cancel", description: "Cancel one of your scheduled emails before it is sent, by its id from email_send or email_inbox. Only on an authorized user's request.", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
   {
     name: "list_channels",
-    description: "List the channels you can write to directly with say(text, channel_id): id, name and platform. Use this to find #social or another destination instead of looking for grog or asking for credentials. The current conversation works with say(text).",
+    description: "List the channels you can write to directly with say(text, channel_id): id, name and platform; a thread also has parent_id and parent_name, the channel it lives in, which is its subject. Use this to find #social or another destination instead of looking for grog or asking for credentials. The current conversation works with say(text).",
     parameters: { type: "object", properties: {} },
   },
   {
@@ -760,7 +760,7 @@ export async function executeTool(call, ctx) {
           // A thread under a channel the agent may write to counts, even one opened since this turn began.
           const thread = await ctx.threadFor?.(target).catch(() => null);
           if (!thread) return { text: "error: destination not authorized; choose a channel from list_channels" };
-          ctx.postingChannels.push({ id: thread.id, name: thread.name, kind: thread.kind });
+          ctx.postingChannels.push({ id: thread.id, name: thread.name, kind: thread.kind, thread: true, parent_id: thread.parentId || "", parent_name: ctx.postingChannels.find((channel) => channel.id === thread.parentId)?.name || "" });
         }
         const sent = await ctx.say(text.slice(0, 4000), target, { voice: args.voice === true, endConversation: args.end_conversation === true });
         const messages = Array.isArray(sent) ? sent : [];
@@ -790,7 +790,7 @@ export async function executeTool(call, ctx) {
       case "thread_open": {
         if (!ctx.openThread) return { text: "error: threads cannot be opened here" };
         const thread = await ctx.openThread({ name: args.name, channelId: args.channel_id });
-        ctx.postingChannels?.push({ id: thread.id, name: thread.name, kind: thread.kind });
+        ctx.postingChannels?.push({ id: thread.id, name: thread.name, kind: thread.kind, thread: true, parent_id: thread.parentId || "", parent_name: ctx.postingChannels.find((channel) => channel.id === thread.parentId)?.name || "" });
         if (String(args.text || "").trim() && ctx.say) await ctx.say(String(args.text).trim().slice(0, 4000), thread.id);
         return { text: `opened thread ${thread.id} «${thread.name}» under ${thread.parentId}${String(args.text || "").trim() ? ", with your first message in it" : ""}. Write in it with say({text, channel_id: "${thread.id}"}); a reminder about it goes there with channel_id "${thread.id}".` };
       }
