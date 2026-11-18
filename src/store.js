@@ -1309,7 +1309,7 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
   }
 
   /** Everyone who wrote in a chat (not the panel), once per platform and person, newest first: who the owner can give permissions to. */
-  speakers(limit = 200, { channelIds = null, agentId = "" } = {}) {
+  speakers(limit = 200, { channelIds = null, agentId = "", transport = "" } = {}) {
     const scope = [], params = [];
     if (channelIds) {
       if (channelIds.length) { scope.push(`channel_id IN (${channelIds.map(() => "?").join(",")})`); params.push(...channelIds); }
@@ -1320,7 +1320,7 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
       author_id AS userId, author_name AS name, MAX(at) AS last, COUNT(*) AS messages FROM messages
       WHERE kind IN ('owner', 'human') AND author_id IS NOT NULL AND author_id != '' AND channel_id NOT LIKE 'web%'
       ${scope.length ? `AND (${scope.join(" OR ")})` : ""}
-      GROUP BY transport, author_id ORDER BY last DESC LIMIT ?`).all(...params, limit);
+      GROUP BY transport, author_id HAVING (? = '' OR transport = ?) ORDER BY last DESC LIMIT ?`).all(...params, transport, transport, limit);
   }
 
   hasAgentPermission(contact, agentId) {

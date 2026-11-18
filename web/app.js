@@ -9256,6 +9256,73 @@ function switchList(items, chosen, key, row) {
   return list;
 }
 
+function discordOwnersRow() {
+  const people = new Map();
+  const owners = h("div");
+  const select = h("select", { "aria-label": "Aggiungi un proprietario di Discord" });
+  const id = h("input", { class: "mono grow", type: "text", inputmode: "numeric", pattern: "[0-9]{5,25}", required: true, autocomplete: "off", "aria-label": "ID utente Discord", placeholder: "ID utente Discord" });
+  const manual = h("details", { class: "raw" }, h("summary", {}, "Aggiungi tramite ID"),
+    h("form", { class: "row" }, id, btn("Aggiungi", { type: "submit", cls: "ghost" })));
+  const status = h("p", { class: "muted", role: "status", hidden: true });
+  const controls = h("div", { hidden: true }, h("div", { class: "stack-sm" }, owners, select, manual));
+  const row = setRow("Proprietari", "Le persone selezionate possono far usare il computer agli agenti. Se l’elenco è vuoto, possono farlo tutti.", h("div", {}, status, controls), { stack: true });
+
+  const draw = () => {
+    const chosen = S.data.settings.ownerIds || [];
+    owners.hidden = chosen.length === 0;
+    owners.replaceChildren(chosen.length ? h("div", { class: "set-switches" }, chosen.map((personId) => {
+      const toggle = switchInput("discordOwner", raw(people.get(personId) || personId), true);
+      const input = toggle.querySelector("input");
+      toggle.title = personId;
+      input.addEventListener("change", () => save(chosen.filter((entry) => entry !== personId)));
+      return toggle;
+    })) : "");
+    const available = [...people].filter(([personId]) => !chosen.includes(personId)).sort((a, b) => a[1].localeCompare(b[1]));
+    const names = available.map(([, name]) => name);
+    const duplicateNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
+    select.replaceChildren(h("option", { value: "" }, "Scegli una persona…"),
+      ...available.map(([personId, name]) => h("option", { value: personId }, raw(duplicateNames.has(name) ? name + " · " + personId : name))));
+    select.disabled = available.length === 0;
+  };
+  const save = async (ids) => {
+    const fields = [...controls.querySelectorAll("input, select, button")].filter((field) => !field.disabled);
+    fields.forEach((field) => { field.disabled = true; });
+    const saved = await saveSettings({ ownerIds: ids }, row);
+    fields.forEach((field) => { field.disabled = false; });
+    draw();
+    return saved;
+  };
+  select.addEventListener("change", () => {
+    if (select.value) save([...S.data.settings.ownerIds, select.value]);
+  });
+  manual.querySelector("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (S.data.settings.ownerIds.includes(id.value)) {
+      id.value = "";
+      return;
+    }
+    if (await save([...S.data.settings.ownerIds, id.value])) id.value = "";
+  });
+  let loading = false;
+  row.loadPeople = async () => {
+    if (loading) return;
+    loading = true;
+    status.hidden = false;
+    status.textContent = tr("Caricamento…");
+    try {
+      const data = await api("/api/settings/discord/people");
+      for (const person of data.people) people.set(person.id, person.name);
+      status.hidden = true;
+    } catch (error) {
+      status.textContent = error.message;
+      loading = false;
+    }
+    draw();
+    controls.hidden = false;
+  };
+  return row;
+}
+
 /** A text field of ids (the owners); the page saves it when it is left. */
 function idsInput(key, label) {
   return h("input", { type: "text", class: "mono", value: (S.data.settings[key] || []).join(", "), autocomplete: "off", spellcheck: "false", "aria-label": label });
@@ -9472,6 +9539,7 @@ function renderSettings() {
   const guilds = discord.guilds;
   const listening = S.data.agents.find((agent) => agent.bot?.user && agent.bot.user.id === discord.user?.id);
   let guildRow;
+  const discordOwners = manage ? discordOwnersRow() : null;
   page("discord",
     panel({ icon: "hash", title: "Discord", hint: "Un bot ascolta i server accesi; ogni agente scrive col suo.", actions: channelBadge("discord") },
       setRows(listenRow("discord"),
@@ -9485,7 +9553,7 @@ function renderSettings() {
       setRows(
         guildRow = setRow("Server", guilds.length ? "Gli altri server vengono ignorati." : "Discord non è collegato adesso: i server compaiono quando lo è.",
           guilds.length ? switchList(guilds.map((guild) => ({ id: guild.id, name: guild.name, sub: guild.id, mono: true })), settings.guildIds, "guildIds", () => guildRow) : null, { stack: true }),
-        ownersRow("ownerIds", "ID utente Discord, separati da virgole. Solo loro possono far usare il computer agli agenti; vuoto = tutti."))));
+        discordOwners)));
 
   const telegram = S.data.telegram;
   let chatRow;
@@ -9890,6 +9958,7 @@ function renderSettings() {
     drawNav();
     if (updateRoute) history.replaceState(null, "", current ? `#/settings/${current}` : "#/settings");
     if (updateRoute && current === "connettori") pages.get(current).querySelector(".connectors-pane")?.openCatalog?.();
+    if ((current || fallback()) === "discord") discordOwners?.loadPeople();
   }
   // The addresses before the list: a tab, or Collegamenti and one of its entries.
   const [, first = "", second = ""] = route();
