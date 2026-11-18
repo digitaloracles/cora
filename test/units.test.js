@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { Brain, asksToStop, claimsWork, cleanReply, deliveryNote } from "../src/brain.js";
 import { executeTool } from "../src/tools.js";
 import { Channels } from "../src/channels.js";
-import { DIRECT_MESSAGE_INTENTS, Discord, LISTENING_INTENTS, splitMessage } from "../src/discord.js";
+import { CHANNEL_OBFUSCATED, DIRECT_MESSAGE_INTENTS, Discord, LISTENING_INTENTS, obfuscated, splitMessage } from "../src/discord.js";
 import { LLM } from "../src/llm.js";
 import { toMrkdwn } from "../src/slack.js";
 import { appManifest } from "../src/slack-bots.js";
@@ -1082,6 +1082,53 @@ describe("slack channel switches", () => {
     list.dispatch("change");
     for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(puts, [{ slackChannelIds: ["C0ON"] }]);
+  });
+});
+
+describe("discord hidden channels", () => {
+  const guildWith = (client, channels, threads = []) => client.dispatch("GUILD_CREATE", { id: "G1", name: "notsebworld", owner_id: "U0", channels, threads });
+
+  test("a channel Discord hides from a bot (fake name, CHANNEL_OBFUSCATED) is not that bot's to name", () => {
+    const main = new Discord({ token: "main", apiBase: "http://discord.invalid" });
+    guildWith(main, [
+      { id: "C1", name: "general", type: 0, position: 0 },
+      { id: "C2", name: "___hidden___", type: 0, position: 1, flags: CHANNEL_OBFUSCATED },
+      { id: "C3", name: "___hidden___", type: 0, position: 2 },
+      { id: "V1", name: "___hidden___", type: 2, position: 3, flags: CHANNEL_OBFUSCATED },
+    ], [{ id: "T1", name: "___hidden___", type: 11, parent_id: "C2", flags: CHANNEL_OBFUSCATED }]);
+    assert.equal(obfuscated({ name: "strategy", flags: CHANNEL_OBFUSCATED | 2 }), true);
+    assert.equal(obfuscated({ name: "strategy", flags: 2 }), false);
+    assert.equal(main.channelInfo("C1").name, "general");
+    for (const id of ["C2", "C3", "T1", "V1"]) assert.equal(main.channelInfo(id), null, id);
+    assert.deepEqual(main.listChannels(["G1"]).map((channel) => channel.id), ["C1"]);
+    assert.deepEqual(main.listVoiceChannels(["G1"]), []);
+    main.dispatch("CHANNEL_UPDATE", { id: "C1", guild_id: "G1", name: "___hidden___", type: 0, flags: CHANNEL_OBFUSCATED });
+    assert.equal(main.channelInfo("C1"), null, "a channel the bot loses access to stops being named by it");
+  });
+
+  test("each agent's bot names the channels and threads only it can see", () => {
+    const settings = { transport: "discord", transports: ["discord"], guildIds: ["G1"], telegramChatIds: [], slackChannelIds: [] };
+    const store = { get settings() { return settings; } };
+    const main = new Discord({ token: "main", apiBase: "http://discord.invalid" });
+    const radix = new Discord({ token: "radix", apiBase: "http://discord.invalid" });
+    const vera = new Discord({ token: "vera", apiBase: "http://discord.invalid" });
+    guildWith(main, [{ id: "C1", name: "general", type: 0 }, { id: "C2", name: "___hidden___", type: 0, flags: CHANNEL_OBFUSCATED }, { id: "C3", name: "___hidden___", type: 0, flags: CHANNEL_OBFUSCATED }],
+      [{ id: "T1", name: "___hidden___", type: 11, parent_id: "C2", flags: CHANNEL_OBFUSCATED }]);
+    guildWith(radix, [{ id: "C1", name: "general", type: 0 }, { id: "C2", name: "strategy", type: 0 }, { id: "C3", name: "___hidden___", type: 0, flags: CHANNEL_OBFUSCATED }],
+      [{ id: "T1", name: "Oauth google", type: 11, parent_id: "C2" }]);
+    guildWith(vera, [{ id: "C2", name: "___hidden___", type: 0, flags: CHANNEL_OBFUSCATED }, { id: "C3", name: "ragusapass", type: 0 }]);
+    const bots = { clients: new Map([["ag_radix", { client: radix }], ["ag_vera", { client: vera }]]), client: (id) => bots.clients.get(id)?.client };
+    const channels = new Channels({ store, discord: main, bots, telegram: {} });
+    assert.equal(channels.discordInfo("C1").name, "general");
+    assert.equal(channels.discordInfo("C2").name, "strategy");
+    assert.equal(channels.discordInfo("C3").name, "ragusapass");
+    assert.equal(channels.discordInfo("T1").name, "Oauth google");
+    assert.equal(channels.label("T1"), "#Oauth google");
+    assert.equal(channels.info("C3").where, "in #ragusapass");
+    assert.deepEqual(channels.list().map((channel) => channel.id), ["C1"], "the main bot lists only what it sees");
+    const known = new Map(channels.known().map((channel) => [channel.id, channel.name]));
+    assert.deepEqual([...known].sort(), [["C1", "general"], ["C2", "strategy"], ["C3", "ragusapass"], ["T1", "Oauth google"]]);
+    assert.equal([...known.values()].includes("___hidden___"), false);
   });
 });
 

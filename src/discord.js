@@ -19,6 +19,16 @@ const FATAL_CLOSE_CODES = new Map([
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 export const VOICE_CHANNEL_TYPES = new Set([2, 13]);
 const THREAD_TYPES = new Set([10, 11, 12]);
+export const CHANNEL_OBFUSCATED = 1 << 17;
+const OBFUSCATED_NAME = "___hidden___";
+
+/**
+ * Since 16/11/2026 Discord sends a bot also the channels it may not view, under a fake name and
+ * the CHANNEL_OBFUSCATED flag: that bot cannot name them, a bot that sees them can.
+ */
+export function obfuscated(channel) {
+  return Boolean(channel && ((Number(channel.flags || 0) & CHANNEL_OBFUSCATED) || channel.name === OBFUSCATED_NAME));
+}
 const WEBHOOK_NAME = "cora";
 const MAX_CONTENT = 1990;
 /** Message flag IS_VOICE_MESSAGE. */
@@ -372,7 +382,7 @@ export class Discord extends EventEmitter {
   channelInfo(channelId) {
     for (const guild of this.guilds.values()) {
       const channel = guild.channels.get(channelId) || guild.threads.get(channelId);
-      if (channel) {
+      if (channel && !obfuscated(channel)) {
         return {
           id: channel.id,
           name: channel.name,
@@ -418,7 +428,7 @@ export class Discord extends EventEmitter {
     for (const guild of this.guilds.values()) {
       if (!allowed.has(guild.id)) continue;
       for (const channel of guild.channels.values()) {
-        if (VOICE_CHANNEL_TYPES.has(channel.type)) out.push({ id: channel.id, name: channel.name, guildId: guild.id, guildName: guild.name, members: this.voiceMembers(channel.id).length });
+        if (VOICE_CHANNEL_TYPES.has(channel.type) && !obfuscated(channel)) out.push({ id: channel.id, name: channel.name, guildId: guild.id, guildName: guild.name, members: this.voiceMembers(channel.id).length });
       }
     }
     return out;
@@ -430,13 +440,13 @@ export class Discord extends EventEmitter {
     for (const guild of this.guilds.values()) {
       if (!allowed.has(guild.id)) continue;
       const channels = [...guild.channels.values()]
-        .filter((channel) => TEXT_CHANNEL_TYPES.has(channel.type))
+        .filter((channel) => TEXT_CHANNEL_TYPES.has(channel.type) && !obfuscated(channel))
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
       for (const channel of channels) {
         out.push({ id: channel.id, name: channel.name, guildId: guild.id, guildName: guild.name, thread: false });
       }
       for (const thread of guild.threads.values()) {
-        if (!THREAD_TYPES.has(thread.type) || thread.thread_metadata?.archived) continue;
+        if (!THREAD_TYPES.has(thread.type) || thread.thread_metadata?.archived || obfuscated(thread)) continue;
         out.push({ id: thread.id, name: thread.name, guildId: guild.id, guildName: guild.name, thread: true, parentId: thread.parent_id });
       }
     }
