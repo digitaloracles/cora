@@ -24,6 +24,7 @@ that is not authorised for a connector does not even see its tool.
 | `asana.js` | Asana: a personal access token or an OAuth app; 17 `asana_` actions (tasks, subtasks, sections, comments, attachments, projects) and `asana_api`. |
 | `canva.js` | Canva: an OAuth integration authorised by the owner; 20 `canva_` actions (designs, exports, uploads, folders, brand templates, comments) and `canva_api`. |
 | `firecrawl/index.js` | Firecrawl: the official remote MCP server, with API key or dynamically registered OAuth; exact tools and schemas discovered on connection, scoped to the selected team. |
+| `earendil.js` | Eärendil studio: the studio's own MCP server (`earendil.studio/api/mcp`, stateless Streamable HTTP) with an agent key `earendil_…`; its tools discovered on connection and offered as `earendil_<name>`, audio and pictures saved on the agent's computer. |
 | `remote-mcp.js` | Shared JSON/SSE transport, sessions, recovery and image files for Lovable and Firecrawl. |
 | `lovable.js` | Lovable: the official MCP server (`mcp.lovable.dev`), reached by Cora as an MCP client with the owner's OAuth token; 31 `lovable_` actions (projects, the project agent's messages, diffs and files, knowledge, skills, database, deploy, analytics, uploads) and `lovable_mcp`. |
 | `google.js` | Google: accounts connected through Cora's OAuth broker (`GoogleConnector`); 14 `gmail_` actions (send, reply, search, read, attachments, labels, archive, drafts) and `gmail_api`. |
@@ -215,9 +216,9 @@ remote revocation remains visible and retryable with agents disabled.
 Disconnecting cancels pending callbacks. API keys are removed from Cora; users revoke
 them separately in the provider dashboard.
 
-Both Lovable and Firecrawl use `remote-mcp.js`: initialization, JSON/SSE replies,
-strict RPC-id matching, session caching, one retry after a session 404, and image
-files on the authorized agent desktop. Credit/rate refusals are never replayed.
+Lovable, Firecrawl and Eärendil studio use `remote-mcp.js`: initialization, JSON/SSE replies,
+strict RPC-id matching, session caching (also for stateless servers that send no session id),
+one retry after a session 404, and image and audio files on the authorized agent desktop. Credit/rate refusals are never replayed.
 Firecrawl's module marks monitors, crawl, agent, interaction and monitor deletion
 with their authorization and credit implications. Connecting a service is not
 authorization to start recurring jobs.
@@ -228,3 +229,18 @@ Official contracts: [MCP](https://docs.firecrawl.dev/mcp-server),
 [OAuth](https://docs.firecrawl.dev/oauth). OAuth tokens target the MCP resource,
 not the REST API. Keyless search/scrape/parse can verify the shared transport;
 account sign-in and paid tools still require an owner-authorized account check.
+
+## Eärendil studio
+
+`earendil.js` follows the same dynamic pattern. The person creates an agent key in the
+studio (Agent → Connect → Agent key, `earendil_…`); `checkKey` reads `tools/list` with it,
+so a wrong, revoked or expired key (401) and an account without a subscription (402) are
+refused before anything reaches the vault. The studio's tool names have no namespace
+(`list_projects`, `listen`), so Cora offers them as `earendil_<name>` and rewrites the
+names inside descriptions and schemas; the studio's `initialize` instructions travel with
+`earendil_list_projects`. Calls wait up to 300 s, because `listen` follows real playback
+in a studio in Agent mode and the video tools wait for the picture. The WAV of `listen`
+and every picture go to `/home/agent/work/earendil/`; an answer longer than 36,000
+characters (a long transcript) is written whole to a JSON file there and the agent gets
+the short fields plus `full_answer`. `earendil_video_add_picture` also takes `path`, a
+picture on the agent's computer, sent to the studio as base64.

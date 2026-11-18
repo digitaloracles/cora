@@ -90,7 +90,7 @@ test("key connectors verify the service, keep values in the vault and authorise 
   const f = await connectorWorld(t);
   const initial = await f.call("/api/connectors");
   assert.equal(initial.status, 200);
-  assert.deepEqual(initial.data.keyConnectors.map((item) => [item.service, item.status]), [["linear", "new"], ["asana", "new"], ["canva", "new"], ["lovable", "new"], ["firecrawl", "new"]]);
+  assert.deepEqual(initial.data.keyConnectors.map((item) => [item.service, item.status]), [["linear", "new"], ["asana", "new"], ["canva", "new"], ["lovable", "new"], ["firecrawl", "new"], ["earendil", "new"]]);
 
   assert.equal((await f.call("/api/connectors/keys/linear", { method: "POST", body: { workspace: "turinglabs" } })).status, 400);
   const wrong = await f.call("/api/connectors/keys/linear", { method: "POST", body: { workspace: "otherspace", token: LINEAR_KEY } });
@@ -162,7 +162,7 @@ test("the connectors page shows Linear, Asana and Canva with their instructions 
   const node = panel.run("(() => {const node = connectorsPane(); app.append(node); return node;})()");
   await node.readyConnectors;
   const cards = node.querySelectorAll(".connector-card");
-  assert.deepEqual(cards.map((card) => card.querySelector(".connector-card-name").textContent), ["Google", "Linear", "Asana", "Canva", "Lovable", "Firecrawl"]);
+  assert.deepEqual(cards.map((card) => card.querySelector(".connector-card-name").textContent), ["Google", "Linear", "Asana", "Canva", "Lovable", "Firecrawl", "Eärendil studio"]);
   cards.find((card) => /Linear/.test(card.textContent)).click();
   assert.match(node.querySelector(".connector-detail").textContent, /workspace/);
   assert.match(node.querySelector(".connector-detail").textContent, /CORA_LINEAR_KEY/);
@@ -296,13 +296,13 @@ test("the panel draws the catalogue and the forms from src/connectors, so a new 
     return { ok: response.status < 400, status: response.status, json: async () => response.data };
   } });
   const served = (await f.call("/api/connectors")).data.catalog;
-  assert.deepEqual(served.map((item) => [item.id, item.kind, item.tools[0]]), [["google", "google", "gmail_accounts"], ["linear", "key", "linear_teams"], ["asana", "key", "asana_workspaces"], ["canva", "key", "canva_me"], ["lovable", "key", "lovable_me"], ["firecrawl", "key", undefined]]);
+  assert.deepEqual(served.map((item) => [item.id, item.kind, item.tools[0]]), [["google", "google", "gmail_accounts"], ["linear", "key", "linear_teams"], ["asana", "key", "asana_workspaces"], ["canva", "key", "canva_me"], ["lovable", "key", "lovable_me"], ["firecrawl", "key", undefined], ["earendil", "key", undefined]]);
   assert.ok(served.find((item) => item.id === "asana").tools.length > 10, "the catalogue lists every Asana action");
   assert.equal(served.find((item) => item.id === "linear").secret, "CORA_LINEAR_KEY");
   const node = panel.run("(() => {const node = connectorsPane(); app.append(node); return node;})()");
   await node.readyConnectors;
   const cards = node.querySelectorAll(".connector-card");
-  assert.deepEqual(cards.map((card) => card.querySelector(".connector-card-name").textContent), ["Google", "Linear", "Asana", "Canva", "Lovable", "Firecrawl", "Acme"]);
+  assert.deepEqual(cards.map((card) => card.querySelector(".connector-card-name").textContent), ["Google", "Linear", "Asana", "Canva", "Lovable", "Firecrawl", "Eärendil studio", "Acme"]);
   cards.find((card) => /Acme/.test(card.textContent)).click();
   const detail = node.querySelector(".connector-detail");
   assert.match(detail.textContent, /Serve la chiave di Acme/);

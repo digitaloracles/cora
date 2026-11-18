@@ -16,8 +16,8 @@ export class KeyConnectorError extends Error {
 const clean = (value, max = 400) => String(value ?? "").trim().slice(0, max);
 
 export class KeyConnectors {
-  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", oauthUrls = {}, fetch: fetchImpl = fetch }) {
-    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, oauthUrls, fetch: fetchImpl });
+  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", oauthUrls = {}, fetch: fetchImpl = fetch }) {
+    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, oauthUrls, fetch: fetchImpl });
     // OAuth authorisations under way: nonce → who started it, the PKCE verifier and where Google-style callbacks return.
     this.pending = new Map();
     // Access tokens renewed from a stored refresh token, until they expire.
@@ -26,7 +26,7 @@ export class KeyConnectors {
     this.linearQueue = Promise.resolve();
   }
 
-  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi }; }
+  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi }; }
 
   /** A module's OAuth endpoints, which a test may point elsewhere. */
   oauthOf(service) {

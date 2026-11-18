@@ -29,7 +29,7 @@ export function rpcAnswer({ data, text: body, headers }, id) {
   return found;
 }
 
-/** Shared Streamable HTTP transport; credentials stay in the backend. */
+/** Shared Streamable HTTP transport (also stateless servers that give no session id); credentials stay in the backend. */
 export function mcpClient({ name, id, endpoint, headers: authorization = {}, request, writeFile = null, refusal }) {
   const key = createHash("sha256").update(`${name}\n${endpoint}\n${JSON.stringify(authorization)}`).digest("hex").slice(0, 32);
   let serial = 0;
@@ -49,7 +49,7 @@ export function mcpClient({ name, id, endpoint, headers: authorization = {}, req
     const session = header(answer.headers, "mcp-session-id");
     await post({ jsonrpc: "2.0", method: "notifications/initialized" }, session);
     for (const [name, item] of sessions) if (item.expires < Date.now()) sessions.delete(name);
-    sessions.set(key, { id: session, expires: Date.now() + SESSION_MS });
+    sessions.set(key, { id: session, expires: Date.now() + SESSION_MS, server: reply.result });
     return session;
   };
   const rpc = async (method, params, timeout) => {
@@ -63,7 +63,7 @@ export function mcpClient({ name, id, endpoint, headers: authorization = {}, req
       const reply = rpcAnswer(answer, id);
       if (!reply) fail(`${name} gave no answer to the call`);
       if (reply.error) fail(`${name}: ${String(reply.error.message || reply.error.code || "error").slice(0, 1500)}`);
-      sessions.set(key, { id: session, expires: Date.now() + SESSION_MS });
+      sessions.set(key, { ...sessions.get(key), id: session, expires: Date.now() + SESSION_MS });
       return reply.result ?? {};
     }
   };
@@ -75,21 +75,24 @@ export function mcpClient({ name, id, endpoint, headers: authorization = {}, req
     if (result.isError) fail(`${name}: ${words.slice(0, 2000) || "the tool failed"}`);
     let data = result.structuredContent;
     if (data === undefined && words) { try { data = JSON.parse(words); } catch { data = { text: words }; } }
-    const images = content.filter((part) => part.type === "image" && part.data);
-    if (images.length) {
+    for (const [kind, field, fallback] of [["image", "images", "png"], ["audio", "audio", "wav"]]) {
+      const media = content.filter((part) => part.type === kind && part.data);
+      if (!media.length) continue;
       const saved = [];
-      for (const [index, image] of images.entries()) {
+      for (const [index, item] of media.entries()) {
         if (!writeFile) break;
-        const extension = (String(image.mimeType || "image/png").split("/")[1] || "png").replace(/[^a-z0-9]/gi, "").slice(0, 5) || "png";
+        const extension = (String(item.mimeType || `${kind}/${fallback}`).split("/")[1] || fallback).replace(/^x-/, "").replace(/[^a-z0-9]/gi, "").slice(0, 5) || fallback;
         const path = `/home/agent/work/${id}/${toolName}-${Date.now()}-${index + 1}.${extension}`;
-        try { await writeFile(path, Buffer.from(image.data, "base64")); saved.push(path); } catch { /* the text answer is still useful */ }
+        try { await writeFile(path, Buffer.from(item.data, "base64")); saved.push(path); } catch { /* the text answer is still useful */ }
       }
-      data = { ...(data && typeof data === "object" && !Array.isArray(data) ? data : { result: data }), images: saved.length ? saved : `${images.length} image(s) not saved` };
+      data = { ...(data && typeof data === "object" && !Array.isArray(data) ? data : { result: data }), [field]: saved.length ? saved : `${media.length} ${kind} file(s) not saved` };
     }
     for (const part of content.filter((item) => item.type === "resource_link" || item.type === "resource")) {
       data = { ...(data && typeof data === "object" && !Array.isArray(data) ? data : { result: data }), resources: [...(data?.resources || []), defined({ uri: part.uri || part.resource?.uri, name: part.name, text: part.resource?.text?.slice(0, 20000) })] };
     }
     return data ?? {};
   };
-  return { rpc, tool };
+  /** What the server said when the session opened: serverInfo and instructions. */
+  const server = () => sessions.get(key)?.server || null;
+  return { rpc, tool, server };
 }
