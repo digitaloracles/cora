@@ -285,7 +285,7 @@ test("an account says whose it is, and a member's new agent starts on the accoun
     })()`);
   })();
   assert.deepEqual(connections.groups, ["Context", "Channels", "Connectors", "Intelligence", "Agents", "People", "General"], "the agents' context opens Settings");
-  assert.deepEqual(connections.ids.slice(0, 10), ["contesto", "discord", "telegram", "slack", "email", "connettori", "mcp", "server", "claude", "codex"]);
+  assert.deepEqual(connections.ids.slice(0, 11), ["contesto", "discord", "telegram", "slack", "email", "connettori", "mcp", "app", "server", "claude", "codex"]);
   const firstKey = connections.ids.indexOf("chiavi-api");
   assert.ok(firstKey > connections.ids.indexOf("codex"));
   assert.equal(connections.ids.filter((id) => ["ollama", "orcarouter", "deepseek", "typesafe", "soniox"].includes(id)).length, 0);

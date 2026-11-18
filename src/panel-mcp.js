@@ -88,7 +88,7 @@ export class PanelMcp {
     if (typeof args.path !== "string" || args.path.length > 4096 || !args.path.startsWith("/api/") || /[\\\x00-\x1f]/.test(args.path)) throw invalid("Use a relative /api/ configuration path.");
     const url = new URL(args.path, "http://cora.internal"), method = args.method || "GET";
     if (url.origin !== "http://cora.internal" || !url.pathname.startsWith("/api/") || url.hash || !["GET", "POST", "PUT", "DELETE"].includes(method) || (args.body !== undefined && !object(args.body))) throw invalid("Invalid configuration request.");
-    if (/^\/api\/(?:login|logout|events|cloud|mcp)(?:\/|$)/.test(url.pathname)) throw fail("This authentication or transport route is not a configuration tool.", 403);
+    if (/^\/api\/(?:login|logout|events|cloud|mcp|app)(?:\/|$)/.test(url.pathname)) throw fail("This authentication or transport route is not a configuration tool.", 403);
     if (record.readOnly && method !== "GET") throw fail("Questo accesso MCP è in sola lettura.", 403);
     this.authorize(user, method, url);
     const body = method === "GET" ? "" : JSON.stringify(args.body || {});
