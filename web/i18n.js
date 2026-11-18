@@ -1534,6 +1534,8 @@ export const EN = {
   "Caricamento…": "Loading…",
   "Copia": "Copy",
   "Copiato": "Copied",
+  "Copiato {name}": "Copied {name}",
+  "Copia il nome": "Copy the name",
   "Incolla": "Paste",
   "Gli appunti sono vuoti": "The clipboard is empty",
   "Non riesco a leggere gli appunti: incolla a mano": "I cannot read the clipboard: paste it by hand",
