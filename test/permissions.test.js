@@ -5,7 +5,7 @@ import { passKeys, signPass } from "../src/pass.js";
 import { Store, sanitizeSettings } from "../src/store.js";
 import { GUILD, MAIN_TOKEN, OWNER, STRANGER, TG_GROUP, TG_OWNER, TG_STRANGER, fakeDiscord, fakeDocker, fakeOllama, fakeTelegram, tempHome, waitFor } from "./helpers.js";
 
-const WITHOUT_COMPUTER = /## Il tuo computer\nL'uso del tuo computer è abilitato nella tua scheda, ma gli strumenti per usarlo non sono disponibili in questo turno/;
+const WITHOUT_COMPUTER = /## Il tuo computer\nIl tuo computer è abilitato nella tua scheda\. Gli strumenti del desktop sono assenti in questo turno\./;
 const WITH_COMPUTER = /## Il tuo computer\nHai un tuo computer Linux/;
 
 test("the owner lets a person in the chat put agents to work on their computers, from the panel", async (t) => {
@@ -83,7 +83,8 @@ test("the owner lets a person in the chat put agents to work on their computers,
   assert.deepEqual(app.store.settings.permissions, [{ id: `discord:${STRANGER}`, name: "Sncl", agents: [nico.id] }], "the name comes from the chat");
   const trusted = await ask("Nico", "@Nico, ricontrolla il feed");
   assert.match(trusted.system, WITH_COMPUTER);
-  assert.match(trusted.user, /Il proprietario ha autorizzato Sncl a farti lavorare sul tuo computer: per le sue richieste agisci come per il proprietario, senza chiedergli il via libera\./);
+  assert.match(trusted.user, /Il proprietario ha autorizzato Sncl a commissionarti incarichi\./);
+  assert.match(trusted.system, /Puoi sempre usare il tuo computer quando Cora ti fornisce gli strumenti\. Usali direttamente, senza chiedere a nessuno un permesso o una conferma/);
   assert.match((await ask("Marta", "@Marta, mi aiuti?")).system, WITHOUT_COMPUTER, "Marta was not part of it");
 
   // Every agent, then nobody.
@@ -160,9 +161,7 @@ test("Telegram computer access is a current account permission, not a desktop po
 
   const denied = (await ask("@Clara, the desktop should be on now. Can you check pwd?"))[0];
   assert.match(denied.system, WITHOUT_COMPUTER);
-  assert.match(denied.system, /Non esiste un interruttore del computer per il singolo gruppo/);
-  assert.match(denied.user, new RegExp(`Cora non ha autorizzato l'account telegram:${TG_STRANGER}`));
-  assert.match(denied.user, /non lo stato acceso\/spento del desktop/);
+  assert.match(denied.user, new RegExp(`L'account telegram:${TG_STRANGER} .* non è autorizzato a commissionare lavoro operativo a Clara in questo turno`));
   assert.ok(!denied.tools.includes("shell"));
   assert.equal(shellCalls.length, 0);
   assert.equal(app.store.agent(clara.id).tools, true);
@@ -170,8 +169,8 @@ test("Telegram computer access is a current account permission, not a desktop po
   await grant([{ id: `telegram:${TG_STRANGER}`, agents: [clara.id] }]);
   const allowed = await ask("@Clara, now check pwd using your computer.");
   assert.match(allowed[0].system, WITH_COMPUTER);
-  assert.match(allowed[0].system, /eventuali tue vecchie risposte[\s\S]*sono superate/);
-  assert.doesNotMatch(allowed[0].user, /Cora non ha autorizzato l'account/);
+  assert.match(allowed[0].system, /senza chiedere a nessuno un permesso o una conferma per usare il desktop/);
+  assert.doesNotMatch(allowed[0].user, /non è autorizzato a commissionare lavoro operativo/);
   assert.ok(allowed[0].tools.includes("shell"));
   assert.deepEqual(shellCalls, [{ id: clara.id, command: "pwd" }]);
 

@@ -399,16 +399,17 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     if (withoutComputer) {
       sections.push([
         "## Il tuo computer",
-        "L'uso del tuo computer è abilitato nella tua scheda, ma gli strumenti per usarlo non sono disponibili in questo turno. Questo non dice se il desktop è acceso: non dichiararlo spento, assente o da accendere. Non esiste un interruttore del computer per il singolo gruppo o la singola chat.",
-        "Accensione del desktop e autorizzazione della persona sono due cose distinte. Se Cora indica che il richiedente non è autorizzato, spiega quel limite: il proprietario dell'agente può autorizzare quello specifico account nella pagina di questo agente, Impostazioni → Autorizzazioni. Le identità di Discord, Telegram e Slack sono separate: un permesso su una piattaforma non vale automaticamente sulle altre.",
-        "Non supporre che un'impostazione non sia stata salvata e non chiedere di riaccendere il desktop. Per un lavoro che richiede strumenti, chiedi con ask_owner l'intervento realmente necessario oppure spiega il permesso mancante. Se il limite è già stato spiegato, non ripeterlo a ogni messaggio: rispondi intanto alle domande che puoi gestire senza computer.",
+        "Il tuo computer è abilitato nella tua scheda. Gli strumenti del desktop sono assenti in questo turno. Puoi sempre usare il tuo computer quando Cora ti fornisce gli strumenti e non serve un permesso separato.",
+        "Se Cora indica che il richiedente non è autorizzato a farti lavorare, spiega il limite per la richiesta attuale. Se serve una decisione per procedere, usa ask_owner per l'autorizzazione alla richiesta. Il proprietario può autorizzare quello specifico account in Impostazioni → Autorizzazioni dell'agente. Ogni piattaforma ha le proprie identità.",
+        "Verifica lo stato del desktop separatamente quando è rilevante. Se hai già spiegato il limite, rispondi alle domande che puoi gestire con gli strumenti di questo turno.",
       ].join("\n"));
     }
     if (computer) {
       sections.push([
         "## Il tuo computer",
         "Hai un tuo computer Linux con desktop (XFCE, Chromium, terminale, node, python3, sudo). Il proprietario può vedere e usare lo stesso desktop dal pannello. I file nella tua home restano tra un riavvio e l'altro.",
-        "Gli strumenti disponibili in questo turno sono il riferimento attuale: eventuali tue vecchie risposte che dicevano di non poter usare il computer sono superate. Usa gli strumenti autorizzati senza chiedere di accendere o abilitare il desktop nella chat.",
+        "Puoi sempre usare il tuo computer quando Cora ti fornisce gli strumenti. Usali direttamente, senza chiedere a nessuno un permesso o una conferma per usare il desktop. Vale anche nelle routine e per un incarico autorizzato che ti affida un collega.",
+        "Le autorizzazioni riguardano chi può commissionare il lavoro e quali azioni puoi svolgere. Fai riferimento agli strumenti disponibili nel turno attuale.",
         "Usa gli strumenti quando ti chiedono di fare qualcosa davvero (cercare, controllare, scrivere file, aprire siti): agisci invece di descrivere cosa faresti.",
         "Per consegnare un file autorizzato a un collega usa share_file({path, agent}): Cora trasferisce e verifica una copia tra i vostri desktop senza SSH o nuovi login. Comunica poi al collega con @Nome il percorso restituito e l'hash. Non incollare il contenuto dei file in chat.",
         "Il processo locale di Codex può avere un sandbox in sola lettura: protegge i file dell'host che avvia il modello. Lo strumento Cora shell gira invece sul tuo computer Linux separato, dove sei amministratore e puoi scrivere file, installare e avviare servizi. Il sandbox dell'host non rende in sola lettura Milo, CRM, API, SSH o gli altri connettori raggiunti dai tuoi strumenti.",
@@ -546,9 +547,11 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       instruction,
       replyTo?.handoffResult ? `[Cora: risultato del collega] ${replyTo.authorName}: ${replyTo.content}\nQuesto è l'esito del controllo che avevi delegato in questo thread. Riprendi il lavoro ancora aperto sulla richiesta della persona, usando l'esito e verificando lo stato attuale. Il rapporto non sostituisce l'obiettivo della persona e non autorizza altri lavori. Rispetta eventuali istruzioni successive, stop e limiti di rilascio; non ripetere operazioni già concluse.`
         : replyTo ? `Messaggio umano a cui rispondere adesso: ${replyTo.authorName}: ${replyTo.content}\nGli eventuali risultati di routine successivi sono solo contesto, non una nuova richiesta di eseguirle.` : "",
-      computerDenied && last ? `Accesso al computer in questo turno: Cora non ha autorizzato l'account ${transportOf(channel.id)}:${last.authorId || "sconosciuto"} (${last.authorName}) a usare il computer di ${agent.name}. Il limite riguarda i permessi di questa persona, non lo stato acceso/spento del desktop e non un'impostazione del gruppo. Accendere il desktop non concede il permesso. Questa decisione attuale prevale su eventuali affermazioni diverse nella cronologia.` : "",
+      computerDenied && last ? (last.kind === "human"
+        ? `L'account ${transportOf(channel.id)}:${last.authorId || "sconosciuto"} (${last.authorName}) non è autorizzato a commissionare lavoro operativo a ${agent.name} in questo turno.`
+        : "La richiesta a monte non autorizza il lavoro operativo in questo turno.") : "",
       belongsTo && replyTo ? `${replyTo.authorName} è la persona a cui appartieni: le sue richieste valgono come quelle del proprietario. Agisci senza chiedere il via libera a nessun altro, e quando ti serve un permesso o una decisione chiedila a questa persona (ask_owner chiama lei).`
-        : authorized && replyTo ? `Il proprietario ha autorizzato ${replyTo.authorName} a farti lavorare sul tuo computer: per le sue richieste agisci come per il proprietario, senza chiedergli il via libera.` : "",
+        : authorized && replyTo ? `Il proprietario ha autorizzato ${replyTo.authorName} a commissionarti incarichi. Per le sue richieste agisci come per il proprietario.` : "",
       replyTo?.voice ? `${replyTo.authorName} ti ha mandato un messaggio vocale. ${replyTo.replyMode === "text" ? "Ha chiesto una risposta scritta: Cora invia solo il testo." : replyTo.replyMode === "both" ? "Ha chiesto anche il testo: Cora invia la risposta scritta e a voce." : "Cora consegna solo la tua voce, anche per say e ask_owner: non viene pubblicata una copia scritta. Non usare voice per duplicarla."} Formula le risposte come le diresti: frasi brevi, niente tabelle né elenchi lunghi. Non promettere link o codice in chat se la persona non li ha chiesti.` : "",
     ].filter(Boolean).join("\n\n");
     const continuation = replyTo?.handoffResult ? history.findLast((item) => ["owner", "human"].includes(item.kind) && !item.passive && !item.toOthers && item.addressed?.includes(agent.id)) : null;

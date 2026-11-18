@@ -6605,7 +6605,7 @@ describe("talking with the agents", () => {
     assert.match(trace.error, /test-model returned no content/);
   });
 
-  test("an agent without its computer is told to ask the owner instead of passing when someone else wants work done", async () => {
+  test("a guest's work request is identified as unapproved and withholds desktop tools", async () => {
     let system = "";
     let request = "";
     replies.set("Olga", (body) => {
@@ -6616,10 +6616,8 @@ describe("talking with the agents", () => {
     });
     discord.say({ content: "@Olga, mi sistemi il sito?", author: STRANGER, username: "Ospite" });
     await waitFor(() => posts("Olga").includes("Serve il via libera di Sam: glielo chiedo."), { what: "Olga answering a guest" });
-    assert.match(system, /gli strumenti per usarlo non sono disponibili in questo turno[\s\S]*ask_owner/);
-    assert.match(system, /Non esiste un interruttore del computer per il singolo gruppo/);
-    assert.match(request, new RegExp(`Cora non ha autorizzato l'account discord:${STRANGER}`));
-    assert.match(request, /non lo stato acceso\/spento del desktop/);
+    assert.match(system, /Gli strumenti del desktop sono assenti in questo turno[\s\S]*usa ask_owner per l'autorizzazione alla richiesta/);
+    assert.match(request, new RegExp(`L'account discord:${STRANGER} .* non è autorizzato a commissionare lavoro operativo a Olga in questo turno`));
     await quiet();
   });
 
@@ -8555,6 +8553,7 @@ describe("thread goal lifecycle", () => {
       return { content: "Attività di Iris conclusa." };
     });
     replies.set("Ivo", (body) => {
+      assert.match(body.messages[0].content, /Vale anche nelle routine e per un incarico autorizzato che ti affida un collega\./);
       assert.ok(body.tools.some((tool) => tool.function.name === "shell"), "trusted delegation keeps the owner's computer authorization");
       return ++second === 1 ? { tool_calls: [{ function: { name: "shell", arguments: { command: "colleague-check" } } }] } : { content: "Attività di Ivo conclusa." };
     });
@@ -8582,6 +8581,7 @@ describe("thread goal lifecycle", () => {
     });
     replies.set("Ivo", (body) => {
       second++;
+      assert.match(body.messages.filter((message) => message.role === "user").at(-1).content, /La richiesta a monte non autorizza il lavoro operativo in questo turno\./);
       assert.ok(!body.tools.some((tool) => tool.function.name === "shell"), "a colleague cannot gain the owner's tools from an untrusted caller");
       return { content: "Posso parlarne." };
     });
