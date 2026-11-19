@@ -10692,7 +10692,7 @@ function threadPast(thread, open) {
 async function renderThreads() {
   const view = route()[1] || "";
   if (view === "t" && route()[2]) return renderThreadPage(decodeURIComponent(route()[2]));
-  const section = view === "storico" || view === "attivi" ? view : "";
+  const section = ["attivi", "storico", "piani"].includes(view) ? view : "";
   const ticket = S.threadsTicket = (S.threadsTicket || 0) + 1;
   const listing = () => route()[0] === "thread" && route()[1] !== "t" && S.threadsTicket === ticket;
   let board = { threads: [], parents: [] };
@@ -10715,6 +10715,7 @@ async function renderThreads() {
   const refilter = () => { if (shownBoard) drawBoard(shownBoard, boardSig); };
   const liveFilter = threadFilter(refilter);
   const pastFilter = threadFilter(refilter);
+  const plans = threadPlansIndex();
   const banner = h("div", {});
   let parentsSig = "";
   let boardSig = "";
@@ -10770,9 +10771,13 @@ async function renderThreads() {
   const entries = [
     ["attivi", "Attivi", "hash", "Chi sta lavorando adesso", [create, load, liveFilter, liveList, liveEmpty, liveNone].filter(Boolean)],
     ["storico", "Storico", "clock", "Un thread per riga: aprilo per le sessioni", [pastFilter, pastList, pastEmpty, pastNone]],
+    ["piani", "Piani", "list", "Checklist dei thread", [plans.view]],
   ];
-  S.threadBack = `#/thread/${section || "attivi"}`;
-  const workspace = sectionWorkspace({ title: "Thread", base: "#/thread", current: section, entries, phoneSwitch: true, onSelect: (id) => { S.threadBack = `#/thread/${id || "attivi"}`; } });
+  const workspace = sectionWorkspace({ title: "Thread", base: "#/thread", current: section, entries, phoneSwitch: true, onSelect: (id) => {
+    S.threadBack = `#/thread/${id}`;
+    if (id === "piani") plans.refresh();
+  } });
+  workspace.classList.add("thread-index-workspace");
   draw(board, failed);
   const plus = create ? btn("Nuovo thread", { icon: "plus", cls: "primary thread-plus", title: "Nuovo thread", onclick: () => {
     const opening = create.hidden;
@@ -10801,6 +10806,7 @@ async function renderThreads() {
   };
   S.threadsRefresh = () => {
     if (!liveList.isConnected || !listing()) return false;
+    if (route()[1] === "piani") plans.refresh();
     void refresh();
     return true;
   };
@@ -10811,8 +10817,72 @@ const THREAD_PLAN_STATUS = {
   active: ["In corso", "agent"], blocked: ["Bloccato", "agent"], completed: ["Completato", "ok"], closed: ["Chiuso", ""],
 };
 
+function threadPlansIndex() {
+  const group = (status, title, emptyLabel) => {
+    const list = h("div", { class: "thread-plan-list" });
+    const noPlans = empty("list", emptyLabel);
+    const problem = h("p", { class: "err-text", role: "alert", hidden: true });
+    const loading = h("p", { class: "muted", role: "status", hidden: true }, "Caricamento…");
+    const more = btn("Carica altri piani", { icon: "plus", cls: "sm ghost", onclick: () => load(cursor) });
+    const retry = btn("Riprova", { icon: "refresh", cls: "sm ghost" });
+    noPlans.hidden = more.hidden = retry.hidden = true;
+    const view = h("section", { class: "stack-sm" }, h("h3", { class: "label" }, title), list, noPlans, loading, problem, retry, more);
+    let plans = new Map();
+    let cursor = "";
+    let busy = false;
+    let again = false;
+    const load = async (before = "") => {
+      if (busy) {
+        if (!before) again = true;
+        return;
+      }
+      busy = more.disabled = retry.disabled = true;
+      loading.hidden = Boolean(plans.size);
+      noPlans.hidden = problem.hidden = retry.hidden = true;
+      const params = new URLSearchParams({ status });
+      if (before) params.set("before", before);
+      try {
+        const page = await api(`/api/plans?${params}`);
+        if (!before) plans = new Map();
+        for (const plan of page.plans) plans.set(plan.id, plan);
+        cursor = page.next || "";
+        keyedChildren(list, [...plans.values()].map((plan) => ({
+          key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.threadName]),
+          build: () => {
+            const [label, cls] = THREAD_PLAN_STATUS[plan.status];
+            return h("a", { class: "thread-plan thread-plan-index-row", href: threadPlanLink(plan.channelId, "piani", plan.id) },
+              h("span", { class: "thread-plan-title" }, h("strong", {}, raw(plan.name)),
+                h("small", {}, raw(`${plan.threadName || plan.channelId} · ${plan.agentName}`))),
+              h("span", { class: "thread-plan-progress" }, h("span", {}, raw(tr("{done} di {total}", { done: plan.done, total: plan.items.length }))), tag(label, cls)),
+              icon("next", "thread-turn-chev"));
+          },
+        })), () => false);
+        noPlans.hidden = Boolean(plans.size);
+        more.hidden = !cursor;
+      } catch (error) {
+        problem.textContent = tr(error.message);
+        problem.hidden = retry.hidden = false;
+        more.hidden = true;
+        retry.onclick = () => load(before);
+      } finally {
+        busy = more.disabled = retry.disabled = false;
+        loading.hidden = true;
+        if (again) { again = false; void load(); }
+      }
+    };
+    return { view, load };
+  };
+  const open = group("open", "Piani aperti", "Nessun piano aperto.");
+  const history = group("history", "Storico dei piani", "Nessun piano nello storico.");
+  return {
+    view: panel({ icon: "list", title: "Piani", cls: "thread-plans-panel" }, h("div", { class: "stack" }, open.view, history.view)),
+    refresh: () => { void open.load(); void history.load(); },
+  };
+}
+
 function threadPlanLink(threadId, section, planId, taskId) {
-  const query = new URLSearchParams({ plan: planId, task: taskId });
+  const query = new URLSearchParams({ plan: planId });
+  if (taskId) query.set("task", taskId);
   return `${threadHref(threadId)}/${section}?${query}`;
 }
 
@@ -10941,14 +11011,15 @@ function threadPlansPanel(threadId, apiRoot, refresh) {
     add.hidden = !agents.length || !form.hidden;
     submit.disabled = saving || !agents.length;
     const planId = params.get("plan"), taskId = params.get("task");
-    if (planId && taskId && selected !== `${planId}:${taskId}`) {
+    const selection = `${planId}:${taskId || ""}`;
+    if (planId && selected !== selection) {
       const found = [...view.querySelectorAll("[data-plan]")].find((node) => node.dataset.plan === planId);
-      const row = [...(found?.querySelectorAll("[data-task]") || [])].find((node) => node.dataset.task === taskId);
-      if (row) {
-        selected = `${planId}:${taskId}`;
+      const row = taskId && [...(found?.querySelectorAll("[data-task]") || [])].find((node) => node.dataset.task === taskId);
+      if (found && (!taskId || row)) {
+        selected = selection;
         found.open = true;
-        row.classList.add("selected");
-        requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
+        if (row) row.classList.add("selected");
+        requestAnimationFrame(() => (row || found.querySelector("summary")).scrollIntoView({ block: "nearest" }));
       }
     }
   };
