@@ -10,10 +10,14 @@ const XDOTOOL_BUTTON = { click: "1", double_click: "1", right_click: "3", middle
 
 const planItems = { type: "array", items: { type: "string" }, minItems: 1, maxItems: 24 };
 const planVersion = { id: { type: "string" }, revision: { type: "integer", minimum: 1 } };
+const planDependencies = { type: "array", maxItems: 48, items: {
+  type: "object", properties: { step: { type: "integer", minimum: 1 }, plan_id: { type: "string" }, task_id: { type: "string" } },
+  required: ["plan_id"],
+} };
 const PLAN_TOOLS = [
-  { name: "thread_plan_list", description: "Read your plans in this thread, with the open plan first. Shows its revision, ordered checklist and next step.", parameters: { type: "object", properties: {} } },
-  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this thread. Save it before doing the work. Items are in execution order. Only one plan can be open in the thread.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems }, required: ["name", "items"] } },
-  { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears.", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" } }, required: ["id", "revision"] } },
+  { name: "thread_plan_list", description: "Read your plans in this thread, with the open plan first. Shows its revision, ordered checklist and next step. Set include_peers to see shared plans and their prerequisite IDs.", parameters: { type: "object", properties: { include_peers: { type: "boolean" } } } },
+  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this thread. Save it before doing the work. Items are in execution order. Each agent can have one open plan in this thread. Other agents can run their own plans in parallel. For dependencies, step is your 1-based dependent step (omit for the entire plan), plan_id is the prerequisite plan, and task_id optionally selects a step of that plan.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems, dependencies: planDependencies }, required: ["name", "items"] } },
+  { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears. Supply dependencies to replace all prerequisites for unfinished work (an empty array removes them).", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" }, dependencies: planDependencies }, required: ["id", "revision"] } },
   { name: "thread_plan_resume", description: "Attach this turn's reasoning to the next checklist task when you start or resume working on an existing plan. Use it before doing the work in this turn.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
   { name: "thread_plan_advance", description: "Mark the next 1-based checklist step done after it is verified. Then do the new next step. The final step completes the plan automatically.", parameters: { type: "object", properties: { ...planVersion, step: { type: "integer", minimum: 1 } }, required: ["id", "revision", "step"] } },
   { name: "thread_plan_close", description: "Close your open plan when the person asks to close or abandon it. Keeps the checklist and actual progress visible.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
@@ -521,7 +525,10 @@ export async function executeTool(call, ctx) {
     if (THREAD_PLAN_TOOLS.has(call.name)) {
       if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current thread" };
       const operation = call.name.slice("thread_plan_".length);
-      const plan = operation === "list" ? store.plans.list(channelId, [agent.id], 20)
+      const list = () => args.include_peers ? store.plans.peerPlans(channelId, agent.id, 40).map((plan) => ({
+        ...plan, agentName: store.agent(plan.agentId)?.name || plan.agentId,
+      })) : store.plans.list(channelId, [agent.id], 20);
+      const plan = operation === "list" ? list()
         : operation === "create" ? store.plans.create(channelId, agent.id, args)
         : store.plans.change(channelId, agent.id, operation, args);
       return { text: JSON.stringify(plan) };
