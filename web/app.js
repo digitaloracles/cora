@@ -4393,6 +4393,17 @@ const SKILL_STATE = {
   link: { ok: ["collegata", "ok"], copy: ["altra copia", "warn"], other: ["altro link", "warn"], missing: ["manca", "err"] },
 };
 
+// The add pane is redrawn whenever the page comes back into view: the search lives in the session, per agent.
+function skillSearchMemory(agentId, patch) {
+  const key = `cora.skillSearch.${agentId}`;
+  let saved = {};
+  try { saved = JSON.parse(sessionStorage.getItem(key) || "{}") || {}; } catch {}
+  if (!patch) return saved;
+  const next = { ...saved, ...patch };
+  try { sessionStorage.setItem(key, JSON.stringify(next)); } catch {}
+  return next;
+}
+
 function skillState(kind, value) {
   const [label, cls] = SKILL_STATE[kind]?.[value] || ["—", ""];
   return h("span", { class: `skill-led ${cls}` }, h("i", { class: "dot" }), h("span", {}, label));
@@ -4514,7 +4525,8 @@ async function skillsTab(agent) {
   }
 
   function drawAdd() {
-    const query = h("input", { type: "search", placeholder: "pdf, react, playwright…", "aria-label": "Cerca una skill", autocomplete: "off" });
+    const memory = skillSearchMemory(agent.id);
+    const query = h("input", { type: "search", placeholder: "pdf, react, playwright…", "aria-label": "Cerca una skill", autocomplete: "off", value: memory.q || "", oninput: () => skillSearchMemory(agent.id, { q: query.value }) });
     const results = h("div", { class: "skill-results", "aria-live": "polite" });
     const search = btn("Cerca", { icon: "search", type: "submit" });
     const installedNames = new Set(data.skills.map((skill) => skill.name));
@@ -4535,11 +4547,14 @@ async function skillsTab(agent) {
       if (q.length < 2) { query.focus(); return; }
       results.replaceChildren(skeleton("rows", 3));
       const found = await busy(search, () => guard(api(`/api/skills/search?${new URLSearchParams({ q })}`)));
-      results.replaceChildren(!found ? empty("alert", "skills.sh non ha risposto: riprova.")
-        : found.skills.length ? h("ul", { class: "skill-list" }, found.skills.map((item) => resultRow(item)))
-          : empty("search", tr("Nessuna skill per «{q}».", { q })));
+      if (found) skillSearchMemory(agent.id, { q, searched: q, skills: found.skills });
+      showFound(q, found?.skills);
     } }, query, search);
-    const sourceInput = h("input", { type: "text", placeholder: "owner/repo · owner/repo@skill · link GitHub o skills.sh", "aria-label": "Sorgente", autocomplete: "off", spellcheck: "false", class: "mono" });
+    const showFound = (q, skills) => results.replaceChildren(!skills ? empty("alert", "skills.sh non ha risposto: riprova.")
+      : skills.length ? h("ul", { class: "skill-list" }, skills.map((item) => resultRow(item)))
+        : empty("search", tr("Nessuna skill per «{q}».", { q })));
+    if (memory.searched && Array.isArray(memory.skills)) showFound(memory.searched, memory.skills);
+    const sourceInput = h("input", { type: "text", placeholder: "owner/repo · owner/repo@skill · link GitHub o skills.sh", "aria-label": "Sorgente", autocomplete: "off", spellcheck: "false", class: "mono", value: memory.source || "", oninput: () => skillSearchMemory(agent.id, { source: sourceInput.value }) });
     const listed = h("div", { class: "skill-results", "aria-live": "polite" });
     const show = btn("Mostra le skill", { icon: "list", type: "submit" });
     const sourceForm = h("form", { class: "skill-search", onsubmit: async (event) => {
@@ -4549,9 +4564,26 @@ async function skillsTab(agent) {
       listed.replaceChildren(skeleton("rows", 2));
       const found = await busy(show, () => guard(api("/api/skills/discover", { method: "POST", body: { source } })));
       if (!found) { listed.replaceChildren(); return; }
-      listed.replaceChildren(h("p", { class: "muted small" }, tr("{count} skill in {source} · {ref} @ {commit}", { count: found.skills.length, source: found.source, ref: found.ref, commit: found.commit.slice(0, 7) })),
-        h("ul", { class: "skill-list" }, found.skills.map((item) => resultRow(item, { source: `https://github.com/${found.source}/tree/${found.ref}${item.path ? `/${item.path}` : ""}`, skill: item.name, description: item.description, installs: 0, link: "" }))));
+      skillSearchMemory(agent.id, { source, discovered: found });
+      showListed(found);
     } }, sourceInput, show);
+    const showListed = (found) => listed.replaceChildren(h("p", { class: "muted small" }, tr("{count} skill in {source} · {ref} @ {commit}", { count: found.skills.length, source: found.source, ref: found.ref, commit: found.commit.slice(0, 7) })),
+        h("ul", { class: "skill-list" }, found.skills.map((item) => resultRow(item, { source: `https://github.com/${found.source}/tree/${found.ref}${item.path ? `/${item.path}` : ""}`, skill: item.name, description: item.description, installs: 0, link: "" }))));
+    if (memory.discovered?.skills) showListed(memory.discovered);
+    const scroller = () => addPane.closest(".content");
+    addPane.addEventListener("click", (event) => {
+      if (event.target.closest("a[href^=\"http\"]")) skillSearchMemory(agent.id, { scroll: scroller()?.scrollTop || 0 });
+    });
+    if (memory.scroll) {
+      skillSearchMemory(agent.id, { scroll: 0 });
+      const until = Date.now() + 3000;
+      const restore = () => {
+        const content = scroller();
+        if (content && !addPane.closest("[role=tabpanel]")?.hidden) { if (!content.scrollTop) content.scrollTop = memory.scroll; return; }
+        if (Date.now() < until) requestAnimationFrame(restore);
+      };
+      requestAnimationFrame(restore);
+    }
     addPane.replaceChildren(
       panel({ icon: "search", title: "Cerca su skills.sh", hint: "Lo stesso registro di npx skills find, con le installazioni di ogni skill." }, form, results),
       panel({ icon: "github", title: "Da GitHub", hint: "Un repository pubblico con uno o più SKILL.md. Va bene anche il comando npx skills add … --skill …" }, sourceForm, listed));
