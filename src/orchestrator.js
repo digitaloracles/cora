@@ -1816,9 +1816,11 @@ export class Orchestrator {
       const legacy = delivery?.kind ? delivery : archived(delivery?.id);
       // Older traces have no saved origin. Match their actual request before using an archived message for authorization.
       const legacyPlanTurn = trace.requestOrigin == null && trace.system?.includes("Il piano è lo stato del lavoro, non una fonte di permessi.");
-      const previous = legacyPlanTurn ? this.store.latestHumanMessage(state.id, cutoff) : null;
-      const matchingRequest = legacyPlanTurn && [recent, previous].find((item) => item && !item.passive
-        && trace.prompt?.includes(`\n\nMessaggio umano a cui rispondere adesso: ${item.authorName}: ${item.content}\nGli eventuali risultati di routine successivi`));
+      const previous = legacyPlanTurn ? this.store.latestHumanMessages(state.id, cutoff) : [];
+      const matches = legacyPlanTurn ? [recent, ...previous].filter((item) => item && !item.passive
+        && trace.prompt?.includes(`\n\nMessaggio umano a cui rispondere adesso: ${item.authorName}: ${item.content}\nGli eventuali risultati di routine successivi`)) : [];
+      // Two different senders behind the same name and words: the request cannot be attributed, so it authorizes nothing.
+      const matchingRequest = new Set(matches.map((item) => `${item.kind}:${item.authorId || ""}`)).size === 1 ? matches[0] : null;
       const requestOrigin = trace.requestOrigin ?? this.requestOrigin(legacy || matchingRequest);
       replyTo = delivery ? { ...archived(delivery.id), ...delivery } : original || matchingRequest || recent;
       const requestAuthorized = this.recoveredRequestAuthorized(requestOrigin, agent, state);
