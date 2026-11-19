@@ -7334,7 +7334,14 @@ test("thread plans let a panel owner create and close while other agents and thr
   const outcomes = await Promise.all([create(f.alice, agent.id), create(f.alice, agent.id)]);
   assert.deepEqual(outcomes.map(({ status }) => status).sort(), [201, 409]);
   const plan = outcomes.find(({ status }) => status === 201).data;
-  assert.deepEqual((await f.request(f.bob, path)).data.plans, []);
+  assert.deepEqual((await f.request(f.alice, path)).data.planAgents, []);
+  const guestView = (await f.request(f.bob, path)).data;
+  assert.deepEqual(guestView.plans, []);
+  assert.deepEqual(guestView.planAgents, [{ id: other.id, name: other.name }]);
+  const second = await create(f.bob, other.id);
+  assert.equal(second.status, 201);
+  assert.deepEqual((await f.request(f.bob, path)).data.plans.map(({ id }) => id), [second.data.id]);
+  assert.deepEqual((await f.request(f.alice, path)).data.plans.map(({ id }) => id), [plan.id]);
   assert.deepEqual((await f.request(f.alice, elsewhere)).data.plans, []);
   const close = (actor, route, revision = plan.revision) => f.request(actor, route + "/plans/" + plan.id + "/close", { method: "POST", body: { revision } });
   assert.equal((await close(f.bob, path)).status, 404);
@@ -7372,6 +7379,10 @@ test("thread plans let a panel owner create and close while other agents and thr
   assert.equal(ended.status, "closed");
   assert.equal(ended.done, 0);
   assert.equal(ended.tasksWithReasoning.length, 1);
+  const secondView = (await f.request(f.bob, path)).data;
+  assert.equal(secondView.plans[0].id, second.data.id);
+  assert.equal(secondView.plans[0].status, "active");
+  assert.equal(secondView.plans[0].revision, second.data.revision);
 });
 
 test("thread plans resume the saved next step instead of an interrupted trace's stale checklist", async (t) => {

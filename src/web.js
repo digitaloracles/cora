@@ -1139,7 +1139,9 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       detail.thread.flows = detail.thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) }));
       if (detail.thread.thread) {
         detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
-        detail.planAgents = !store.plans.hasOpen(detail.thread.id) ? threadPlanAgents(detail.thread.id).map(({ id, name }) => ({ id, name })) : [];
+        detail.planAgents = threadPlanAgents(detail.thread.id)
+          .filter(({ id }) => !store.plans.open(detail.thread.id, id))
+          .map(({ id, name }) => ({ id, name }));
       }
       return send(res, 200, detail);
     }

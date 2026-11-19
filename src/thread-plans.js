@@ -46,8 +46,9 @@ export class ThreadPlans {
         revision INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS thread_plans_open ON thread_plans(channel_id)
+      CREATE UNIQUE INDEX IF NOT EXISTS thread_plans_open_by_agent ON thread_plans(channel_id, agent_id)
         WHERE status IN ('active', 'blocked');
+      DROP INDEX IF EXISTS thread_plans_open;
       CREATE INDEX IF NOT EXISTS thread_plans_recent ON thread_plans(channel_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS thread_plans_history ON thread_plans(updated_at DESC, id);
       CREATE TABLE IF NOT EXISTS thread_plan_reasoning (
@@ -86,10 +87,6 @@ export class ThreadPlans {
       GROUP BY channel_id`).all(...(agentIds ? [JSON.stringify(agentIds)] : []));
   }
 
-  hasOpen(channelId) {
-    return Boolean(this.db.prepare("SELECT 1 FROM thread_plans WHERE channel_id = ? AND status IN ('active', 'blocked')").get(channelId));
-  }
-
   open(channelId, agentId) {
     return planRow(this.db.prepare(`SELECT * FROM thread_plans WHERE channel_id = ? AND agent_id = ?
       AND status IN ('active', 'blocked')`).get(channelId, agentId));
@@ -100,7 +97,7 @@ export class ThreadPlans {
       VALUES (?, ?, ?, ?, ?, 'active', ?) ON CONFLICT DO NOTHING RETURNING *`)
       .get(randomUUID(), channelId, agentId, planText(name, MAX_NAME, "Plan name"),
         JSON.stringify(checklist(items).map((text) => ({ id: randomUUID(), text }))), new Date().toISOString());
-    if (!row) throw Object.assign(new Error("there is already an open plan in this thread"), { status: 409 });
+    if (!row) throw Object.assign(new Error("this agent already has an open plan in this thread"), { status: 409 });
     return this.changed(planRow(row));
   }
 

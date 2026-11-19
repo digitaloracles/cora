@@ -4,7 +4,7 @@ import { Store } from "../src/store.js";
 import { Traces } from "../src/traces.js";
 import { tempHome } from "./helpers.js";
 
-test("one open plan per thread, revision protection and ordered completion survive restart", () => {
+test("one open plan per agent in a thread, revision protection and ordered completion survive restart", () => {
   const home = tempHome();
   let store = new Store(home);
   const agent = store.createAgent({ name: "Pilot" });
@@ -13,7 +13,7 @@ test("one open plan per thread, revision protection and ordered completion survi
   const plans = store.plans;
   let plan = plans.create(channel, agent.id, { name: "Delivery", items: ["Verify", "Send", "Check receipt"] });
   const original = plan;
-  assert.throws(() => plans.create(channel, other.id, { name: "Other", items: ["Check"] }), { status: 409 });
+  assert.throws(() => plans.create(channel, agent.id, { name: "Duplicate", items: ["Check"] }), { status: 409 });
   assert.throws(() => plans.change(channel, other.id, "advance", { ...plan, step: 1 }), { status: 404 });
   assert.throws(() => plans.change("800000000000000052", agent.id, "advance", { ...plan, step: 1 }), { status: 404 });
   assert.throws(() => plans.change(channel, agent.id, "advance", { ...plan, step: 2 }), /only step 1/);
@@ -24,20 +24,35 @@ test("one open plan per thread, revision protection and ordered completion survi
   assert.equal(plan.next, null);
   assert.deepEqual(plan.items.map(({ id }) => id), [original.items[0].id, original.items[2].id, original.items[1].id]);
   assert.throws(() => plans.change(channel, agent.id, "advance", { ...plan, step: 2 }), /clear the blocker/);
+  // Recreate the legacy index to exercise migration with an existing blocked plan.
+  store.db.exec(`CREATE UNIQUE INDEX thread_plans_open ON thread_plans(channel_id)
+    WHERE status IN ('active', 'blocked'); DROP INDEX thread_plans_open_by_agent;`);
   store.close();
   store = new Store(home);
   assert.deepEqual(store.plans.open(channel, agent.id), plan);
+  assert.throws(() => store.plans.create(channel, agent.id, { name: "Duplicate", items: ["Check"] }), { status: 409 });
+  const parallel = store.plans.create(channel, other.id, { name: "Independent", items: ["Check", "Report"] });
+  assert.equal(store.plans.list(channel).length, 2);
+  const progressed = store.plans.change(channel, other.id, "advance", { ...parallel, step: 1 });
+  assert.equal(progressed.next, 2);
+  assert.deepEqual(store.plans.open(channel, agent.id), plan);
+  store.close();
+  store = new Store(home);
+  assert.deepEqual(store.plans.open(channel, other.id), progressed);
   plan = store.plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "" });
   plan = store.plans.change(channel, agent.id, "advance", { ...plan, step: 2 });
   plan = store.plans.change(channel, agent.id, "advance", { ...plan, step: 3 });
   assert.equal(plan.status, "completed");
   assert.equal(plan.next, null);
   assert.equal(store.plans.open(channel, agent.id), null);
-  const next = store.plans.create(channel, other.id, { name: "Next plan", items: ["Draft"] });
-  const closed = store.plans.change(channel, other.id, "close", next);
+  assert.deepEqual(store.plans.open(channel, other.id), progressed);
+  const fresh = store.plans.create(channel, agent.id, { name: "Next plan", items: ["Check"] });
+  store.plans.change(channel, agent.id, "advance", { ...fresh, step: 1 });
+  const next = store.plans.create("800000000000000052", other.id, { name: "Another thread", items: ["Draft"] });
+  const closed = store.plans.change(next.channelId, other.id, "close", next);
   assert.equal(closed.status, "closed");
   assert.equal(closed.done, 0);
-  assert.deepEqual(store.plans.list(channel, [agent.id]), [plan]);
+  assert.deepEqual(store.plans.list(channel, [agent.id]).map(({ id }) => id).sort(), [plan.id, fresh.id].sort());
   assert.deepEqual(store.plans.list(channel, []), []);
   store.close();
 });
