@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ThreadState } from "./thread-state.js";
 import { ThreadSessions, killPid, noteChildPid, pidAlive, recoverHarness, sessionFailure } from "./thread-sessions.js";
 import { ProcessUsage } from "./process-usage.js";
+import { escapeSlack, isDirectChannel } from "./slack.js";
 import { TRANSPORT_LABELS, isSlackChannel, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
 import { MEMORY_TOOLS } from "./tools.js";
@@ -167,6 +168,13 @@ function choiceButtons(agent, choices) {
 /** The same answers as a Telegram inline keyboard, one button per row so long labels stay whole. */
 function choiceKeyboard(agent, choices) {
   return choices.slice(0, 5).map((label, index) => [{ text: label.slice(0, 64), callback_data: `cora:choice:${agent.id}:${index}` }]);
+}
+
+/** The same answers as Slack buttons, for the actions block under the question. */
+function choiceSlackButtons(agent, choices) {
+  return choices.slice(0, 5).map((label, index) => ({
+    type: "button", text: { type: "plain_text", text: label.slice(0, 75), emoji: true }, action_id: `cora:choice:${agent.id}:${index}`, value: String(index), ...(index ? {} : { style: "primary" }),
+  }));
 }
 
 function discordConversationMessage(raw, archived = null) {
@@ -953,6 +961,69 @@ export class Orchestrator {
       id: `tg_${chatId}${privateWith ? `@${privateWith}` : ""}_cb${query.id}`,
       at: Date.now(),
       authorId: String(from.id || ""),
+      authorName,
+      kind,
+      agentId: null,
+      content: label,
+      choiceFor: agent.id,
+    });
+  }
+
+  /**
+   * One of the answers an agent offered with ask_owner, pressed on Slack: like on Discord and Telegram it
+   * reaches that agent as the presser's message, and the buttons give way to the answer chosen. Slack
+   * delivers the press to the app that posted the question, over its own socket.
+   */
+  async onSlackChoice(payload, viaAgentId = null) {
+    const action = (payload?.actions || []).find((entry) => /^cora:choice:/.test(String(entry?.action_id || "")));
+    const match = /^cora:choice:(ag_[a-f0-9]{12}):(\d)$/.exec(String(action?.action_id || ""));
+    const message = payload?.message;
+    const channel = String(payload?.channel?.id || payload?.container?.channel_id || "");
+    if (!match || !message?.ts || !channel) return;
+    const client = (viaAgentId && this.skBots?.client(viaAgentId)) || this.slack;
+    if (!client?.user) return;
+    const key = `sl:${channel}:${message.ts}:${action.action_ts || payload.trigger_id || ""}`;
+    this.pressed ??= new Set();
+    if (this.pressed.has(key)) return;
+    this.pressed.add(key);
+    if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value);
+    const english = this.store.settings.language === "en";
+    const user = payload.user || {};
+    const threadTs = message.thread_ts && message.thread_ts !== message.ts ? message.thread_ts : "";
+    const notice = (text) => client.request("chat.postEphemeral", { channel, user: user.id, text, ...(threadTs ? { thread_ts: threadTs } : {}) }).catch(() => {});
+    if (encryptionRequired(this.store) || !this.channels.on("slack") || !user.id) return;
+    const direct = isDirectChannel(channel);
+    const privateWith = direct ? viaAgentId : null;
+    if (direct ? !privateWith : !this.store.settings.slackChannelIds.includes(channel)) return;
+    const agent = this.store.agent(match[1]);
+    if (!agent || (privateWith && privateWith !== agent.id)) return notice(english ? "That agent is no longer here." : "Questo agente non c'è più.");
+    const channelId = slackChannel(channel, threadTs);
+    if (privateWith) this.dmAgent.set(channelId, privateWith);
+    const state = this.state(channelId);
+    if (viaAgentId && !direct) state.heardFrom.add(viaAgentId);
+    const kind = this.isSlackOwner(user.id) ? "owner" : "human";
+    if (kind !== "owner" && !this.authorized({ kind, authorId: String(user.id) }, agent, state)) {
+      return notice(english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.`);
+    }
+    const blocks = message.blocks || [];
+    const button = blocks.flatMap((block) => block.type === "actions" ? block.elements || [] : []).find((element) => element.action_id === action.action_id);
+    const label = String(button?.text?.text || "").trim();
+    if (!label) return notice(english ? "That answer is no longer available." : "Questa risposta non è più disponibile.");
+    const authorName = await client.userName(user.id);
+    // The question keeps its words; the buttons give way to the answer and who chose it.
+    const sections = blocks.filter((block) => block.type !== "actions");
+    const chosen = `→ *${escapeSlack(label)}* (${escapeSlack(authorName)})`;
+    await client.request("chat.update", {
+      channel, ts: message.ts,
+      text: `${message.text || ""}\n${chosen}`.slice(0, 3900),
+      blocks: [...sections, { type: "section", text: { type: "mrkdwn", text: chosen } }],
+    }).catch((error) => this.log({ type: "warning", agentId: agent.id, channelId, text: `pulsante Slack: la domanda non si aggiorna (${error.slack || error.message})` }));
+    this.log({ type: "message", agentId: agent.id, channelId, text: `${authorName} ha scelto «${label}» per ${agent.name}` });
+    await this.ensureHistory(state);
+    await this.ingest(state, {
+      id: `sl_${channel}_cb${String(action.action_ts || Date.now()).replace(/\D/g, "")}`,
+      at: Date.now(),
+      authorId: String(user.id),
       authorName,
       kind,
       agentId: null,
@@ -2041,7 +2112,7 @@ export class Orchestrator {
     }
   }
 
-  async deliver(agent, state, text, file, traceId, { ping = "", request, components, keyboard, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
+  async deliver(agent, state, text, file, traceId, { ping = "", request, components, keyboard, slackButtons, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
     if (isWebRoom(state.id)) return this.postWeb(agent, state, text, file, traceId, { request, passive, delegationAuthorized, returnToAgentId });
     const chatId = telegramChatId(state.id);
     const slack = slackIds(state.id);
@@ -2060,7 +2131,7 @@ export class Orchestrator {
     const content = ping && body ? `${ping} ${body}` : body;
     let sent;
     if (chatId) sent = await this.postTelegram(agent, chatId, content, file, state.id, keyboard);
-    else if (slack) sent = await this.postSlack(agent, state, content, file);
+    else if (slack) sent = await this.postSlack(agent, state, content, file, slackButtons);
     else {
       const own = this.bots?.client(agent.id);
       const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file, components });
@@ -2163,9 +2234,9 @@ export class Orchestrator {
   }
 
   /** As the agent's own Slack app when it is in the conversation, otherwise through the main app with its name and avatar. */
-  async postSlack(agent, state, text, file) {
+  async postSlack(agent, state, text, file, buttons = null) {
     const info = this.channels.info(state.id);
-    const payload = { content: text || "", file, threadTs: info.threadTs };
+    const payload = { content: text || "", file, threadTs: info.threadTs, ...(buttons ? { buttons } : {}) };
     const own = this.skBots?.client(agent.id);
     if (own && (info.direct || await this.skBots.inChannel(agent.id, info.channelId))) {
       try {
@@ -2256,8 +2327,8 @@ export class Orchestrator {
 
   /**
    * An agent asking the owner something. The question lands where the
-   * conversation is: in a Discord or Telegram channel it mentions the owner and
-   * offers the answers as buttons (as text on Slack and in voice); in a
+   * conversation is: in a Discord, Telegram or Slack channel it mentions the owner and
+   * offers the answers as buttons (as text in voice); in a
    * panel room it shows quick answers and goes out as a push. Without a
    * conversation it goes to the agent's private room. The owner's next message
    * there, typed or tapped, is the answer and goes to this agent.
@@ -2293,10 +2364,10 @@ export class Orchestrator {
       const contacts = this.store.agentOwnerChats(agent).filter(id => id.startsWith(`${transport}:`)).map(id => id.slice(transport.length + 1));
       const own = contacts.includes(replyTo?.authorId) ? replyTo.authorId : contacts[0];
       const owner = own || (slack ? this.store.settings.slackOwnerIds[0] : !telegramChatId(state.id) && this.store.settings.ownerIds[0]);
-      // On Discord and Telegram the answers are buttons: a press is the answer, typed or not. A reply in voice only says them.
+      // On Discord, Telegram and Slack the answers are buttons: a press is the answer, typed or not. A reply in voice only says them.
       const delivery = this.replyDelivery(replyTo);
-      const pressable = clean.length && !slack && delivery.replyMode !== "voice";
-      const markup = !pressable ? {} : telegramChatId(state.id) ? { keyboard: choiceKeyboard(agent, clean) } : { components: choiceButtons(agent, clean) };
+      const pressable = clean.length && delivery.replyMode !== "voice";
+      const markup = !pressable ? {} : slack ? { slackButtons: choiceSlackButtons(agent, clean) } : telegramChatId(state.id) ? { keyboard: choiceKeyboard(agent, clean) } : { components: choiceButtons(agent, clean) };
       const body = clean.length && !pressable ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
       await this.postAs(agent, state, body, undefined, traceId, { ping: owner ? `<@${owner}>` : "", request, ...markup, ...delivery });
       item = state.history.findLast((entry) => entry.agentId === agent.id && entry.request === request);

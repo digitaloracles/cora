@@ -190,6 +190,7 @@ export function startCora(overrides = {}) {
   // Every agent's Slack app listens: a channel is heard as long as one of them is in it.
   skBots.onGuild = (event, agentId) => orchestrator.onSlackMessage(event, agentId).catch((error) => activity({ type: "error", agentId, text: `slack: ${error.message}` }));
   skBots.onDirect = (agentId, event) => orchestrator.onSlackDirect(agentId, event).catch((error) => activity({ type: "error", agentId, text: `slack dm: ${error.message}` }));
+  skBots.onInteractive = (agentId, payload) => orchestrator.onSlackChoice(payload, agentId).catch((error) => activity({ type: "error", agentId, text: `pulsante Slack: ${error.message}` }));
   brain.ask = (agent, request, where) => orchestrator.askOwner(agent, request, where);
   // Threads opened and written in through Cora, never through another bot.
   brain.openThread = (agent, currentId, options) => orchestrator.openThread(agent, currentId, options);
@@ -297,6 +298,9 @@ export function startCora(overrides = {}) {
   });
   slack.on("message", (event) => {
     orchestrator.onSlackMessage(event).catch((error) => activity({ type: "error", text: `slack: ${error.message}` }));
+  });
+  slack.on("interactive", (payload) => {
+    orchestrator.onSlackChoice(payload).catch((error) => activity({ type: "error", text: `pulsante Slack: ${error.message}` }));
   });
   slack.on("status", (status) => web.broadcast({ type: "slack", state: status.state, error: status.error }));
   const publishSlackChannels = () => {
