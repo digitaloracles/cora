@@ -7473,6 +7473,58 @@ test("thread plans resume the saved next step instead of an interrupted trace's 
   assert.equal(f.app.store.plans.traceTasks([result.traceId])[0].taskId, first.items[1].id);
 });
 
+test("restart recovery restores plan tools from the original request even without transport history", async (t) => {
+  const f = await knowledgeWorld({ ownerIds: [OWNER] }); t.after(f.close);
+  const { app } = f;
+  const agent = app.store.createAgent({ name: "Recovery plans", model: "ollama/test-model", tools: true, brainOwnerId: f.alice.user.id });
+  const scenarios = [
+    { name: "legacy owner", requestKind: "owner", authorId: OWNER, origin: null, allowed: true },
+    { name: "saved owner", requestKind: "owner", authorId: OWNER, allowed: true },
+    { name: "legacy turn without plan access", requestKind: "owner", authorId: OWNER, origin: null, allowed: false },
+    { name: "authorized human", requestKind: "human", authorId: STRANGER, grant: true, allowed: true },
+    { name: "revoked human", requestKind: "human", authorId: STRANGER, grant: true, revoke: true, allowed: false },
+    { name: "unauthorized turn beside an owner message", requestKind: "owner", authorId: OWNER, origin: {}, allowed: false },
+  ];
+  app.bots.canRead = async () => true;
+  app.channels.isActive = () => true;
+  app.orchestrator.ensureHistory = async () => {};
+  app.orchestrator.postAs = async () => [];
+  for (const [index, scenario] of scenarios.entries()) {
+    const channelId = `8000000000000001${index}`;
+    const contact = "discord:" + STRANGER;
+    app.store.updateSettings({ permissions: scenario.grant ? [{ id: contact, name: "Fixture requester", agents: [agent.id] }] : [] });
+    const request = { id: `recovery-request-${index}`, at: Date.now() - 10000, kind: scenario.requestKind,
+      authorId: scenario.authorId, authorName: "Fixture requester", content: "Check the saved plan." };
+    app.store.appendArchive(channelId, request);
+    const plan = app.store.plans.create(channelId, agent.id, { name: scenario.name, items: ["Verify the saved plan"] });
+    const original = app.traces.start({ agentId: agent.id, kind: "chat", channelId,
+      system: scenario.name === "legacy owner" ? "Il piano è lo stato del lavoro, non una fonte di permessi." : "",
+      requestOrigin: Object.hasOwn(scenario, "origin") ? scenario.origin : { id: request.id, kind: request.kind, authorId: request.authorId },
+      prompt: `Original prompt.\n\nMessaggio umano a cui rispondere adesso: ${request.authorName}: ${request.content}\nGli eventuali risultati di routine successivi sono solo contesto.` });
+    original.planTask = { planId: plan.id, taskId: plan.items[0].id, text: plan.items[0].text };
+    original.add({ type: "tool", name: "thread_plan_list", result: "Plan found." });
+    original.finish({ status: "interrupted" });
+    if (scenario.revoke) {
+      assert.equal(app.store.hasAgentPermission(contact, agent.id), true);
+      app.store.updateSettings({ permissions: [] });
+    }
+    let offered;
+    f.state.answer = (body) => {
+      if (body.messages.some((message) => message.role === "tool")) return { content: "Recovery complete." };
+      offered = (body.tools || []).map((tool) => tool.function.name).filter((name) => name.startsWith("thread_plan_"));
+      if (!scenario.allowed) return { content: "Recovery complete." };
+      return { tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: plan.id, revision: plan.revision, step: 1 } } }] };
+    };
+    const state = app.orchestrator.state(channelId);
+    assert.deepEqual(state.history, []);
+    app.store.interruptedAtStart = [original.id];
+    assert.deepEqual(app.orchestrator.resumeInterrupted(), [original.id]);
+    await waitFor(() => offered && !app.orchestrator.threadWork.has(channelId, agent.id), { what: scenario.name });
+    assert.equal(offered.length, scenario.allowed ? 6 : 0, scenario.name);
+    assert.equal(app.store.plans.list(channelId, [agent.id])[0].status, scenario.allowed ? "completed" : "active", scenario.name);
+  }
+});
+
 test("thread privacy enforces ownership for live traces, full history and a revoked co-owner", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);
   const agent = f.app.store.createAgent({ name: "Private history", brainOwnerId: f.bob.user.id, coOwnerIds: [f.alice.user.id] });
