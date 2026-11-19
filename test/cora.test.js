@@ -7221,9 +7221,13 @@ test("thread plans run sequentially and link reasoning to each checklist item", 
     if (!prompt.includes("Riprendi dal passo " + plan.next)) return { content: "Verdict still pending." };
     return tool("thread_plan_advance", { id: plan.id, revision: plan.revision, step: plan.next }, "REASONING_FOR_STEP_" + plan.next);
   };
-  network.say({ content: "@Planner, make a plan and run both release checks.", channel: thread.id });
+  network.say({ content: "@Planner, il progetto usa Linear. Fammi un piano e fai i due controlli di rilascio.", channel: thread.id });
   await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === thread.id && post.content === "PLAN_EXECUTED_OK"));
-  assert.ok(observations[0].tools.some(({ function: tool }) => tool.name === "thread_plan_create"));
+  const firstTurn = observations[0];
+  const system = firstTurn.messages.find((message) => message.role === "system")?.content ?? "";
+  assert.match(system, /«fammi un piano»\), crea o aggiorna prima la checklist in Piani di Cora, in questo thread, anche se il progetto usa Linear\./);
+  assert.deepEqual(firstTurn.tools.map(({ function: tool }) => tool.name).filter((name) => name.startsWith("thread_plan_")).sort(),
+    ["thread_plan_advance", "thread_plan_close", "thread_plan_create", "thread_plan_list", "thread_plan_resume", "thread_plan_update"]);
   assert.ok(!observations[0].tools.some(({ function: tool }) => tool.name === "shell"));
   const path = "/api/threads/" + thread.id;
   const view = (await f.request(f.alice, path)).data;
