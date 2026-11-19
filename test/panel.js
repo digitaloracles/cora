@@ -144,7 +144,7 @@ class FormData {
 }
 
 /** Runs the served panel against the integration server with a small, inert DOM. */
-export function panelHarness({ source, fetch, hash = "", language = "it" }) {
+export function panelHarness({ source, fetch, hash = "", language = "it", userAgent = "", maxTouchPoints = 0 }) {
   const document = new Element("document");
   document.documentElement = new Element("html");
   document.body = new Element("body");
@@ -159,7 +159,7 @@ export function panelHarness({ source, fetch, hash = "", language = "it" }) {
   const location = { hash };
   const context = createContext({
     EN, ...character, ...encryptedSpace, ...encryptedMemory, ...encryptedPasskeys, Node: Element, document, fetch, FormData,
-    navigator: { language }, location,
+    navigator: { language, userAgent, maxTouchPoints }, location,
     history: { replaceState(_state, _title, url) { location.hash = String(url); } },
     localStorage: { getItem: () => language },
     window: { addEventListener() {} },

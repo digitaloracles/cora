@@ -168,6 +168,7 @@ const ICONS = {
   bulb: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2v.5h5V16c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z"/>',
   book: '<path d="M2.5 4.5h6a3.5 3.5 0 0 1 3.5 3.5v12.5a2.5 2.5 0 0 0-2.5-2.5h-7z"/><path d="M21.5 4.5h-6A3.5 3.5 0 0 0 12 8v12.5a2.5 2.5 0 0 1 2.5-2.5h7z"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
   monitor: '<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 21h8M12 16.5V21"/>',
   pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -3940,12 +3941,45 @@ function panelMcpPane() {
   return root;
 }
 
+/** The device this panel page runs on, from the browser that opened it: the app opens it in Safari or its own sheet. */
+function appDevice() {
+  const agent = navigator.userAgent || "";
+  if (/iPhone|iPod/.test(agent)) return "iphone";
+  if (/iPad/.test(agent) || (/Macintosh/.test(agent) && navigator.maxTouchPoints > 1)) return "ipad";
+  if (/Macintosh|Mac OS X/.test(agent)) return "mac";
+  return "other";
+}
+
+const APP_DEVICE_TEXT = {
+  iphone: { authorize: "Autorizza questo iPhone", asking: "L’app Cora sul tuo iPhone chiede di collegarsi a questo spazio con l’account qui sotto." },
+  ipad: { authorize: "Autorizza questo iPad", asking: "L’app Cora sul tuo iPad chiede di collegarsi a questo spazio con l’account qui sotto." },
+  mac: { authorize: "Autorizza questo Mac", asking: "L’app Cora sul tuo Mac chiede di collegarsi a questo spazio con l’account qui sotto." },
+  other: { authorize: "Autorizza questo dispositivo", asking: "L’app Cora chiede di collegarsi a questo spazio con l’account qui sotto." },
+};
+
+/** Who the app will act as: the name, the address or the password login, and a warning when that account sees no agent. */
+function appAccountNotice(validState) {
+  const user = S.data?.currentUser;
+  if (!user) return null;
+  const agents = (S.data.agents || []).length;
+  const who = h("div", { class: "row app-account" }, userMark(user),
+    h("div", { class: "stack-sm" }, h("b", {}, raw(user.name || user.email)),
+      h("small", { class: "muted" }, user.email ? raw(user.email) : tr("Accesso con la password del pannello"))),
+    tag(agents === 1 ? tr("1 agente") : tr("{n} agenti", { n: agents }), agents ? "ok" : "err"));
+  const out = [setRows(setRow(validState ? "Autorizzi come" : "Account", "L’app vedrà quello che vede questo account nel pannello.", who, { stack: true }))];
+  if (!agents) out.push(h("p", { class: "notice warn", role: "alert" }, icon("alert"), h("span", {}, validState
+    ? tr("Questo account non ha agenti: l’app resterebbe vuota. Se i tuoi agenti sono su un altro account, esci dal pannello, rientra con quello e riapri il collegamento dall’app.")
+    : tr("Questo account non ha agenti: un’app collegata qui resterebbe vuota."))));
+  return out;
+}
+
 function macAppPane() {
   const state = new URLSearchParams(location.hash.split("?")[1] || "").get("state") || "";
   const validState = /^[A-Za-z0-9_-]{16,128}$/.test(state);
+  const device = appDevice(), text = APP_DEVICE_TEXT[device];
   const feedback = h("p", { role: "status", class: "muted" });
-  const rows = h("div", { class: "mcp-token-list" }, h("p", { class: "muted", role: "status" }, "Carico i Mac collegati…"));
-  const open = btn(validState ? "Autorizza questo Mac" : "Apri nell’app", { icon: "link", cls: "primary", onclick: async () => {
+  const rows = h("div", { class: "mcp-token-list" }, h("p", { class: "muted", role: "status" }, "Carico i dispositivi collegati…"));
+  const open = btn(validState ? text.authorize : "Apri nell’app", { icon: "link", cls: "primary", onclick: async () => {
     open.disabled = true; feedback.className = "muted"; feedback.textContent = tr("Apro l’app…");
     try {
       const data = await api("/api/app/pairings", { method: "POST", body: validState ? { state } : {} });
@@ -3955,13 +3989,15 @@ function macAppPane() {
     } catch (error) { feedback.className = "err-text"; feedback.textContent = tr(error.message); }
     finally { open.disabled = false; }
   } });
+  const phone = device === "iphone" || device === "ipad";
   const root = h("div", { class: "stack panel-mcp mac-app" },
-    panel({ icon: "monitor", title: "App per macOS", hint: "Agenti, quote e ragionamento dal vivo nella barra dei menu del Mac." },
-      validState ? h("p", {}, "L’app Cora sul tuo Mac chiede di collegarsi a questo spazio con il tuo account.") : h("p", {}, "Collega l’app al tuo account: vedrà gli agenti, le quote e il lavoro che vedi qui, in sola lettura."),
-      h("p", { class: "muted" }, "L’app non modifica impostazioni e non vede risorse private di altre persone. Puoi scollegare ogni Mac quando vuoi."),
-      h("div", { class: "row" }, open, btn("Scarica l’app", { icon: "download", cls: "ghost", href: "https://github.com/digitaloracles/cora-app/releases/latest", target: "_blank" })),
+    panel({ icon: phone ? "phone" : "monitor", title: "App Cora", hint: phone ? "Agenti, quote e ragionamento dal vivo sul telefono." : "Agenti, quote e ragionamento dal vivo nella barra dei menu del Mac." },
+      validState ? h("p", {}, text.asking) : h("p", {}, "Collega l’app al tuo account: vedrà gli agenti, le quote e il lavoro che vedi qui, in sola lettura."),
+      appAccountNotice(validState),
+      h("p", { class: "muted" }, "L’app non modifica impostazioni e non vede risorse private di altre persone. Puoi scollegare ogni dispositivo quando vuoi."),
+      h("div", { class: "row" }, open, phone ? null : btn("Scarica l’app", { icon: "download", cls: "ghost", href: "https://github.com/digitaloracles/cora-app/releases/latest", target: "_blank" })),
       feedback),
-    panel({ icon: "key", title: "Mac collegati", hint: "Ogni Mac ha un accesso suo, valido 180 giorni.", actions: btn("Ricarica", { icon: "refresh", cls: "ghost", onclick: () => load() }) }, rows));
+    panel({ icon: "key", title: "Dispositivi collegati", hint: "Ogni dispositivo ha un accesso suo, valido 180 giorni.", actions: btn("Ricarica", { icon: "refresh", cls: "ghost", onclick: () => load() }) }, rows));
   const date = value => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat(LOCALE, { dateStyle: "medium" }).format(new Date(value)) : "—";
   async function load() {
     try {
@@ -3980,7 +4016,7 @@ function macAppPane() {
           h("div", { class: "stack-sm" }, h("b", {}, raw(device.name)), h("div", { class: "row" }, tag(expired ? "Scaduto" : "Collegato", expired ? "err" : "ok"), tag(device.platform)),
             h("small", {}, raw(tr("Collegato il {date}", { date: date(device.createdAt) }))),
             h("small", {}, device.lastUsedAt ? raw(tr("Ultimo accesso: {date}", { date: fmtTime(device.lastUsedAt, true) })) : tr("Mai usato"))), revoke);
-      }) : [h("p", { class: "muted" }, "Nessun Mac collegato. Premi «Apri nell’app» per collegare il primo.")]));
+      }) : [h("p", { class: "muted" }, "Nessun dispositivo collegato. Premi «Apri nell’app» per collegare il primo.")]));
     } catch (error) { rows.replaceChildren(h("p", { class: "err-text", role: "alert" }, raw(tr(error.message)))); }
   }
   root.readyApp = Promise.resolve().then(load);
@@ -10225,7 +10261,7 @@ function renderSettings() {
     { id: "email", group: "Canali", label: "E-mail", mark: "mail", state: () => [null, tr("Ricezione e regole")] },
     { id: "connettori", group: "Connettori", label: "Connettori", mark: "link", state: () => [null, tr("Google e account esterni")] },
     { id: "mcp", group: "Connettori", label: "Agenti esterni (MCP)", mark: "terminal", state: () => [null, tr("Configura Cora da un altro agente")] },
-    { id: "app", group: "Connettori", label: "App per macOS", mark: "monitor", state: () => [null, tr("Agenti e quote sul tuo Mac")] },
+    { id: "app", group: "Connettori", label: "App Cora", mark: "phone", state: () => [null, tr("Agenti e quote su Mac e iPhone")] },
     { id: "server", group: "Intelligenza", label: "Account del server", mark: "monitor", state: () => [null, settings.useResidentSubscriptions ? tr("in uso per chi non sceglie") : tr("non usati")] },
     ...providers.map((provider) => ({ id: provider, group: "Intelligenza", label: SUBSCRIPTION_NAMES[provider], mark: SUBSCRIPTION_ICONS[provider], state: () => providerState(provider) })),
     { id: "harness", group: "Intelligenza", label: "Harness", mark: "terminal", state: harnessState },
