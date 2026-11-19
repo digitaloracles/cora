@@ -2529,7 +2529,7 @@ export class Orchestrator {
         id,
         name: labels[id] || channel?.name || saved?.name || info?.name || id,
         kind,
-        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs || planned.has(id)),
+        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs),
         parentId,
         parentName: parentId ? (known.get(parentId)?.name || "") : "",
         guildId,
@@ -2608,7 +2608,7 @@ export class Orchestrator {
         const agent = this.store.agent(trace.agentId);
         return { ...trace, agentName: agent?.name || trace.agentId, color: agent?.color || "#f2a93b" };
       });
-    const plans = thread.thread ? this.store.plans.list(id, scope.agentIds) : [];
+    const plans = this.store.plans.list(id, scope.agentIds);
     const tasksByPlan = Map.groupBy(this.store.plans.tasks(plans.map((plan) => plan.id)), (task) => task.planId);
     const tasksByTrace = Map.groupBy(this.store.plans.traceTasks(traces.map((trace) => trace.id)), (task) => task.traceId);
     return {

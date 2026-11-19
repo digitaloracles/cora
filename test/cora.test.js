@@ -7297,7 +7297,7 @@ test("thread plans run sequentially and link reasoning to each checklist item", 
   await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === thread.id && post.content === "PLAN_EXECUTED_OK"));
   const firstTurn = observations[0];
   const system = firstTurn.messages.find((message) => message.role === "system")?.content ?? "";
-  assert.match(system, /«fammi un piano»\), crea o aggiorna prima la checklist in Piani di Cora, in questo thread, anche se il progetto usa Linear\./);
+  assert.match(system, /«fammi un piano»\), crea o aggiorna prima la checklist in Piani di Cora, in questa conversazione \(thread o canale\), anche se il progetto usa Linear\./);
   assert.deepEqual(firstTurn.tools.map(({ function: tool }) => tool.name).filter((name) => name.startsWith("thread_plan_")).sort(),
     ["thread_plan_advance", "thread_plan_close", "thread_plan_create", "thread_plan_list", "thread_plan_resume", "thread_plan_update"]);
   assert.ok(!observations[0].tools.some(({ function: tool }) => tool.name === "shell"));
@@ -7316,6 +7316,35 @@ test("thread plans run sequentially and link reasoning to each checklist item", 
     assert.ok(!evidence.includes("REASONING_FOR_STEP_" + (2 - index)));
     assert.equal((await f.request(f.bob, address)).status, 404);
   }
+});
+
+test("plans work in a plain channel too: the turn gets the plan tools and the panel shows the plan", async (t) => {
+  const network = await fakeDiscord();
+  const f = await knowledgeWorld({ discordToken: "fixture-discord-channel-plans", discordApi: network.url });
+  t.after(async () => { await f.close(); await network.close(); });
+  f.app.store.updateSettings({ transport: "discord", transports: ["discord"], guildIds: [GUILD], ownerIds: [OWNER] });
+  const agent = f.app.store.createAgent({ name: "ChannelPlanner", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id, ownerId: "discord:" + OWNER, channelIds: [CHANNEL], chattiness: 0 });
+  await waitFor(() => f.app.discord.state === "ready");
+  const observations = [];
+  f.state.answer = (body) => {
+    if (!body.tools?.length) return { content: JSON.stringify({ leave: [] }) };
+    observations.push(body);
+    const plan = f.app.store.plans.list(CHANNEL, [agent.id])[0];
+    if (!plan) return { tool_calls: [{ function: { name: "thread_plan_create", arguments: { name: "Channel checks", items: ["Verify the channel plan"] } } }] };
+    if (plan.status === "completed") return { content: "CHANNEL_PLAN_OK" };
+    return { tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: plan.id, revision: plan.revision, step: 1 } } }] };
+  };
+  network.say({ content: "@ChannelPlanner, fammi un piano qui nel canale.", channel: CHANNEL });
+  await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === CHANNEL && post.content === "CHANNEL_PLAN_OK"));
+  const system = observations[0].messages.find((message) => message.role === "system")?.content ?? "";
+  assert.match(system, /checklist in Piani di Cora, in questa conversazione \(thread o canale\)/);
+  assert.deepEqual(observations[0].tools.map(({ function: tool }) => tool.name).filter((name) => name.startsWith("thread_plan_")).sort(),
+    ["thread_plan_advance", "thread_plan_close", "thread_plan_create", "thread_plan_list", "thread_plan_resume", "thread_plan_update"]);
+  const view = (await f.request(f.alice, "/api/threads/" + CHANNEL)).data;
+  assert.equal(view.thread.thread, false);
+  assert.equal(view.plans.length, 1);
+  assert.equal(view.plans[0].status, "completed");
+  assert.equal(view.plans[0].name, "Channel checks");
 });
 
 test("thread plans let a panel owner create and close while other agents and threads stay isolated", async (t) => {
