@@ -6,6 +6,7 @@ import { SHARED, brainChain } from "./store.js";
 // The first night looks back this far; later nights start where the last one stopped.
 const BACKFILL_MS = 30 * 24 * 60 * 60 * 1000;
 const RUN_MESSAGES = 1500;
+const PEOPLE_BACKFILL = "authorizedPeopleBackfill";
 const BATCH_CHARS = 24000;
 const PAGES_PER_BATCH = 15;
 const INDEX_PAGES = 200;
@@ -171,8 +172,15 @@ export class Librarian {
       const last = await this.brain.state("lastRun", null);
       const since = Number(last?.until) || started - BACKFILL_MS;
       const sourceMessages = this.ownerId ? this.knowledge.messagesSince(this.ownerId, since, RUN_MESSAGES) : this.store.messagesSince(this.store.archivedChannels(), since, RUN_MESSAGES);
-      const messages = sourceMessages
-        .filter((message) => String(message.content || "").trim().length > 3 && (this.ownerId ? this.knowledge.messageOwner(message) === this.ownerId : !this.knowledge?.sealedMessage(message)));
+      // Once per granted person: what they said before the librarian read them (NOT-69).
+      const recovered = [this.ownerId ? await this.brain.state(PEOPLE_BACKFILL, []) : []].flat().filter((contact) => typeof contact === "string");
+      const pending = this.ownerId ? this.knowledge.authorizedContacts(this.ownerId).filter((contact) => !recovered.includes(contact)) : [];
+      const backfill = pending.length
+        ? this.knowledge.messagesSince(this.ownerId, started - BACKFILL_MS, RUN_MESSAGES, { only: pending }).filter((message) => message.at <= since)
+        : [];
+      const seen = new Set(sourceMessages.map((message) => message.id));
+      const messages = [...backfill.filter((message) => !seen.has(message.id)), ...sourceMessages]
+        .filter((message) => String(message.content || "").trim().length > 3 && (this.ownerId ? this.knowledge.messageOwner(message) === this.ownerId || this.knowledge.ownerAuthorized(this.ownerId, message) : !this.knowledge?.sealedMessage(message)));
       const notes = await this.brain.notes();
       const shared = this.ownerId || (await this.brain.state("sharedImported", false)) ? [] : this.store.memories(SHARED);
       // Every message joins the searchable archive, whatever the librarian makes of it.
@@ -206,6 +214,7 @@ export class Librarian {
           break;
         }
       }
+      if (!totals.errors.length && pending.length) await this.brain.setState(PEOPLE_BACKFILL, [...new Set([...recovered, ...pending])]);
       if (!totals.errors.length) this.step("done", `Fatto: ${totals.created} ${totals.created === 1 ? "pagina nuova" : "pagine nuove"}, ${totals.updated} ${totals.updated === 1 ? "aggiornata" : "aggiornate"}${totals.skipped ? `, ${totals.skipped} ${totals.skipped === 1 ? "scartata" : "scartate"}` : ""}`);
       const record = { at: new Date().toISOString(), startedAt: this.progress.startedAt, until, reason, model: this.usedModel || this.model, messages: messages.length, notes: notes.length, ms: Date.now() - started, ...totals, log: this.progress.events.slice(-LOG_EVENTS) };
       await this.brain.setState("lastRun", record);
