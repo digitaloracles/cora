@@ -8275,6 +8275,7 @@ describe("agents in Slack", () => {
     assert.equal(hushVault.CORA_SK_APP_SILVIA, SILVIA_APP);
     assert.equal(linked.data.slackBot.user.username, "silvia");
     assert.ok(linked.data.slackBot.manifest.settings.socket_mode_enabled, "the manifest creates a Socket Mode app");
+    assert.equal(linked.data.slackBot.manifest.settings.interactivity.is_enabled, true, "with interactivity, so answer buttons can be pressed");
     assert.equal(linked.data.slackBot.manifest.features.bot_user.display_name, "Silvia");
 
     replies.set("Silvia", (body) => {
@@ -8367,6 +8368,8 @@ describe("agents in Slack", () => {
     assert.deepEqual([slack.state.manifests.get(silviaApp).display_information.name, slack.state.manifests.get(silviaApp).features.bot_user.display_name], ["Silvia", "Silvia"]);
     assert.equal(slack.state.manifests.get(silviaApp).display_information.description, "Silvia, agente di Cora");
     assert.equal(slack.state.manifests.get(silviaApp).settings.socket_mode_enabled, true, "the rest of the manifest stays as it was");
+    assert.equal(slack.state.manifests.get(silviaApp).settings.interactivity.is_enabled, true, "an app made before the answer buttons gets interactivity");
+    assert.equal(slack.state.manifests.get(mainApp).settings.interactivity.is_enabled, true);
     assert.equal(slack.state.manifests.get(mainApp).display_information.name, "Cora");
     assert.equal(slack.state.manifests.get(mainApp).display_information.description, "creata a mano", "Cora's own description is left alone");
 
@@ -8543,6 +8546,31 @@ describe("agents in Slack", () => {
     const post = await waitFor(() => slack.postsIn(SLACK_DM)[0], { what: "the private answer" });
     assert.equal(post.app, "silvia");
     assert.equal(slack.postsIn(SLACK_CHANNEL).length, 0, "nothing leaks into the channel");
+    await quiet();
+  });
+
+  test("a question to the owner on Slack offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
+    slack.state.posts.length = 0;
+    replies.set("Silvia", (body) => ({ content: lastChatLine(body).endsWith(": Sì") ? "Perfetto, procedo." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(silvia.id), { question: "Pubblico la landing?", choices: ["Sì", "No"] }, { channelId: `sl:${SLACK_CHANNEL}` });
+    const asked = await waitFor(() => slack.postsIn(SLACK_CHANNEL).find((post) => post.blocks), { what: "the question with its buttons" });
+    assert.equal(asked.app, "silvia", "asked through Silvia's own app, which hears the press");
+    const blocks = JSON.parse(asked.blocks);
+    assert.deepEqual(blocks[0], { type: "section", text: { type: "mrkdwn", text: `<@${SLACK_OWNER}> Pubblico la landing?` } }, "the answers are buttons, not a text line");
+    assert.deepEqual(blocks[1].elements.map((element) => [element.text.text, element.action_id, element.style]), [["Sì", `cora:choice:${silvia.id}:0`, "primary"], ["No", `cora:choice:${silvia.id}:1`, undefined]]);
+
+    slack.press(asked, `cora:choice:${silvia.id}:1`, SLACK_STRANGER);
+    const refused = await waitFor(() => slack.state.ephemeral[0], { what: "a stranger refused" });
+    assert.deepEqual([refused.user, refused.channel, refused.app], [SLACK_STRANGER, SLACK_CHANNEL, "silvia"]);
+    assert.match(refused.text, /Può rispondere solo il proprietario/);
+    assert.equal(slack.state.updates.length, 0, "a refused press leaves the buttons in place");
+
+    slack.press(asked, `cora:choice:${silvia.id}:0`);
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Perfetto, procedo."), { what: "Silvia acting on the pressed answer" });
+    const update = slack.state.updates[0];
+    assert.deepEqual([update.app, update.ts], ["silvia", asked.ts]);
+    assert.deepEqual(JSON.parse(update.blocks), [blocks[0], { type: "section", text: { type: "mrkdwn", text: "→ *Sì* (Sam)" } }], "the buttons give way to the answer chosen");
+    assert.equal(slack.state.updates.length, 1);
     await quiet();
   });
 

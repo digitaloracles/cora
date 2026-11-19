@@ -38,6 +38,20 @@ export function toMrkdwn(text) {
     .replace(new RegExp(`${MENTION}(\\d+)${MENTION}`, "g"), (_, index) => mentions[Number(index)]);
 }
 
+const SECTION_TEXT = 3000;
+
+/**
+ * A message with buttons under it: with blocks Slack shows the blocks, not the text, so the words
+ * go in sections (each holds up to 3000 characters) and the buttons in an actions block below.
+ */
+export function buttonBlocks(mrkdwn, buttons) {
+  const sections = [];
+  for (let rest = String(mrkdwn || ""); rest; rest = rest.slice(SECTION_TEXT)) {
+    sections.push({ type: "section", text: { type: "mrkdwn", text: rest.slice(0, SECTION_TEXT) } });
+  }
+  return [...sections, { type: "actions", elements: buttons }];
+}
+
 /** A direct message conversation (D…) is private to one person and one bot. */
 export function isDirectChannel(id) {
   return /^D[A-Z0-9]+$/i.test(String(id || ""));
@@ -141,6 +155,11 @@ export class Slack extends EventEmitter {
       try { ws.close(1000); } catch {}
       this.ws = null;
       this.scheduleReconnect(`Slack asked to reconnect (${envelope.reason || "unknown"})`);
+      return;
+    }
+    // A button pressed on one of this app's messages: the receipt above is all Slack needs back.
+    if (envelope.type === "interactive") {
+      if (envelope.payload?.type === "block_actions") this.emit("interactive", envelope.payload);
       return;
     }
     const event = envelope.payload?.event;
@@ -376,13 +395,15 @@ export class Slack extends EventEmitter {
    * Post text, and a file with it. `name` makes the message carry that name
    * and avatar (chat:write.customize), for an agent with no app of its own.
    */
-  async say(channelId, { content = "", file = null, name = "", avatarUrl = "", threadTs = "" } = {}) {
+  async say(channelId, { content = "", file = null, name = "", avatarUrl = "", threadTs = "", buttons = null } = {}) {
     const chunks = splitMessage(String(content || ""), MAX_TEXT);
     if (!chunks.length && !file) return [];
     const sent = [];
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
+      // Buttons go on the last part only, where the message ends.
+      const blocks = buttons?.length && index === chunks.length - 1 ? buttonBlocks(toMrkdwn(chunk), buttons) : null;
       try {
-        sent.push(await this.post(channelId, { text: toMrkdwn(chunk), name, avatarUrl, threadTs }));
+        sent.push(await this.post(channelId, { text: toMrkdwn(chunk), name, avatarUrl, threadTs, blocks }));
       } catch (error) {
         error.sentCount = sent.length;
         throw error;
@@ -399,8 +420,9 @@ export class Slack extends EventEmitter {
     return sent;
   }
 
-  async post(channelId, { text, name = "", avatarUrl = "", threadTs = "" }) {
+  async post(channelId, { text, name = "", avatarUrl = "", threadTs = "", blocks = null }) {
     const params = { channel: channelId, text, mrkdwn: true, unfurl_links: false, unfurl_media: false };
+    if (blocks) params.blocks = blocks;
     if (threadTs) params.thread_ts = threadTs;
     if (name) {
       params.username = name;

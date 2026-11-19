@@ -1117,6 +1117,9 @@ export async function fakeSlack() {
     iconError: "",
     configCalls: [],
     rotations: 0,
+    // Messages edited after a button press, and the notes only one person sees.
+    updates: [],
+    ephemeral: [],
   };
   const ok = (res, body) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1211,6 +1214,15 @@ export async function fakeSlack() {
         state.posts.push(message);
         return ok(res, { ts: message.ts, channel: params.channel });
       }
+      case "chat.update": {
+        const post = state.posts.find((item) => item.channel === params.channel && item.ts === params.ts);
+        if (!post || post.app !== app.name) return fail(res, "cant_update_message");
+        state.updates.push({ ...params, app: app.name });
+        return ok(res, { channel: params.channel, ts: params.ts });
+      }
+      case "chat.postEphemeral":
+        state.ephemeral.push({ ...params, app: app.name });
+        return ok(res, { message_ts: ts() });
       case "reactions.add":
       case "reactions.remove":
         state.reactions.push({ action: method.split(".")[1], channel: params.channel, ts: params.timestamp, name: params.name, app: app.name });
@@ -1346,6 +1358,24 @@ export async function fakeSlack() {
     },
     postsIn(channel) {
       return state.posts.filter((post) => (post.channel || post.channel_id) === channel);
+    },
+    /** Someone pressing a button on a posted message: Slack tells only the app that posted it. */
+    press(post, actionId, user = SLACK_OWNER) {
+      const blocks = JSON.parse(post.blocks || "[]");
+      const action = blocks.flatMap((block) => block.elements || []).find((element) => element.action_id === actionId);
+      if (!action) throw new Error(`no button ${actionId}`);
+      const app = [...state.apps.values()].find((entry) => entry.name === post.app);
+      const payload = {
+        type: "block_actions", user: { id: user, username: state.users.get(user)?.name || user }, api_app_id: `A${app.id.slice(1)}`,
+        container: { type: "message", message_ts: post.ts, channel_id: post.channel }, channel: { id: post.channel },
+        message: { type: "message", ts: post.ts, text: post.text, blocks, ...(post.thread_ts ? { thread_ts: post.thread_ts } : {}) },
+        actions: [{ ...action, block_id: "b", action_ts: `${Date.now() / 1000}` }], trigger_id: `trigger-${state.nextTs++}`,
+      };
+      for (const [socket, token] of state.sockets) {
+        if (token !== app.appToken) continue;
+        envelope += 1;
+        socket.write(encodeFrame(JSON.stringify({ envelope_id: `env-${envelope}`, type: "interactive", payload })));
+      }
     },
     close() {
       for (const socket of state.sockets.keys()) socket.destroy();
