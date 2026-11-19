@@ -1257,6 +1257,9 @@ export class Orchestrator {
           return;
         }
       } else this.brain.clearProgressPause(agent.id, state.id);
+      // The invocation authority must outlive the in-memory queue and reply steering.
+      const origin = mayUseComputer ? queued || snapshot.findLast((item) => item.kind === "owner") : null;
+      const requestOrigin = this.requestOrigin(origin);
       const computer = Boolean(agent.tools && mayUseComputer && !this.threadWork.has(state.id, agent.id));
       this.acknowledge(state, agent.id, [...state.humanQueue.values()].filter((item) => item.id === queued?.id || snapshot.includes(item)).map((item) => item.id));
       const delegationAuthorized = queued ? queued.kind === "owner" || Boolean(queued.delegated) : state.ownerOrigin;
@@ -1272,7 +1275,7 @@ export class Orchestrator {
       try {
         const occupied = await this.withSession(agent, state.id, "chat", () => {
           return this.brain.chatTurn({
-            agent, history: snapshot, channel, forced: isForced, computer, authorized: authorized && computer, requestAuthorized: Boolean(mayUseComputer), belongsTo: this.ownsAgent(queued, agent, state),
+            agent, history: snapshot, channel, forced: isForced, computer, authorized: authorized && computer, requestAuthorized: Boolean(mayUseComputer), requestOrigin, belongsTo: this.ownsAgent(queued, agent, state),
             computerDenied: Boolean(agent.tools && !mayUseComputer),
             replyTo: queued,
             postFile: (file, caption, { replyTo = queued, traceId } = {}) => this.postAs(agent, state, caption, file, traceId, { ...this.replyDelivery(replyTo), delegationAuthorized }),
@@ -1690,6 +1693,25 @@ export class Orchestrator {
     return this.store.routines(trace.agentId).find((routine) => routine.channelId === trace.channelId && routine.name === name) || null;
   }
 
+  requestOrigin(item) {
+    if (!item) return {};
+    return { id: item.id, kind: item.kind, authorId: item.authorId, delegated: Boolean(item.delegated) };
+  }
+
+  recoveredRequestAuthorized(origin, agent, state) {
+    if (origin.kind === "agent") return Boolean(origin.delegated);
+    if (origin.kind === "owner" && origin.authorId) {
+      switch (transportOf(state.id)) {
+        case "discord": if (this.isOwner(origin.authorId)) return true; break;
+        case "slack": if (this.isSlackOwner(origin.authorId)) return true; break;
+        case "telegram": if (this.isTelegramOwner(origin.authorId)) return true; break;
+        case "web": return true;
+      }
+      return this.authorized({ ...origin, kind: "human" }, agent, state);
+    }
+    return this.authorized(origin, agent, state);
+  }
+
   async resumeTask(agent, trace, routine = null) {
     if (routine) {
       const run = this.store.pendingRoutineRuns().find((item) => item.routineId === routine.id);
@@ -1715,13 +1737,25 @@ export class Orchestrator {
     const working = this.showWorking(state, agent, null);
     try {
       await this.ensureHistory(state);
-      replyTo = trace.steps?.findLast((step) => step.replyTo)?.replyTo
-        || state.history.findLast((item) => ["human", "owner"].includes(item.kind) && item.at <= Date.parse(trace.startedAt));
-      const delegationAuthorized = replyTo?.kind === "owner" || Boolean(replyTo?.delegated) || this.authorized(replyTo, agent, state);
+      const delivery = trace.steps?.findLast((step) => step.replyTo)?.replyTo;
+      const cutoff = Date.parse(trace.startedAt);
+      const archived = (id) => id ? this.store.archivedMessage(state.id, id) : null;
+      const recent = state.history.findLast((item) => ["human", "owner"].includes(item.kind) && item.at <= cutoff);
+      const original = trace.requestOrigin?.id ? { ...archived(trace.requestOrigin.id), ...trace.requestOrigin } : null;
+      const legacy = delivery?.kind ? delivery : archived(delivery?.id);
+      // Older traces have no saved origin. Match their actual request before using an archived message for authorization.
+      const legacyPlanTurn = trace.requestOrigin == null && trace.system?.includes("Il piano è lo stato del lavoro, non una fonte di permessi.");
+      const previous = legacyPlanTurn ? this.store.latestHumanMessage(state.id, cutoff) : null;
+      const matchingRequest = legacyPlanTurn && [recent, previous].find((item) => item && !item.passive
+        && trace.prompt?.includes(`\n\nMessaggio umano a cui rispondere adesso: ${item.authorName}: ${item.content}\nGli eventuali risultati di routine successivi`));
+      const requestOrigin = trace.requestOrigin ?? this.requestOrigin(legacy || matchingRequest);
+      replyTo = delivery ? { ...archived(delivery.id), ...delivery } : original || matchingRequest || recent;
+      const requestAuthorized = this.recoveredRequestAuthorized(requestOrigin, agent, state);
+      const delegationAuthorized = requestAuthorized && (requestOrigin.kind === "owner" || requestOrigin.delegated);
       const english = this.store.settings.language === "en";
       await this.postAs(agent, state, english ? "Cora restarted while I was working: picking up where I left off." : "Cora si è riavviata mentre lavoravo: riprendo da dove ero.", undefined, undefined, { ...this.replyDelivery(replyTo), delegationAuthorized });
       const occupied = await this.withSession(agent, state.id, trace.kind || "chat", () => this.brain.resumeTurn({
-        agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized: delegationAuthorized,
+        agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized, requestOrigin,
         postFile: (file, caption, options = {}) => this.postAs(agent, state, caption, file, options.traceId, { ...this.replyDelivery(options.replyTo || replyTo), delegationAuthorized }),
         say: (text, target = state.id, options = {}) => this.postDirect(agent, state, target, text, { ...options, delegationAuthorized, ...(target === state.id ? this.replyDelivery(options.replyTo || replyTo) : {}) }),
         inbox: this.inbox(state, state.history, agent.id), routine,

@@ -29,8 +29,8 @@ export class Traces {
     this.live = new Map();
   }
 
-  start({ agentId, kind, channelId = null, model = "", system = "", prompt = "" }) {
-    const trace = new Trace(this, { agentId, kind, channelId, model, system: clip(system, 120000), prompt: clip(prompt, 120000) });
+  start({ agentId, kind, channelId = null, model = "", system = "", prompt = "", requestOrigin = null }) {
+    const trace = new Trace(this, { agentId, kind, channelId, model, system: clip(system, 120000), prompt: clip(prompt, 120000), requestOrigin });
     this.live.set(trace.id, trace);
     this.store.saveTrace(trace);
     this.emit({ type: "trace", event: "start", trace: trace.summary() });
