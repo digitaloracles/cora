@@ -2551,10 +2551,16 @@ function subscriptionPicker(currentId, { manage = false, isNew = false } = {}) {
   };
 }
 
-function channelChips(selected, kind = S.data.transport) {
+/** The channels to choose from: the cora's, plus the private ones only this agent's own bot sees. */
+function agentChannels(agent) {
+  const known = new Set(S.data.channels.map((channel) => channel.id));
+  return [...S.data.channels, ...(agent?.ownChannels || []).filter((channel) => !known.has(channel.id))];
+}
+
+function channelChips(selected, kind = S.data.transport, agent = null) {
   const chosen = new Set(selected);
   const wrap = h("div", { class: "chips", "data-channels": "" });
-  const channels = S.data.channels.filter((channel) => (channel.kind || "discord") === kind);
+  const channels = agentChannels(agent).filter((channel) => (channel.kind || "discord") === kind);
   for (const channel of channels) {
     const chip = h("button", { type: "button", class: `chip${chosen.has(channel.id) ? " on" : ""}`, "data-id": channel.id }, icon(channel.kind === "telegram" ? "send" : "hash"), raw(channelChipLabel(channel).replace(/^#/, "")));
     chip.addEventListener("click", () => chip.classList.toggle("on"));
@@ -2570,7 +2576,7 @@ function channelChips(selected, kind = S.data.transport) {
  */
 function platformRow(agent, kind) {
   const on = !(agent.platformsOff || []).includes(kind);
-  const chips = channelChips(agent.channelIds || [], kind);
+  const chips = channelChips(agent.channelIds || [], kind, agent);
   const toggle = switchInput(`platform-${kind}`, "", on);
   const body = h("div", { class: "stack-sm" }, chips);
   body.hidden = !on;
@@ -2824,7 +2830,7 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
   const picture = avatarPicker(agent, colorInput);
   const genderInput = h("select", { name: "gender" },
     [["", "Non indicato"], ["female", "Femminile"], ["male", "Maschile"], ["neutral", "Neutro"]].map(([value, label]) => h("option", { value, selected: (agent.gender || "") === value }, label)));
-  const hidden = (agent.channelIds || []).filter((id) => !S.data.channels.some((channel) => channel.id === id));
+  const hidden = (agent.channelIds || []).filter((id) => !agentChannels(agent).some((channel) => channel.id === id));
   // Two choices, not one: who runs the loop, and which model thinks.
   let harness = harnessOf(agent.model || S.data.settings.defaultModel || "");
   const model = wantsBrain ? modelPicker("model", agent.model || "", { harness }) : null;

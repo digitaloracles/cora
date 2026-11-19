@@ -412,6 +412,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     skillCount: skills ? skills.list(agent.id).length : 0,
     box: await boxStatus(agent),
     bot: bots ? bots.status(agent, store.settings.guildIds[0]) : null,
+    // Private channels only its own bot sees: Cora's bot cannot list them, so Listening offers them from here.
+    ownChannels: bots ? (bots.client(agent.id)?.listChannels(store.settings.guildIds) || []).filter((channel) => !channel.thread).map(({ id, name, guildName }) => ({ id, name, kind: "discord", guildName: guildName || "", thread: false })) : [],
     telegramBot: tgBots ? await tgBots.status(agent, telegramChatId(channels.list()[0]?.id) || store.settings.telegramChatIds[0]) : null,
     slackBot: skBots ? await skBots.status(agent, slackIds(channels.list()[0]?.id)?.channelId || store.settings.slackChannelIds[0]) : null,
     github: github ? github.view(agent) : null,

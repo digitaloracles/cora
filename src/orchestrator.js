@@ -1334,9 +1334,11 @@ export class Orchestrator {
   }
 
   /**
-   * An agent called by name where it does not listen: Cora says so. On Discord the owner gets a
-   * button that puts the agent to listen here, and the agent then answers what it was asked;
-   * anywhere else, or if the button cannot be sent, the notice says where to do it in the panel.
+   * An agent called by name where it does not listen: it says so itself, with its own bot when that
+   * bot is in the channel (the main one may not see a private channel), and Cora's bot otherwise.
+   * On Discord the owner of the space or the agent's own owner gets a button that puts it to listen
+   * here, and the agent then answers what it was asked; the notice always says exactly where to do
+   * it in the panel too.
    */
   async offerListening(state, item, now = Date.now()) {
     const english = this.store.settings.language === "en";
@@ -1351,32 +1353,55 @@ export class Orchestrator {
         continue;
       }
       const transport = transportOf(state.id);
+      const here = this.channelMeta(state.id)?.name;
       const where = agent.channelIds.filter((channelId) => transportOf(channelId) === transport).map((channelId) => this.channelMeta(channelId)?.name).filter(Boolean).map((name) => `#${name}`);
       const link = this.panelLink(state.id, `agent/${agent.id}/impostazioni/ascolto`);
       // Switched off on this whole platform, not just away from this channel.
       const away = agent.enabled && !this.channels.agentOn(agent, transport);
       const platform = TRANSPORT_LABELS[transport] || transport;
+      const own = agent.enabled && transport === "discord" && !this.dmAgentId(state.id) ? await this.ownBotIn(agent, state.id) : null;
+      const owner = this.store.agentOwner(agent)?.name || "";
+      const who = english ? `the owner of the space${owner ? ` or ${owner}` : ""}` : `il proprietario dello spazio${owner ? ` o ${owner}` : ""}`;
+      const channel = here ? `#${here}` : (english ? "this channel" : "questo canale");
+      const answers = where.length ? (english ? `: I answer in ${where.join(", ")}` : `: rispondo in ${where.join(", ")}`) : "";
       const why = !agent.enabled
         ? (english ? `**${agent.name}** is switched off, so it cannot answer.` : `**${agent.name}** è spento, quindi non può rispondere.`)
         : away ? (english ? `**${agent.name}** is not on ${platform}.` : `**${agent.name}** non è su ${platform}.`)
+        : own ? (english ? `I am not listening in ${channel}${answers}.` : `Non sono in ascolto in ${channel}${answers}.`)
         : (english ? `**${agent.name}** is not listening in this channel${where.length ? `: it answers in ${where.join(", ")}` : ""}.` : `**${agent.name}** non è in ascolto in questo canale${where.length ? `: risponde in ${where.join(", ")}` : ""}.`);
+      const steps = english
+        ? `open ${agent.name} in the panel → Listening, ${away ? `turn "On ${platform}" on, ` : ""}select ${channel} under "On ${platform}" and press Save${link ? `: ${link}` : ""}`
+        : `apri ${agent.name} nel pannello → Ascolto, ${away ? `accendi «Su ${platform}», ` : ""}seleziona ${channel} sotto «Su ${platform}» e premi Salva${link ? `: ${link}` : ""}`;
       if (agent.enabled && transport === "discord" && !this.dmAgentId(state.id)) {
-        try {
-          await this.discord.say(state.id, {
-            content: `${why} ${english ? `The owner can put it to listen here with the button${link ? `, or under Listening in the panel: ${link}` : ""}.` : `Il proprietario può metterlo in ascolto qui con il pulsante${link ? `, oppure in Ascolto nel pannello: ${link}` : ""}.`}`,
-            components: [{ type: 1, components: [{ type: 2, style: 1, label: (english ? `Let ${agent.name} listen here` : `Metti ${agent.name} in ascolto qui`).slice(0, 80), custom_id: `cora:listen:${agent.id}:${item.id}` }] }],
-          });
-          continue;
-        } catch (error) {
-          this.log({ type: "warning", channelId: state.id, text: `pulsante di ascolto non inviato: ${error.message}` });
+        const button = (english ? `Let ${agent.name} listen here` : `Metti ${agent.name} in ascolto qui`).slice(0, 80);
+        const content = `${why} ${english ? `To have ${own ? "me" : "it"} answer here, ${who} can press «${button}», or ${steps}.` : `Per far${own ? "mi" : "lo"} rispondere qui ${who} può premere «${button}», oppure ${steps}.`}`;
+        const components = [{ type: 1, components: [{ type: 2, style: 1, label: button, custom_id: `cora:listen:${agent.id}:${item.id}` }] }];
+        let sent = false;
+        for (const client of [own, this.discord].filter(Boolean)) {
+          try {
+            await client.say(state.id, { content, components });
+            sent = true;
+            break;
+          } catch (error) {
+            this.log({ type: "warning", agentId: client === own ? agent.id : undefined, channelId: state.id, text: `pulsante di ascolto non inviato${client === own ? ` dal bot di ${agent.name}` : ""}: ${error.message}` });
+          }
         }
+        if (sent) continue;
       }
       const how = !agent.enabled
         ? (english ? `Switch it on in the panel${link ? `: ${link}` : ""}.` : `Lo riaccendi dal pannello${link ? `: ${link}` : ""}.`)
         : away ? (english ? `To have it answer here, open it in the panel${link ? ` (${link})` : ""} and turn ${platform} on under Listening.` : `Per farlo rispondere qui aprilo nel pannello${link ? ` (${link})` : ""} e accendi ${platform} in Ascolto.`)
-        : (english ? `To have it answer here, open it in the panel${link ? ` (${link})` : ""} and add this channel under Listening.` : `Per farlo rispondere qui aprilo nel pannello${link ? ` (${link})` : ""} e aggiungi questo canale in Ascolto.`);
+        : (english ? `To have it answer here, ${steps}.` : `Per farlo rispondere qui ${steps}.`);
       await this.notice(state.id, `${why} ${how}`);
     }
+  }
+
+  /** The agent's own Discord bot, when it is connected and can read this channel. */
+  async ownBotIn(agent, channelId) {
+    const client = this.bots?.client?.(agent.id);
+    if (!client) return null;
+    try { return await this.bots.canRead(agent, channelId) ? client : null; }
+    catch { return null; }
   }
 
   /** It listens here, but the person who called it has no permission on it: who can grant it, and where. */
@@ -1398,18 +1423,25 @@ export class Orchestrator {
     return transportOf(channelId) === "discord" ? `<${url}>` : url;
   }
 
-  /** A button pressed on one of Cora's messages: only the owner may put an agent to listen. */
-  async onInteraction(interaction) {
+  /**
+   * A button pressed on a message of Cora's bot or of an agent's own bot (answered by the bot it
+   * arrived through): the owner of the space or the agent's own owner may put it to listen.
+   */
+  async onInteraction(interaction, client = this.discord) {
     const match = /^cora:listen:(ag_[a-f0-9]{12}):(\d+)$/.exec(String(interaction?.data?.custom_id || ""));
     if (!match) return;
+    // The same press reaches every connection of the bot it was made on: it is handled once.
+    this.pressed ??= new Set();
+    if (interaction.id && this.pressed.has(interaction.id)) return;
+    if (interaction.id) { this.pressed.add(interaction.id); if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value); }
     const english = this.store.settings.language === "en";
     const userId = interaction.member?.user?.id || interaction.user?.id || "";
     const channelId = String(interaction.channel_id || "");
     const agent = this.store.agent(match[1]);
-    if (!this.isOwner(userId)) {
-      return this.discord.answerInteraction(interaction, { content: english ? "Only Cora's owner can do that." : "Lo può fare solo il proprietario di Cora." });
+    if (!this.isOwner(userId) && !(agent && userId && this.store.agentOwnerChats(agent).includes(`discord:${userId}`))) {
+      return client.answerInteraction(interaction, { content: english ? "Only the owner of the space or the agent's owner can do that." : "Lo può fare solo il proprietario dello spazio o dell'agente." });
     }
-    if (!agent || !channelId) return this.discord.answerInteraction(interaction, { content: english ? "That agent is no longer here." : "Questo agente non c'è più." });
+    if (!agent || !channelId) return client.answerInteraction(interaction, { content: english ? "That agent is no longer here." : "Questo agente non c'è più." });
     const chosen = agent.channelIds.filter((id) => transportOf(id) === "discord");
     const listening = {
       // Away from Discord altogether, it comes back for this channel only.
@@ -1419,7 +1451,7 @@ export class Orchestrator {
     if (Object.keys(listening).length) this.store.updateAgent(agent.id, { ...agent, ...listening });
     const who = interaction.member?.user?.global_name || interaction.member?.user?.username || interaction.user?.username || "";
     this.log({ type: "agent", agentId: agent.id, text: `${agent.name} ora ascolta ${this.channelMeta(channelId)?.name || channelId}${who ? ` (da Discord, ${who})` : ""}` });
-    await this.discord.answerInteraction(interaction, { update: true, content: english ? `✅ **${agent.name}** is listening here now.` : `✅ **${agent.name}** ora è in ascolto qui.` });
+    await client.answerInteraction(interaction, { update: true, content: english ? `✅ **${agent.name}** is listening here now.` : `✅ **${agent.name}** ora è in ascolto qui.` });
     // The message that called it gets its answer now.
     const state = this.state(channelId);
     const item = state.history.find((entry) => entry.id === match[2]);
