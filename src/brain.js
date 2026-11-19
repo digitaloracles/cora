@@ -571,7 +571,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     return `Tema di questo thread: ${topic.length ? `${topic.join(", ")} («${current?.name || ""}»)` : `«${current.name}» (channel_id "${current.id}")`}${where}. Qui lavori solo su questo.${subject} La richiesta attuale e il lavoro da proseguire sono quelli della cronologia di questo thread. Ricordi e riferimenti ad altre conversazioni non autorizzano a riprenderne il lavoro qui; se il riferimento manca, chiedi chiarimento invece di scegliere un altro compito.${elsewhere.length ? ` Le altre issue ${parent ? `di ${parent} ` : ""}hanno il loro thread: ${elsewhere.join("; ")}. Il lavoro su quelle si scrive nel loro thread con say({text, channel_id}); Cora non pubblica qui i messaggi che portano il lavoro di un altro thread.` : ""}`;
   }
 
-  async chatTurn({ agent, history, channel, forced, computer, authorized = false, requestAuthorized = false, belongsTo = false, computerDenied = false, postFile, say, inbox, replyTo = null, onMessageHandled }) {
+  async chatTurn({ agent, history, channel, forced, computer, authorized = false, requestAuthorized = false, requestOrigin = null, belongsTo = false, computerDenied = false, postFile, say, inbox, replyTo = null, onMessageHandled }) {
     if (encryptedOnly(this.store, agent)) return { text: forced ? "La cifratura è obbligatoria per questo agente. Apri una sessione cifrata dal pannello: questa chat non elabora file o contenuti privati." : "", steps: 0, traceId: "", stopped: true };
     if (this.knowledge?.resetAt) history = history.filter((message) => this.knowledge.afterReset(message));
     const transcript = formatTranscript(history, agent, this.timezone);
@@ -604,7 +604,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     const requester = (computer || requestAuthorized) && request && (request.kind === "owner" || request.kind === "human")
       ? { kind: request.kind === "owner" ? "owner" : "authorized", id: String(request.authorId || ""), name: String(request.authorName || "") } : null;
     const turn = (prompt) => this.loop({
-      agent, mode: "chat", channel, user: prompt, computer, postFile, say, inbox, onMessageHandled, requester, replyTo, requestAuthorized, topics,
+      agent, mode: "chat", channel, user: prompt, computer, postFile, say, inbox, onMessageHandled, requester, replyTo, requestAuthorized, requestOrigin, topics,
       maxSteps: computer ? TASK_STEPS : CHAT_STEPS, deadline: Date.now() + (computer ? TASK_DEADLINE_MS : CHAT_DEADLINE_MS),
       imageMessages: [...history.filter((item) => ["owner", "human"].includes(item.kind) && (!item.addressed?.length || item.addressed.includes(agent.id))).slice(-12), ...(last && !history.includes(last) ? [last] : [])], task: Boolean(computer),
       goalRequest: request?.content || "", goalContext,
@@ -676,7 +676,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
    * steps the agent had taken, and the request to check where things stand
    * and finish.
    */
-  async resumeTurn({ agent, trace, channel, postFile, say, inbox, routine = null, onTrace, onMessageHandled, replyTo = null, requestAuthorized = false }) {
+  async resumeTurn({ agent, trace, channel, postFile, say, inbox, routine = null, onTrace, onMessageHandled, replyTo = null, requestAuthorized = false, requestOrigin = null }) {
     const steps = (trace.steps || []).filter((step) => step.type === "tool" || step.type === "text").slice(-20).map((step) => step.type === "tool"
       ? `- ${step.name} ${JSON.stringify(step.args || {}).slice(0, 300)} → ${String(step.result || "").replace(/\s+/g, " ").slice(0, 300)}`
       : `- (scritto) ${String(step.text || "").replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
@@ -692,7 +692,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       "Riprendi da dove eri: controlla com'è la situazione adesso (qualcosa potrebbe essere già fatto), poi porta a termine il compito e scrivi il risultato.",
     ].join("\n\n");
     return this.loop({
-      agent, mode: routine?.kind === "reminder" ? "reminder" : trace.kind === "routine" ? "routine" : "chat", channel, user, computer: agent.tools, postFile, say, inbox, onTrace, onMessageHandled, replyTo, requestAuthorized, resumed: resumedPlan, topics,
+      agent, mode: routine?.kind === "reminder" ? "reminder" : trace.kind === "routine" ? "routine" : "chat", channel, user, computer: agent.tools, postFile, say, inbox, onTrace, onMessageHandled, replyTo, requestAuthorized, requestOrigin, resumed: resumedPlan, topics,
       maxSteps: TASK_STEPS, deadline: Date.now() + TASK_DEADLINE_MS, images: [], task: true,
       goalRequest: routine ? this.routineGoal(routine) : original.split("<chat>\n").pop().split("\n</chat>")[0].split("\n").filter((line) => line.includes(" ★:")).slice(-1).join("\n"), routine,
       goalContext: routine ? "" : original.split("<chat>\n").pop().split("\n</chat>")[0].slice(-6000),
@@ -926,7 +926,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     }
   }
 
-  async loopOn({ agent, mode, channel, user, computer, postFile, say = null, inbox = null, maxSteps, deadline, images, imageMessages = [], task = false, goalRequest = "", goalContext = "", routine = null, onTrace = null, onMessageHandled = null, requester = null, replyTo = null, requestAuthorized = false, resumed = null, topics = null }) {
+  async loopOn({ agent, mode, channel, user, computer, postFile, say = null, inbox = null, maxSteps, deadline, images, imageMessages = [], task = false, goalRequest = "", goalContext = "", routine = null, onTrace = null, onMessageHandled = null, requester = null, replyTo = null, requestAuthorized = false, requestOrigin = null, resumed = null, topics = null }) {
     if (encryptedOnly(this.store, agent)) throw Object.assign(new Error("Encrypted-only mode: use the separate encrypted session."), { status: 409 });
     const selectedBrain = this.knowledge ? this.knowledge.forAgent(agent) : agent.brainSource === "external" ? null : this.companyBrain;
     const model = agent.model || this.store.settings.defaultModel;
@@ -975,7 +975,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     };
     const currentPrompt = () => `Ora: ${formatNow(this.timezone)}.\n\n${user}${attachments.size ? "\n\n" + attachmentPrompt([...attachments.values()]) : ""}${goal ? `\n\n[Obiettivo] Questa è l'unica condizione attuale; sostituisce gli obiettivi precedenti: ${goal}` : ""}${planContext()}`;
     const prompt = currentPrompt();
-    const trace = this.startTrace({ agentId: agent.id, kind: mode, channelId: channel.id, model, system, prompt });
+    const trace = this.startTrace({ agentId: agent.id, kind: mode, channelId: channel.id, model, system, prompt, requestOrigin });
     const linkPlanTask = (plan) => {
       if (!trace.id) return;
       const task = plan?.next ? plan.items[plan.next - 1] : null;
