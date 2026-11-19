@@ -1599,6 +1599,11 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     return row ? messageRow(row) : null;
   }
 
+  /** The latest human messages of one channel up to `before`, newest first. */
+  latestHumanMessages(channelId, before = Number.MAX_SAFE_INTEGER, limit = 20) {
+    return this.stmt("SELECT * FROM messages WHERE channel_id = ? AND kind IN ('owner', 'human') AND at <= ? ORDER BY at DESC LIMIT ?").all(String(channelId), before, limit).map(messageRow);
+  }
+
   agentThreadTraces(agentId, channelId, since = 0, limit = 4) {
     return this.stmt("SELECT * FROM traces WHERE agent_id = ? AND channel_id = ? AND kind = 'chat' AND status IN ('done', 'pass') AND started_at >= ? ORDER BY started_at DESC LIMIT ?")
       .all(agentId, channelId, new Date(since).toISOString(), limit).map((row) => traceRow(row, true));
