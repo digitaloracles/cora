@@ -179,10 +179,29 @@ export class KnowledgeSources {
     const agent = message.agentId ? this.store.agent(message.agentId) : null;
     return Boolean((agent && this.isSealed(agent)) || this.sealedChannel(message.channelId));
   }
-  /** Whether an archived message belongs to what this agent may remember: its owner's, or, sealed, only its own channels'. */
+  /** Whether an archived message belongs to what this agent may remember: its owner's, a person's it is authorized to talk to, or, sealed, only its own channels'. */
   ownsMessage(agent, message) {
     if (this.isSealed(agent)) return this.afterReset(message);
-    return !this.ownerMemory || this.messageOwner(message) === this.ownerId(agent);
+    return !this.ownerMemory || this.messageOwner(message) === this.ownerId(agent) || this.authorizedFor(agent, message);
+  }
+  /** The chat contact (telegram:123, discord:456, slack:U1) of a person's message, or "" for agents and the panel. */
+  chatContact(message) {
+    if (message.agentId || !["owner", "human"].includes(message.kind)) return "";
+    const transport = transportOf(message.channelId || "");
+    return transport === "web" || !message.authorId ? "" : `${transport}:${message.authorId}`;
+  }
+  /** A person the owner allowed to talk to this agent (Settings → Permissions): what they say is part of what the agent knows. */
+  authorizedFor(agent, message) {
+    const contact = this.chatContact(message);
+    return Boolean(contact) && !this.isExternal(agent) && !this.isSealed(agent) && this.afterReset(message) && !this.sealedChannel(message.channelId) && this.store.hasAgentPermission(contact, agent.id);
+  }
+  ownerAgents(ownerId) { return this.store.agents().filter((agent) => !this.isExternal(agent) && !this.isSealed(agent) && this.ownerId(agent) === ownerId); }
+  /** Whether the message is said by a person authorized to talk to at least one of this owner's agents. */
+  ownerAuthorized(ownerId, message) { return this.ownerAgents(ownerId).some((agent) => this.authorizedFor(agent, message)); }
+  /** The contacts with a permission grant on at least one of this owner's agents. */
+  authorizedContacts(ownerId) {
+    const agents = this.ownerAgents(ownerId);
+    return [...new Set((this.store.settings.permissions || []).map((grant) => grant.id).filter((id) => agents.some((agent) => this.store.hasAgentPermission(id, agent.id))))];
   }
   ownerIds() { return [...new Set([...(this.store.value("brainOwnerScopes", [])), ...this.store.agents().filter((agent) => !this.isExternal(agent)).map((agent) => this.ownerId(agent)), ...this.store.panelUsers().filter((user) => !user.blocked).map((user) => user.id)])]; }
   contactFor(ownerId) { return this.store.agents().find((agent) => this.ownerId(agent) === ownerId && agent.ownerId)?.ownerId || ""; }
@@ -232,17 +251,19 @@ export class KnowledgeSources {
     const owner = sender ? this.ownerId(sender) : person && !person.blocked ? person.id : this.messageOwner({ ...message, channelId }, { inSealed: true });
     return owner === this.ownerId(agent);
   }
-  messagesSince(ownerId, since, limit) {
-    const agents = this.store.agents().filter((agent) => !this.isExternal(agent) && !this.isSealed(agent) && this.ownerId(agent) === ownerId);
+  messagesSince(ownerId, since, limit, { only = null } = {}) {
+    const agents = this.ownerAgents(ownerId);
     const ids = agents.map((agent) => agent.id), rooms = agents.map((agent) => `web-${agent.id}`);
-    const conditions = ["(kind IN ('owner','human') AND author_id = ?)"];
-    const params = [ownerId];
-    for (const [column, values] of [["agent_id", ids], ["channel_id", rooms]]) if (values.length) { conditions.push(`${column} IN (${values.map(() => "?").join(",")})`); params.push(...values); }
-    for (const contact of new Set(agents.flatMap(agent => this.store.agentOwnerChats(agent)))) {
+    const conditions = only ? [] : ["(kind IN ('owner','human') AND author_id = ?)"];
+    const params = only ? [] : [ownerId];
+    if (!only) for (const [column, values] of [["agent_id", ids], ["channel_id", rooms]]) if (values.length) { conditions.push(`${column} IN (${values.map(() => "?").join(",")})`); params.push(...values); }
+    const contacts = only ? only : [...agents.flatMap(agent => this.store.agentOwnerChats(agent)), ...this.authorizedContacts(ownerId)];
+    for (const contact of new Set(contacts)) {
       const match = /^(discord|slack|telegram):(.+)$/.exec(contact); if (!match) continue;
       const [, transport, id] = match;
       conditions.push(`(kind IN ('owner','human') AND author_id = ? AND ${transport === "slack" ? "channel_id LIKE 'sl:%'" : transport === "telegram" ? "channel_id LIKE 'tg:%'" : "channel_id NOT LIKE 'sl:%' AND channel_id NOT LIKE 'tg:%' AND channel_id NOT LIKE 'web%'"})`); params.push(id);
     }
+    if (!conditions.length) return [];
     const rows = this.store.db.prepare(`SELECT * FROM messages WHERE at > ? AND (${conditions.join(" OR ")}) ORDER BY at LIMIT ?`).all(Math.max(since, this.resetAt), ...params, limit);
     return rows.map((row) => ({ id: row.id, channelId: row.channel_id, at: row.at, authorId: row.author_id, authorName: row.author_name, kind: row.kind, agentId: row.agent_id, content: row.content }));
   }
