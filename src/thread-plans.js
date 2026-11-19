@@ -23,7 +23,7 @@ function planRow(row) {
   if (!row) return null;
   const items = JSON.parse(row.items);
   return {
-    id: row.id, agentId: row.agent_id, name: row.name, status: row.status, items,
+    id: row.id, agentId: row.agent_id, channelId: row.channel_id, name: row.name, status: row.status, items,
     done: row.done, next: row.status === "active" ? row.done + 1 : null,
     blockedReason: row.blocked_reason, revision: row.revision, updatedAt: row.updated_at,
   };
@@ -32,6 +32,7 @@ function planRow(row) {
 export class ThreadPlans {
   constructor(db) {
     this.db = db;
+    this.onChange = null;
     db.exec(`
       CREATE TABLE IF NOT EXISTS thread_plans (
         id TEXT PRIMARY KEY,
@@ -48,6 +49,7 @@ export class ThreadPlans {
       CREATE UNIQUE INDEX IF NOT EXISTS thread_plans_open ON thread_plans(channel_id)
         WHERE status IN ('active', 'blocked');
       CREATE INDEX IF NOT EXISTS thread_plans_recent ON thread_plans(channel_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS thread_plans_history ON thread_plans(updated_at DESC, id);
       CREATE TABLE IF NOT EXISTS thread_plan_reasoning (
         seq INTEGER PRIMARY KEY,
         plan_id TEXT NOT NULL REFERENCES thread_plans(id) ON DELETE CASCADE,
@@ -66,6 +68,16 @@ export class ThreadPlans {
     return this.db.prepare(`SELECT * FROM thread_plans WHERE channel_id = ?${scope}
       ORDER BY status NOT IN ('active', 'blocked'), updated_at DESC, id LIMIT ?`)
       .all(channelId, ...(agentIds ? [JSON.stringify(agentIds)] : []), limit).map(planRow);
+  }
+
+  /** Plans across every thread: all open ones, or the history of finished ones newest first, `before` an updatedAt|id cursor. */
+  recent({ agentIds = null, open = true, limit = 50, before = "" } = {}) {
+    const scope = agentIds ? " AND agent_id IN (SELECT value FROM json_each(?))" : "";
+    const [at = "", id = ""] = String(before || "").split("|");
+    const cursor = !open && at ? " AND (updated_at < ? OR (updated_at = ? AND id > ?))" : "";
+    return this.db.prepare(`SELECT * FROM thread_plans WHERE status ${open ? "IN" : "NOT IN"} ('active', 'blocked')${scope}${cursor}
+      ORDER BY updated_at DESC, id LIMIT ?`)
+      .all(...(agentIds ? [JSON.stringify(agentIds)] : []), ...(cursor ? [at, at, id] : []), limit).map(planRow);
   }
 
   channels(agentIds = null) {
@@ -89,7 +101,7 @@ export class ThreadPlans {
       .get(randomUUID(), channelId, agentId, planText(name, MAX_NAME, "Plan name"),
         JSON.stringify(checklist(items).map((text) => ({ id: randomUUID(), text }))), new Date().toISOString());
     if (!row) throw Object.assign(new Error("there is already an open plan in this thread"), { status: 409 });
-    return planRow(row);
+    return this.changed(planRow(row));
   }
 
   change(channelId, agentId, operation, args) {
@@ -130,7 +142,12 @@ export class ThreadPlans {
       .get(plan.name, plan.status, JSON.stringify(plan.items), plan.done, plan.blockedReason,
         new Date().toISOString(), plan.id, channelId, agentId, args.revision);
     if (!row) throw Object.assign(new Error("plan changed; read the latest revision before updating"), { status: 409 });
-    return planRow(row);
+    return this.changed(planRow(row));
+  }
+
+  changed(plan) {
+    try { this.onChange?.(plan); } catch {}
+    return plan;
   }
 
   record(traceId, task, step) {
