@@ -183,7 +183,8 @@ test("an agent's skills: installed from GitHub for every harness, verified, upda
   assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: false }), /ALPHA_CANARY/);
   await call(`/api/agents/${agent.id}/skills/manual`, { method: "DELETE" });
   assert.equal(existsSync(join(desktop, ".claude/skills/manual")), false, "an adopted desktop skill goes from everywhere");
-  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: false }), /## Le tue skill/);
+  assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: false }), /## Le tue skill\nNon hai skill attive[\s\S]*skill_install/, "without skills the agent still learns to install them through Cora");
+  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: false }), /- manual: MANUAL_CANARY/);
 });
 
 test("skills wait for the desktop when it is off and are forgotten with the agent", async (t) => {
@@ -262,7 +263,8 @@ test("a skill is switched off and on per agent: off it leaves the prompt, skill_
   assert.equal((await call(`/api/agents/${agent.id}/skills`, { method: "POST", body: { source: "acme/skills", skill: "alpha" } })).data.skill.enabled, false, "a reinstall keeps the switch");
 
   await call(`/api/agents/${agent.id}/skills/beta`, { method: "PATCH", body: { enabled: false } });
-  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /## Le tue skill/);
+  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /- beta: Beta helper/);
+  assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /Non hai skill attive/);
 
   const on = await call(`/api/agents/${agent.id}/skills/alpha`, { method: "PATCH", body: { enabled: true } });
   assert.equal(on.data.skill.enabled, true);
@@ -272,4 +274,76 @@ test("a skill is switched off and on per agent: off it leaves the prompt, skill_
   check = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
   assert.equal(check.skills.alpha.desktop, "ok");
   assert.equal(check.skills.beta.desktop, "disabled");
+});
+
+test("a skill an agent puts on its desktop outside Cora shows in its Skill tab: taken under Cora after its commands, kept off when the owner switched it off", async (t) => {
+  const { app, call, docker } = await world(t);
+  const agent = app.store.createAgent({ name: "Installer", model: "hermes/test-model", tools: true });
+  const desktop = docker.desktop(agent.id);
+  const put = (dir, name, text, extra = {}) => {
+    mkdirSync(join(desktop, dir, name, "scripts"), { recursive: true });
+    writeFileSync(join(desktop, dir, name, "SKILL.md"), text);
+    for (const [path, body] of Object.entries(extra)) writeFileSync(join(desktop, dir, name, path), body);
+  };
+  // What a tool's own installer does: a canonical copy and a second real copy for Claude Code.
+  for (const dir of [".agents/skills", ".claude/skills"]) put(dir, "kit", "---\nname: kit\ndescription: KIT_CANARY montaggio\n---\nKit body\n", { "scripts/run.sh": "#!/bin/sh\necho kit\n" });
+  put(".claude/skills", "kit-old", "---\nname: kit\ndescription: an older kit\n---\n");
+  put(".agents/skills", "heavy", "---\nname: heavy\ndescription: HEAVY_CANARY\n---\n", { "blob.bin": "x".repeat(3 * 1024 * 1024) });
+
+  // Every command on the desktop asks for a look once it has been quiet.
+  const watched = [];
+  const ctx = { agent: app.store.agent(agent.id), store: app.store, boxes: { ensure: async () => {}, shell: async () => ({ code: 0, output: "done" }) }, skills: { watch: (who) => watched.push(who.id) } };
+  assert.match((await executeTool({ name: "shell", args: { command: "npx skills add acme/kit -g -y" } }, ctx)).text, /exit 0/);
+  assert.deepEqual(watched, [agent.id]);
+
+  app.skills.scanDelayMs = 20;
+  app.skills.watch(app.store.agent(agent.id));
+  app.skills.watch(app.store.agent(agent.id));
+  for (let at = 0; at < 200 && !app.skills.find(agent.id, "kit"); at++) await new Promise((resolve) => setTimeout(resolve, 25));
+  await app.skills.runningScans.get(agent.id);
+  const kit = app.skills.find(agent.id, "kit");
+  assert.ok(kit, "the skill installed outside Cora is now Cora's");
+  assert.equal(kit.origin, "desktop");
+  assert.deepEqual(kit.installedBy, { kind: "agent", id: agent.id, name: "Installer" });
+  assert.ok(lstatSync(join(desktop, ".claude/skills/kit")).isSymbolicLink(), "the identical second copy becomes a link to the canonical one");
+  assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /- kit: KIT_CANARY montaggio/);
+  const view = (await call(`/api/agents/${agent.id}/skills`)).data;
+  assert.deepEqual(view.skills.map((skill) => [skill.name, skill.enabled]), [["kit", true]], "it shows in the Skill tab, switched on");
+  assert.deepEqual(view.check.found.map((entry) => [entry.name, entry.error]), [["heavy", "desktop: skill too large to adopt (200 files, 4 MB)"], ["kit-old", "copia di kit, già gestita da Cora"]], "what cannot be taken stays listed, and a copy never overwrites the managed skill");
+  assert.ok(Number.isFinite(view.check.checkedAt), "the automatic scan leaves a verification time for the Skill tab");
+  const recheck = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
+  assert.deepEqual(recheck.found.map((entry) => [entry.name, entry.error]), [["heavy", "desktop: skill too large to adopt (200 files, 4 MB)"], ["kit-old", "copia di kit, già gestita da Cora"]], "a manual check keeps the reason it cannot be taken");
+  assert.match(readFileSync(join(desktop, ".agents/skills/kit/SKILL.md"), "utf8"), /KIT_CANARY/);
+
+  // A second look with nothing new changes nothing.
+  const again = await app.skills.scan(agent.id);
+  assert.deepEqual(again.adopted, []);
+  assert.deepEqual(app.skills.list(agent.id).map((skill) => skill.name), ["kit"]);
+
+  // Switched off by the owner, then put back by the agent: it stays off and leaves the desktop again.
+  assert.equal((await call(`/api/agents/${agent.id}/skills/kit`, { method: "PATCH", body: { enabled: false } })).status, 200);
+  assert.equal(existsSync(join(desktop, ".agents/skills/kit")), false);
+  put(".agents/skills", "kit", "---\nname: kit\ndescription: KIT_CANARY montaggio\n---\nKit body\n");
+  const off = await app.skills.scan(agent.id);
+  assert.deepEqual(off.off, ["kit"]);
+  assert.equal(existsSync(join(desktop, ".agents/skills/kit")), false, "the owner's switch wins");
+  assert.equal(app.skills.find(agent.id, "kit").disabled, true);
+  assert.doesNotMatch(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /KIT_CANARY/);
+});
+
+test("skill_install installs through Cora only on the owner's request", async (t) => {
+  const { app } = await world(t);
+  const agent = app.store.createAgent({ name: "Asked", model: "hermes/test-model", tools: true });
+  const ctx = (requester) => ({ agent: app.store.agent(agent.id), store: app.store, skills: app.skills, requester });
+  for (const requester of [null, { kind: "authorized", id: "u2", name: "Guest" }]) {
+    assert.match((await executeTool({ name: "skill_install", args: { source: "acme/skills", skill: "beta" } }, ctx(requester))).text, /^error: skills are installed only on the owner's request/);
+  }
+  assert.deepEqual(app.skills.list(agent.id), []);
+  assert.match((await executeTool({ name: "skill_install", args: { source: "acme/skills" } }, ctx({ kind: "owner", id: "u1", name: "Seb" }))).text, /^error: acme\/skills contiene 3 skill: scegline una\./);
+  const done = (await executeTool({ name: "skill_install", args: { source: "npx skills add https://github.com/acme/skills --skill beta -g -y" } }, ctx({ kind: "owner", id: "u1", name: "Seb" }))).text;
+  assert.match(done, /^INSTALLED: beta \(1 files, from acme\/skills\), in your Skill tab; on your desktop in ~\/\.agents\/skills/);
+  const beta = app.skills.find(agent.id, "beta");
+  assert.deepEqual(beta.installedBy, { kind: "agent", id: agent.id, name: "Asked", requestedBy: "Seb" });
+  assert.equal(beta.origin, "github");
+  assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /- beta: Beta helper/);
 });
