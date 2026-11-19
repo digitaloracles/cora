@@ -973,6 +973,9 @@ export async function fakeTelegram() {
     waiting: new Set(),
     // Files people sent, by file_id: what getFile and /file/ serve.
     files: new Map(),
+    // Button presses answered, and messages edited after them.
+    answers: [],
+    edits: [],
   };
   const ok = (res, result) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1026,6 +1029,10 @@ export async function fakeTelegram() {
         return ok(res, message({ text: params.text || params.caption || "" }));
       }
       case "sendChatAction": return ok(res, true);
+      case "answerCallbackQuery": state.answers.push({ token, ...params }); return ok(res, true);
+      case "editMessageText":
+      case "editMessageCaption":
+      case "editMessageReplyMarkup": state.edits.push({ token, method, ...params }); return ok(res, method === "editMessageReplyMarkup" ? true : message({ message_id: params.message_id, text: params.text }));
       case "setMyName": state.names.push({ token, name: params.name }); return ok(res, true);
       case "getChatAdministrators": return ok(res, [{ status: "creator", user: { id: Number(TG_OWNER), first_name: "Seb" } }]);
       case "getChatMember": return ok(res, state.memberStates.get(`${params.chat_id}:${params.user_id}`) || { status: state.members.has(`${params.chat_id}:${params.user_id}`) ? "member" : "left" });
@@ -1046,6 +1053,15 @@ export async function fakeTelegram() {
     /** A message in a chat, heard by every bot there is (a group), or only by `to` (a private chat with one bot). */
     push(message, { to = [...state.bots.keys()] } = {}) {
       state.updates.push({ update_id: state.nextUpdate++, to, message: { message_id: state.nextMessage++, date: Math.floor(Date.now() / 1000), ...message } });
+      for (const waiter of state.waiting) {
+        clearTimeout(waiter.timer);
+        state.waiting.delete(waiter);
+        waiter.deliver();
+      }
+    },
+    /** Someone pressing an inline button: only the bot that posted the message (`to`) hears it. */
+    press(query, { to }) {
+      state.updates.push({ update_id: state.nextUpdate++, to, callback_query: { id: String(state.nextUpdate * 7919), chat_instance: "1", ...query } });
       for (const waiter of state.waiting) {
         clearTimeout(waiter.timer);
         state.waiting.delete(waiter);

@@ -322,6 +322,9 @@ export function startCora(overrides = {}) {
   telegram.on("message", (message) => {
     orchestrator.onTelegramMessage(message).catch((error) => activity({ type: "error", text: `telegram: ${error.message}` }));
   });
+  telegram.on("callback", (query) => {
+    orchestrator.onTelegramChoice(query).catch((error) => activity({ type: "error", text: `pulsante Telegram: ${error.message}` }));
+  });
   telegram.on("status", (status) => web.broadcast({ type: "telegram", state: status.state, error: status.error }));
   telegram.on("ready", () => activity({ type: "telegram", text: `connesso come @${telegram.user?.username}` }));
   telegram.on("chat", () => {
@@ -331,6 +334,9 @@ export function startCora(overrides = {}) {
   // Agents' own bots listen as well: their private chats, and groups the main bot is not in.
   tgBots.onMessage = (agentId, message) => {
     orchestrator.onTelegramMessage(message, agentId).catch((error) => activity({ type: "error", agentId, text: `telegram: ${error.message}` }));
+  };
+  tgBots.onCallback = (agentId, query) => {
+    orchestrator.onTelegramChoice(query, agentId).catch((error) => activity({ type: "error", agentId, text: `pulsante Telegram: ${error.message}` }));
   };
   tgBots.onChat = (info) => {
     if (info.type === "private" || JSON.stringify(telegram.chats.get(info.id)) === JSON.stringify(info)) return;

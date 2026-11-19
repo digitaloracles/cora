@@ -7989,6 +7989,31 @@ describe("agents in Telegram", () => {
     assert.equal((await call(`/api/agents/${tina.id}`)).data.telegramBot.inChat, true);
   });
 
+  test("a question to the owner on Telegram offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
+    telegram.state.sent.length = 0;
+    replies.set("Tina", (body) => ({ content: lastChatLine(body).endsWith(": Sì") ? "Perfetto, procedo." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(tina.id), { question: "Pubblico la landing?", choices: ["Sì", "No"] }, { channelId: `tg:${TG_GROUP}` });
+    const asked = await waitFor(() => telegram.state.sent.find((item) => item.reply_markup), { what: "the question with its buttons" });
+    assert.equal(asked.token, TINA_TG, "asked through Tina's own bot, which hears the press");
+    assert.equal(asked.text, "Pubblico la landing?", "the answers are buttons, not a text line");
+    assert.deepEqual(asked.reply_markup.inline_keyboard, [[{ text: "Sì", callback_data: `cora:choice:${tina.id}:0` }], [{ text: "No", callback_data: `cora:choice:${tina.id}:1` }]]);
+    const message = { message_id: 777, chat: { id: Number(TG_GROUP), type: "supergroup", title: "La banda" }, text: "Pubblico la landing?", reply_markup: asked.reply_markup };
+
+    telegram.press({ from: { id: Number(TG_STRANGER), first_name: "Ospite", is_bot: false }, message, data: `cora:choice:${tina.id}:1` }, { to: [TINA_TG] });
+    const refused = await waitFor(() => telegram.state.answers.find((answer) => answer.text), { what: "a stranger refused" });
+    assert.match(refused.text, /Può rispondere solo il proprietario/);
+    assert.equal(telegram.state.edits.length, 0, "a refused press leaves the buttons in place");
+
+    telegram.press({ from: seb, message, data: `cora:choice:${tina.id}:0` }, { to: [TINA_TG] });
+    await waitFor(() => telegram.state.sent.some((item) => item.text === "Perfetto, procedo."), { what: "Tina acting on the pressed answer" });
+    const edit = telegram.state.edits.find((item) => item.method === "editMessageText");
+    assert.deepEqual([edit.token, edit.message_id, edit.text], [TINA_TG, 777, "Pubblico la landing?\n→ Sì (Seb)"], "the buttons give way to the answer chosen");
+    assert.deepEqual(edit.entities, [{ type: "bold", offset: 23, length: 2 }]);
+    assert.equal(edit.reply_markup, undefined);
+    assert.equal(telegram.state.answers.length, 2, "every press is answered, so the button stops spinning");
+    await quiet();
+  });
+
   test("Telegram group setup checks live privacy, membership and listening, then requires a human probe and its delivered reply", async () => {
     const path = `/api/agents/${tina.id}/telegram-setup`;
     const groupPath = `${path}?chatId=${TG_GROUP}`;
