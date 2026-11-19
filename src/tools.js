@@ -15,8 +15,8 @@ const planDependencies = { type: "array", maxItems: 48, items: {
   required: ["plan_id"],
 } };
 const PLAN_TOOLS = [
-  { name: "thread_plan_list", description: "Read your plans in this thread, with the open plan first. Shows its revision, ordered checklist and next step. Set include_peers to see shared plans and their prerequisite IDs.", parameters: { type: "object", properties: { include_peers: { type: "boolean" } } } },
-  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this thread. Save it before doing the work. Items are in execution order. Each agent can have one open plan in this thread. Other agents can run their own plans in parallel. For dependencies, step is your 1-based dependent step (omit for the entire plan), plan_id is the prerequisite plan, and task_id optionally selects a step of that plan.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems, dependencies: planDependencies }, required: ["name", "items"] } },
+  { name: "thread_plan_list", description: "Read your plans in this conversation (thread or channel), with the open plan first. Shows its revision, ordered checklist and next step. Set include_peers to see shared plans and their prerequisite IDs.", parameters: { type: "object", properties: { include_peers: { type: "boolean" } } } },
+  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this conversation (thread or channel). Save it before doing the work. Items are in execution order. Each agent can have one open plan in this conversation. Other agents can run their own plans in parallel. For dependencies, step is your 1-based dependent step (omit for the entire plan), plan_id is the prerequisite plan, and task_id optionally selects a step of that plan.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems, dependencies: planDependencies }, required: ["name", "items"] } },
   { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears. Supply dependencies to replace all prerequisites for unfinished work (an empty array removes them).", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" }, dependencies: planDependencies }, required: ["id", "revision"] } },
   { name: "thread_plan_resume", description: "Attach this turn's reasoning to the next checklist task when you start or resume working on an existing plan. Use it before doing the work in this turn.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
   { name: "thread_plan_advance", description: "Mark the next 1-based checklist step done after it is verified. Then do the new next step. The final step completes the plan automatically.", parameters: { type: "object", properties: { ...planVersion, step: { type: "integer", minimum: 1 } }, required: ["id", "revision", "step"] } },
@@ -523,7 +523,7 @@ export async function executeTool(call, ctx) {
     const memoryCall = ["remember", "forget", "recall", "update_core", "brain_search", "brain_page", "brain_note"].includes(call.name);
     ctx.knowledge?.assertCurrent(agent);
     if (THREAD_PLAN_TOOLS.has(call.name)) {
-      if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current thread" };
+      if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current conversation" };
       const operation = call.name.slice("thread_plan_".length);
       const list = () => args.include_peers ? store.plans.peerPlans(channelId, agent.id, 40).map((plan) => ({
         ...plan, agentName: store.agent(plan.agentId)?.name || plan.agentId,

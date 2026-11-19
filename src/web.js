@@ -1098,7 +1098,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       const [, encodedThreadId, planId, action, taskId] = planAction;
       const id = decodeURIComponent(encodedThreadId);
       const detail = await orchestrator.threadDetail(id, threadScope);
-      if (!detail?.thread.thread) throw new HttpError(404, "thread non trovato");
+      if (!detail) throw new HttpError(404, "thread non trovato");
       if (method === "POST" && !action) {
         const body = await readJson(req, 40000);
         const agent = threadPlanAgents(id).find(({ id }) => id === body?.agentId);
@@ -1137,12 +1137,10 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       if (!detail) throw new HttpError(404, "thread non trovato");
       if (knowledge) detail.traces = detail.traces.filter((trace) => ownsEntry(trace, user));
       detail.thread.flows = detail.thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) }));
-      if (detail.thread.thread) {
-        detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
-        detail.planAgents = threadPlanAgents(detail.thread.id)
-          .filter(({ id }) => !store.plans.open(detail.thread.id, id))
-          .map(({ id, name }) => ({ id, name }));
-      }
+      detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
+      detail.planAgents = threadPlanAgents(detail.thread.id)
+        .filter(({ id }) => !store.plans.open(detail.thread.id, id))
+        .map(({ id, name }) => ({ id, name }));
       return send(res, 200, detail);
     }
     if (["/api/threads", "/api/threads/rename", "/api/threads/close"].includes(path) && method === "POST" && user.role !== "owner") {
