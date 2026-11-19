@@ -73,7 +73,35 @@ export class AppAccess {
     return { user, device: record };
   }
 
-  list(user) { return this.devices().filter((record) => record.userId === user.id).map(publicDevice); }
+  list(user) { return this.devices().filter((record) => record.userId === user.id).map(({ push, ...record }) => ({ ...publicDevice(record), notifications: Boolean(push?.token) })); }
+
+  /** The APNs token of this device, so the space's notifications reach it; one token belongs to one device only. */
+  setPush(deviceId, { token, environment }) {
+    const value = String(token || "").toLowerCase();
+    if (!/^[a-f0-9]{64,200}$/.test(value)) throw fail("Token delle notifiche non valido.");
+    const env = environment === "sandbox" ? "sandbox" : "production";
+    const devices = this.devices();
+    const record = devices.find((item) => item.id === deviceId);
+    if (!record) throw fail("Dispositivo non trovato.", 404);
+    for (const item of devices) if (item !== record && item.push?.token === value) delete item.push;
+    record.push = { token: value, environment: env, at: new Date(this.now()).toISOString() };
+    this.store.setValue(DEVICES, devices);
+    return { notifications: true, environment: env };
+  }
+
+  /** Devices that receive notifications, still valid, with their owner's id. */
+  pushTargets() {
+    const now = this.now();
+    return this.devices().filter((record) => record.push?.token && Date.parse(record.expiresAt) > now).map((record) => ({ deviceId: record.id, userId: record.userId, ...record.push }));
+  }
+
+  /** APNs said the token is gone: the device stays connected, without notifications. */
+  dropPush(token) {
+    const devices = this.devices();
+    let changed = false;
+    for (const record of devices) if (record.push?.token === token) { delete record.push; changed = true; }
+    if (changed) this.store.setValue(DEVICES, devices);
+  }
 
   revoke(user, id) {
     const devices = this.devices();
