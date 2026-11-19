@@ -5916,7 +5916,7 @@ describe("talking with the agents", () => {
     const offer = discord.state.botPosts.slice(before).find((item) => item.components);
     assert.equal(offer.channelId, CHANNEL);
     assert.match(offer.content, /\*\*Zara\*\* non è in ascolto in questo canale/);
-    assert.ok(offer.content.includes(`oppure in Ascolto nel pannello: <https://cora.example/#/agent/${zara.id}/impostazioni/ascolto>.`), "the panel link opens Listening, without a preview card");
+    assert.ok(offer.content.endsWith(`Per farlo rispondere qui il proprietario dello spazio può premere «Metti Zara in ascolto qui», oppure apri Zara nel pannello → Ascolto, seleziona #general sotto «Su Discord» e premi Salva: <https://cora.example/#/agent/${zara.id}/impostazioni/ascolto>.`), "the exact way to fix it, with the panel link to Listening, without a preview card");
     const button = offer.components[0].components[0];
     assert.equal(button.label, "Metti Zara in ascolto qui");
     assert.equal(button.custom_id, `cora:listen:${zara.id}:${asking.id}`);
@@ -6805,6 +6805,69 @@ describe("shared listening", () => {
     await waitFor(() => fake.state.botPosts.some((item) => item.channelId === SHARED && item.content === "Leggo io il documento nel mio canale."), { what: "only the agent able to read the listener's channel responding" });
     assert.equal(unexpected, 0, "the main listener's access never admits an absent colleague");
     assert.ok(!fake.state.webhookPosts.some((item) => item.channelId === SHARED && item.username === "Vale"));
+  });
+  test("called in a private channel it does not listen to, the agent says so itself with its own bot, with the exact way to fix it, and its button and the panel both put it there", async (t) => {
+    const fake = await fakeDiscord();
+    const PIA = "600000000000000035";
+    const VALE = "600000000000000036";
+    fake.state.botUsers.set("pia-token", { id: PIA, username: "Pia", appFlags: 1 << 19 });
+    fake.state.botUsers.set("vale-token", { id: VALE, username: "Vale", appFlags: 1 << 19 });
+    const PRIVATE = "1599000000000000905";
+    // Only Vale's bot is in it: the listener (Pia, the main bot here) can neither read nor write there.
+    fake.state.privateTo.set(PRIVATE, "vale-token");
+    fake.state.deniedPosts.set(PRIVATE, new Set(["pia-token"]));
+    const otherHome = tempHome();
+    const seed = new Store(otherHome);
+    seed.updateSettings({ guildIds: [GUILD], ownerIds: [OWNER] });
+    seed.createAgent({ name: "Pia", model: "ollama/test-model", chattiness: 0, tools: false });
+    const vale = seed.createAgent({ name: "Vale", model: "ollama/test-model", chattiness: 1, tools: false, channelIds: [CHANNEL], ownerId: `discord:${STRANGER}` });
+    seed.close();
+    const other = startCora({
+      home: otherHome, host: "127.0.0.1", port: 0, adminPassword: "x", sessionKey: "y", insecureCookies: true,
+      discordToken: "", discordApi: fake.url, telegramApi: telegram.url, telegramPollTimeout: 1, ollamaUrl: ollama.url, ollamaKey: "k",
+      claudeBin: cli.claude, codexBin: cli.codex, codexModelsFile: cli.models, ownerInstructions: join(home, "owner-AGENTS.md"),
+      botTokenFor: (name) => ({ CORA_BOT_PIA: "pia-token", CORA_BOT_VALE: "vale-token" })[name] || "",
+      storeSecret: async () => {}, docker: docker.path, schedulerTickMs: 3600000, startBoxes: false,
+    });
+    t.after(async () => { await other.stop(); await fake.close(); });
+    await other.ready;
+    other.orchestrator.instanceUrl = "https://cora.example";
+    await waitFor(() => other.discord.user?.id === PIA, { what: "Pia listening as the main bot" });
+    await waitFor(() => other.bots.client(vale.id)?.intents === LISTENING_INTENTS, { what: "Vale's bot listening" });
+    fake.dispatchTo(VALE, "CHANNEL_CREATE", { id: PRIVATE, name: "good-apple", guild_id: GUILD, type: 0, position: 9 });
+    await waitFor(() => other.bots.client(vale.id).channelInfo(PRIVATE)?.name === "good-apple", { what: "the private channel known to Vale's bot" });
+
+    // The panel offers the private channel in Vale's Listening, although Cora's own bot cannot see it.
+    const root = `http://127.0.0.1:${other.server.address().port}`;
+    const login = await fetch(`${root}/api/login`, { method: "POST", headers: { "X-Cora": "1", "Content-Type": "application/json" }, body: JSON.stringify({ password: "x" }) });
+    const session = login.headers.get("set-cookie").split(";")[0];
+    const state = await (await fetch(`${root}/api/state`, { headers: { Cookie: session } })).json();
+    assert.ok(!state.channels.some((channel) => channel.id === PRIVATE), "Cora's bot does not list it");
+    const listed = state.agents.find((agent) => agent.id === vale.id);
+    assert.deepEqual(listed.ownChannels.filter((channel) => channel.id === PRIVATE), [{ id: PRIVATE, name: "good-apple", kind: "discord", guildName: "testworld", thread: false }]);
+
+    let answered = 0;
+    replies.set("Vale", () => { answered += 1; return { content: "Ora ti sento, eccomi." }; });
+    const asking = fake.sayTo({ botUserId: VALE, channel: PRIVATE, author: STRANGER, username: "Sara", content: "@Vale are you there?" });
+    const offer = await waitFor(() => fake.state.botPosts.find((item) => item.channelId === PRIVATE && item.components), { what: "Vale's own notice" });
+    assert.equal(offer.token, "vale-token", "the agent called answers, with its own bot");
+    assert.equal(offer.content, `Non sono in ascolto in #good-apple: rispondo in #general. Per farmi rispondere qui il proprietario dello spazio o Sara può premere «Metti Vale in ascolto qui», oppure apri Vale nel pannello → Ascolto, seleziona #good-apple sotto «Su Discord» e premi Salva: <https://cora.example/#/agent/${vale.id}/impostazioni/ascolto>.`);
+    assert.equal(offer.components[0].components[0].custom_id, `cora:listen:${vale.id}:${asking.id}`);
+    assert.ok(!fake.state.botPosts.some((item) => item.channelId === PRIVATE && item.token === "pia-token"), "Cora's bot does not try to speak where it cannot");
+    assert.equal(answered, 0);
+
+    // Pressed by the person the agent belongs to, on Vale's own message: it comes back on Vale's connection.
+    const press = (user, name) => fake.dispatchTo(VALE, "INTERACTION_CREATE", { id: String(Date.now()), token: `tok${user}`, type: 3, channel_id: PRIVATE, guild_id: GUILD, member: { user: { id: user, username: name } }, data: { custom_id: `cora:listen:${vale.id}:${asking.id}` } });
+    press("600000000000000099", "Mallory");
+    await waitFor(() => fake.state.interactionAnswers.some((answer) => answer.token === "tok600000000000000099"), { what: "the refusal" });
+    assert.deepEqual(other.store.agent(vale.id).channelIds, [CHANNEL], "a stranger cannot");
+    press(STRANGER, "Sara");
+    await waitFor(() => fake.state.botPosts.some((item) => item.channelId === PRIVATE && item.content === "Ora ti sento, eccomi."), { what: "Vale answering what called her" });
+    const done = fake.state.interactionAnswers.find((answer) => answer.token === `tok${STRANGER}`);
+    assert.equal(done.type, 7);
+    assert.match(done.data.content, /Vale\*\* ora è in ascolto qui/);
+    assert.deepEqual(other.store.agent(vale.id).channelIds, [CHANNEL, PRIVATE]);
+    assert.equal(fake.state.botPosts.find((item) => item.content === "Ora ti sento, eccomi.").token, "vale-token");
   });
   test("a thread only an agent's bot can see is still a thread: nobody called, nobody answers, a bot naming the agent in passing calls nobody, and its people get real tags", async (t) => {
     const fake = await fakeDiscord();

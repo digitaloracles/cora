@@ -183,6 +183,11 @@ export class AgentBots {
         if (this.clients.get(agentId)?.client !== client) return;
         if (raw.guild_id) this.onGuild?.(raw, agentId); else this.onDirect?.(agentId, raw);
       });
+      // A button pressed on one of this bot's messages comes back on this bot's connection.
+      client.on("interaction", (raw) => {
+        if (this.clients.get(agentId)?.client !== client) return;
+        this.onInteraction?.(raw, client, agentId);
+      });
       client.on("ready", () => {
         if (this.clients.get(agentId)?.client !== client) return;
         this.log?.({ type: "discord", agentId, text: `bot collegato come ${client.user?.username}` });

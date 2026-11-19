@@ -176,6 +176,7 @@ export function startCora(overrides = {}) {
   // DMs to an agent's own bot reach the orchestrator, where that one agent answers.
   bots.onDirect = (agentId, raw) => orchestrator.onDirectMessage(agentId, raw).catch((error) => activity({ type: "error", agentId, text: `dm: ${error.message}` }));
   // Every agent bot that may read content also listens: a private channel is heard if one of them is in it.
+  bots.onInteraction = (interaction, client) => orchestrator.onInteraction(interaction, client).catch((error) => activity({ type: "error", channelId: interaction.channel_id, text: `pulsante: ${error.message}` }));
   bots.onGuild = (raw, agentId) => orchestrator.onMessage(raw, agentId).catch((error) => activity({ type: "error", channelId: raw.channel_id, text: error.message }));
   // Every agent's Slack app listens: a channel is heard as long as one of them is in it.
   skBots.onGuild = (event, agentId) => orchestrator.onSlackMessage(event, agentId).catch((error) => activity({ type: "error", agentId, text: `slack: ${error.message}` }));
