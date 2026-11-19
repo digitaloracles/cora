@@ -2620,6 +2620,43 @@ input.thread-search { height: 38px; }
 .thread-who { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .thread-who .chip { display: inline-flex; gap: 6px; align-items: center; min-height: 36px; }
 .panel .thread-flows > .thread-flow:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+:is(.thread-plans-panel, .thread-task-panel) [hidden] { display: none; }
+.thread-plan-list { display: grid; gap: 10px; }
+.thread-plan-history > .label { margin: 18px 0 8px; }
+.thread-plan { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); }
+.thread-plan > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 16px; align-items: center; gap: 10px; min-height: 58px; padding: 10px 12px; cursor: pointer; list-style: none; }
+.thread-plan > summary::-webkit-details-marker { display: none; }
+.thread-plan > summary:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; border-radius: var(--r-md); }
+.thread-plan[open] .thread-turn-chev { transform: rotate(90deg); }
+.thread-plan-title { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.thread-plan-title strong, .thread-task-title { font-family: Outfit, sans-serif; font-size: 17px; font-weight: 600; }
+.thread-plan-title small { color: var(--muted); }
+.thread-plan-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font: 11px "DM Mono", monospace; }
+.thread-plan-body { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--line); }
+.thread-plan-checklist { margin: 0; padding: 0; list-style: none; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.thread-plan-step { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 44px; padding: 4px 8px; }
+.thread-plan-step + .thread-plan-step { border-top: 1px solid var(--line); }
+.thread-plan-mark { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--line-strong); border-radius: 50%; font: 11px "DM Mono", monospace; color: var(--muted); }
+.thread-plan-mark .ico { width: 14px; height: 14px; }
+.thread-plan-step.done .thread-plan-mark { border-color: var(--green); color: var(--green); }
+.thread-plan-step.next, .thread-plan-step.selected { background: var(--amber-wash); }
+.thread-plan-step.next .thread-plan-mark { border-color: var(--amber-line); color: var(--amber); }
+.thread-plan-text, .thread-task-title { overflow-wrap: anywhere; }
+.thread-plan-step .btn { min-width: 36px; min-height: 36px; }
+.thread-plan-form { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); margin-bottom: 14px; background: var(--panel-2); }
+.thread-plan-form textarea { resize: vertical; }
+.thread-plan-actions, .thread-task-links { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.thread-task-links { justify-content: flex-start; }
+.thread-turn-plan-links { margin-top: 8px; }
+.thread-task-links .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.thread-task-meta { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; color: var(--muted); font: 11px "DM Mono", monospace; }
+.thread-task-event { min-width: 0; }
+@media (max-width: 600px) {
+  .thread-plan > summary { grid-template-columns: minmax(0, 1fr) 16px; }
+  .thread-plan-progress { grid-column: 1; grid-row: 2; }
+  .thread-plan > summary .thread-turn-chev { grid-column: 2; grid-row: 1; }
+}
+
 .thread-turns { display: flex; flex-direction: column; gap: 10px; }
 .thread-turn { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); }
 .thread-turn.live { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber-glow); }

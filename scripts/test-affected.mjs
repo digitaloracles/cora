@@ -52,6 +52,7 @@ const AREAS = [
   { name: "telegram", paths: [/^src\/(telegram|telegram-bots|telegram-setup)\.js$/], files: ["permissions"], cora: ["agents in Telegram", "Telegram "] },
   { name: "slack", paths: [/^src\/(slack|slack-bots|slack-apps)\.js$/], files: ["units"], cora: ["agents in Slack", "a fresh memory boundary", "the space owner connects Slack"] },
   { name: "process usage", paths: [/^src\/process-usage\.js$/], files: ["process-usage"] },
+  { name: "thread plans", paths: [/^src\/thread-plans\.js$/, /^test\/thread-plans\.test\.js$/], files: ["thread-plans"], cora: ["thread plans", "thread privacy"] },
   { name: "thread sessions", paths: [/^src\/thread-sessions\.js$/], files: ["thread-sessions", "reminders"], cora: ["thread goal lifecycle", "harness recovery", "thread privacy"] },
   { name: "scheduler", paths: [/^src\/(scheduler|traces)\.js$/], files: ["reminders", "units"], cora: ["routine workspaces"] },
   { name: "knowledge", paths: [/^src\/(company-brain|librarian|brain-db|knowledge|memory|context)\.js$/, /^test\/knowledge-fixtures\.js$/], files: ["brain", "context", "usage"], cora: ["owner memory", "shared agent owners", "an agent CLI cannot inherit", "a Brain link", "an external agent Brain", "immediate company brain"] },

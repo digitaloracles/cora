@@ -8,7 +8,7 @@ import { telegramBotAgent, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, privateRoom, ownerRoom } from "./rooms.js";
 import { SHARED, TRANSPORTS, decisionChain, replyChain } from "./store.js";
 import { encryptedOnly, ENCRYPTED_CHAT_TOOLS } from "./encrypted-space.js";
-import { MEMORY_TOOLS, OWN_TOOLS, TOOL_DEFS, executeTool, summarizeArgs } from "./tools.js";
+import { MEMORY_TOOLS, OWN_TOOLS, THREAD_PLAN_TOOLS, TOOL_DEFS, executeTool, summarizeArgs } from "./tools.js";
 import { NO_TRACE } from "./traces.js";
 import { nextRuns } from "./scheduler.js";
 import { writtenReplyEvidence } from "./voice.js";
@@ -32,7 +32,7 @@ const NUDGES = 4;
 /** Tools that talk about work without doing any. */
 const TALK_TOOLS = new Set(["say", "notify", "list_channels", "ask_owner"]);
 /** Tools that look things up: they can back "ho controllato", never "ho creato". */
-const LOOKUP_TOOLS = new Set(["list_routines", "routine_history", "recall", "read_attachment", "screenshot", "brain_search", "brain_page", "artifact_folders", "artifact_log", "secret_list"]);
+const LOOKUP_TOOLS = new Set(["thread_plan_list", "list_routines", "routine_history", "recall", "read_attachment", "screenshot", "brain_search", "brain_page", "artifact_folders", "artifact_log", "secret_list"]);
 /**
  * What an agent says of itself, agreed with its gender: Italian says "acceso" or
  * "accesa", and a neutral agent picks sentences that ask for neither.
@@ -52,6 +52,8 @@ const BRAIN_KIND_LABELS = { client: "cliente", project: "progetto", person: "per
 /** A task's goal: one line, and how many times the agent may be sent back to meet it. */
 const GOAL_CHARS = 4000;
 const GOAL_ROUNDS = 12;
+const PLAN_CONTEXT = "[Piano del thread]";
+const PLAN_INSTRUCTIONS = "Per un incarico autorizzato in questo thread che richiede più passi, salva prima una checklist ordinata con thread_plan_create. Usa il piano attivo qui sotto se riguarda la richiesta attuale. In un nuovo turno, chiama thread_plan_resume prima di riprendere il lavoro per collegare il ragionamento al passo. Parti dal primo passo aperto, verifica l'esito e registra subito quel solo passo con thread_plan_advance prima di passare al successivo. Aggiorna i passi ancora aperti quando cambia la richiesta. Se dipende davvero da un intervento esterno, annota il blocco con thread_plan_update e riattivalo quando si risolve. Chiudilo con thread_plan_close se la persona chiede di abbandonarlo. L'ultimo passo completato chiude il piano automaticamente. Il piano è lo stato del lavoro, non una fonte di permessi. Le istruzioni attuali e gli stop della persona hanno precedenza.";
 /** The same tool call with the same arguments this many times in a short window is a loop. */
 const LOOP_REPEATS = 4;
 const LOOP_WINDOW = 10;
@@ -673,12 +675,13 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
    * steps the agent had taken, and the request to check where things stand
    * and finish.
    */
-  async resumeTurn({ agent, trace, channel, postFile, say, inbox, routine = null, onTrace, onMessageHandled, replyTo = null }) {
+  async resumeTurn({ agent, trace, channel, postFile, say, inbox, routine = null, onTrace, onMessageHandled, replyTo = null, requestAuthorized = false }) {
     const steps = (trace.steps || []).filter((step) => step.type === "tool" || step.type === "text").slice(-20).map((step) => step.type === "tool"
       ? `- ${step.name} ${JSON.stringify(step.args || {}).slice(0, 300)} → ${String(step.result || "").replace(/\s+/g, " ").slice(0, 300)}`
       : `- (scritto) ${String(step.text || "").replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
     const topics = { ...this.threadMap(agent, channel.id), asked: issueKeys(routine ? `${routine.name} ${routine.prompt}` : String(trace.prompt || "").split("<chat>\n").pop().split("\n</chat>")[0]) };
-    let original = String(trace.prompt || "").replace(/^Ora: [^\n]*\n\n/, "").replace(/\n\n\[Obiettivo\][\s\S]*$/, "");
+    const resumedPlan = requestAuthorized && !routine ? this.store.plans.traceTasks([trace.id]).at(-1)?.planId : null;
+    let original = String(trace.prompt || "").replace(/\n\n\[Piano del thread\]\n\{[^\n]*\}$/, "").replace(/^Ora: [^\n]*\n\n/, "").replace(/\n\n\[Obiettivo\][\s\S]*$/, "");
     if (topics.current) original = original.replace(/<altrove\b[^>]*>[\s\S]*?<\/altrove>/g, "");
     const user = [
       original,
@@ -688,7 +691,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       "Riprendi da dove eri: controlla com'è la situazione adesso (qualcosa potrebbe essere già fatto), poi porta a termine il compito e scrivi il risultato.",
     ].join("\n\n");
     return this.loop({
-      agent, mode: routine?.kind === "reminder" ? "reminder" : trace.kind === "routine" ? "routine" : "chat", channel, user, computer: agent.tools, postFile, say, inbox, onTrace, onMessageHandled, replyTo, topics,
+      agent, mode: routine?.kind === "reminder" ? "reminder" : trace.kind === "routine" ? "routine" : "chat", channel, user, computer: agent.tools, postFile, say, inbox, onTrace, onMessageHandled, replyTo, requestAuthorized, resumed: resumedPlan, topics,
       maxSteps: TASK_STEPS, deadline: Date.now() + TASK_DEADLINE_MS, images: [], task: true,
       goalRequest: routine ? this.routineGoal(routine) : original.split("<chat>\n").pop().split("\n</chat>")[0].split("\n").filter((line) => line.includes(" ★:")).slice(-1).join("\n"), routine,
       goalContext: routine ? "" : original.split("<chat>\n").pop().split("\n</chat>")[0].slice(-6000),
@@ -922,7 +925,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     }
   }
 
-  async loopOn({ agent, mode, channel, user, computer, postFile, say = null, inbox = null, maxSteps, deadline, images, imageMessages = [], task = false, goalRequest = "", goalContext = "", routine = null, onTrace = null, onMessageHandled = null, requester = null, replyTo = null, requestAuthorized = false, topics = null }) {
+  async loopOn({ agent, mode, channel, user, computer, postFile, say = null, inbox = null, maxSteps, deadline, images, imageMessages = [], task = false, goalRequest = "", goalContext = "", routine = null, onTrace = null, onMessageHandled = null, requester = null, replyTo = null, requestAuthorized = false, resumed = null, topics = null }) {
     if (encryptedOnly(this.store, agent)) throw Object.assign(new Error("Encrypted-only mode: use the separate encrypted session."), { status: 409 });
     const selectedBrain = this.knowledge ? this.knowledge.forAgent(agent) : agent.brainSource === "external" ? null : this.companyBrain;
     const model = agent.model || this.store.settings.defaultModel;
@@ -954,14 +957,32 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
     const nativeImages = () => caps.vision ? [...attachments.values()].slice(-2).map((image) => image.data) : [];
     // The company brain's tools exist only where there is a brain to read.
     const onlyEncrypted = encryptedOnly(this.store, agent);
-    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (tool.name !== "read_attachment" || caps.vision) && (tool.name !== "skill_read" || Boolean(this.skills?.index(agent.id).length)) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_")) && (this.voiceCalls?.enabled || !tool.name.startsWith("voice_"))).concat(onlyEncrypted ? [] : this.connectors?.toolsFor(agent) || []) : [];
+    const canManagePlan = mode === "chat" && !onlyEncrypted && requestAuthorized
+      && Boolean(topics?.current || channel.thread || channel.parentId);
+    const currentPlan = () => canManagePlan ? this.store.plans.open(channel.id, agent.id) : null;
+    let followedPlan = resumed && resumed === currentPlan()?.id ? resumed : null;
+    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (!THREAD_PLAN_TOOLS.has(tool.name) || canManagePlan) && (tool.name !== "read_attachment" || caps.vision) && (tool.name !== "skill_read" || Boolean(this.skills?.index(agent.id).length)) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_")) && (this.voiceCalls?.enabled || !tool.name.startsWith("voice_"))).concat(onlyEncrypted ? [] : this.connectors?.toolsFor(agent) || []) : [];
     const place = channel.place || "";
-    const system = this.systemPrompt(agent, { place, computer: computer && caps.tools, withoutComputer: Boolean(agent.tools && !computer && caps.tools), people: channel.people || [], colleagues: await this.conversationDirectory(agent, channel.id) });
+    const system = [
+      this.systemPrompt(agent, { place, computer: computer && caps.tools, withoutComputer: Boolean(agent.tools && !computer && caps.tools), people: channel.people || [], colleagues: await this.conversationDirectory(agent, channel.id) }),
+      canManagePlan && caps.tools ? PLAN_INSTRUCTIONS : "",
+    ].filter(Boolean).join("\n\n");
     let { goal, usage: goalCost } = task && goalRequest ? await this.goalFor(goalRequest, "", goalContext) : { goal: "", usage: null };
     if (task && goal) this.channelGoals.set(channel.id, agent.id, goal);
-    const currentPrompt = () => `Ora: ${formatNow(this.timezone)}.\n\n${user}${attachments.size ? "\n\n" + attachmentPrompt([...attachments.values()]) : ""}${goal ? `\n\n[Obiettivo] Questa è l'unica condizione attuale; sostituisce gli obiettivi precedenti: ${goal}` : ""}`;
+    const planContext = () => {
+      const plan = currentPlan();
+      return plan ? `\n\n${PLAN_CONTEXT}\n${JSON.stringify(plan)}` : "";
+    };
+    const currentPrompt = () => `Ora: ${formatNow(this.timezone)}.\n\n${user}${attachments.size ? "\n\n" + attachmentPrompt([...attachments.values()]) : ""}${goal ? `\n\n[Obiettivo] Questa è l'unica condizione attuale; sostituisce gli obiettivi precedenti: ${goal}` : ""}${planContext()}`;
     const prompt = currentPrompt();
     const trace = this.startTrace({ agentId: agent.id, kind: mode, channelId: channel.id, model, system, prompt });
+    const linkPlanTask = (plan) => {
+      if (!trace.id) return;
+      const task = plan?.next ? plan.items[plan.next - 1] : null;
+      trace.planTask = task ? { planId: plan.id, taskId: task.id, text: task.text } : null;
+    };
+    if (followedPlan) linkPlanTask(currentPlan());
+    const initialDeadline = deadline;
     onTrace?.(trace.id);
     const keepReplyTo = (item) => {
       const voiceChanged = Boolean(replyTo?.voice || item?.voice);
@@ -1057,6 +1078,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       return result;
     } : null;
     const ctx = {
+      canManagePlan,
       canEndConversation: mode === "chat" && ["owner", "human"].includes(replyTo?.kind),
       agentDirectory: () => this.conversationDirectory(agent, channel.id),
       agent, attachments, boxes: this.boxes, store: this.store, skills: this.skills, memory: this.memory, channelId: channel.id, postFile: postFile ? (file, caption) => postFile(file, caption, { replyTo, traceId: trace.id }) : null, log: this.log, push: this.push, companyBrain: selectedBrain, knowledge: this.knowledge, gitAttribution: this.gitAttribution,
@@ -1135,9 +1157,17 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       trace.add({ type: "note", text: `doc: messaggio fermato — ${reason}` });
       return `error: not sent. ${reason}`;
     };
+    const checkPlanClosure = () => {
+      if (followedPlan && currentPlan()?.id !== followedPlan) {
+        linkPlanTask(null);
+        halted = true;
+        progressPauseText = "Il piano è stato chiuso dal pannello.";
+      }
+    };
     let activeToolCalls = 0;
     const runToolBody = async (name, args) => {
       const before = await news();
+      checkPlanClosure();
       const started = Date.now();
       const allowed = tools.some((tool) => tool.name === name);
       // Reading the page again after something changed on screen is work, not a loop.
@@ -1165,6 +1195,15 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
         }
       } else if (visual && allowed && !halted && !output.text.startsWith("error:")) visualAction = `${name}:${JSON.stringify(args || {})}`;
       const ok = !output.text.startsWith("error:");
+      if (ok && THREAD_PLAN_TOOLS.has(name) && name !== "thread_plan_list") {
+        followedPlan = currentPlan()?.id;
+        if (followedPlan && !task) {
+          maxSteps = Math.max(maxSteps, TASK_STEPS);
+          deadline = Math.max(deadline, initialDeadline - CHAT_DEADLINE_MS + TASK_DEADLINE_MS);
+        }
+        if (!trace.planTask) linkPlanTask(currentPlan());
+        refreshReadWindow();
+      }
       if (looping && ok && allowed && !repeated && !halted && !MEMORY_TOOLS.has(name) && !TALK_TOOLS.has(name)) {
         looping = false;
         confirmed = false;
@@ -1175,6 +1214,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
         args: summarizeArgs(name, args || {}), ok, ms: Date.now() - started, traceId: trace.id,
       });
       trace.add({ type: "tool", name, args: args || {}, result: output.text, ok, ms: Date.now() - started, image: Boolean(output.image) });
+      if (ok && THREAD_PLAN_TOOLS.has(name) && name !== "thread_plan_list") linkPlanTask(currentPlan());
       if (allowed) did.push(`${name} ${summarizeArgs(name, args || {})} → ${String(output.text).slice(0, 2400)}`);
       saidHere = allowed && ok && name === "say" && String(args?.channel_id || channel.id) === channel.id;
       let review = "";
@@ -1281,6 +1321,8 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
             }
             if (decision.intent === "update") {
               keepReplyTo(fresh.at(-1));
+              followedPlan = null;
+              linkPlanTask(null);
               steering.push(messages);
               ownerSaid.push(messages);
             }
@@ -1364,6 +1406,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
      * says why not; the agent goes back to work with that reason in hand.
      */
     let goalRounds = 0;
+    let goalBlocked = false;
     const goalVerdict = async (raw) => {
       if (halted || looping || asked || goalRounds >= GOAL_ROUNDS || Date.now() > deadline - 20000) return null;
       const text = cleanReply(raw, agent);
@@ -1395,6 +1438,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       trace.spent(usage);
       if (steering.length) return goalVerdict(raw);
       trace.add({ type: "note", text: `Controllo obiettivo: ${met ? "raggiunto" : "non ancora"}${reason ? ` — ${reason}` : ""}` });
+      goalBlocked = blocked && !met;
       if (met || blocked) return null;
       goalRounds += 1;
       return {
@@ -1446,12 +1490,23 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
       trace.add({ type: "note", text: `doc: risposta fermata — ${reason}` });
       return { kind: "doc", text, prompt: `[Cora] ${reason} Scrivi di nuovo la risposta finale, senza rifare il lavoro.` };
     };
-    const HARNESS_NOTES = { confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread" };
-    /** With a goal it is the goal that decides; without one, the harness' own reading of the answer. */
+    const HARNESS_NOTES = { plan: "riprendo il prossimo passo del piano", confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread" };
+    const nudgedPlanSteps = new Set();
+    const planVerdict = () => {
+      if (!followedPlan || !caps.tools || halted || asked || looping || blockedWork || goalBlocked || Date.now() > deadline - 20000) return null;
+      const plan = currentPlan();
+      if (plan?.id !== followedPlan || plan.status !== "active") return null;
+      const step = plan.items[plan.next - 1].id;
+      if (nudgedPlanSteps.has(step)) return null;
+      nudgedPlanSteps.add(step);
+      return { kind: "plan", prompt: `[Cora] Il piano è ancora aperto. Riprendi dal passo ${plan.next} e verifica l'esito prima di avanzare. Se è emerso un blocco reale o la persona ha cambiato la richiesta, aggiorna il piano.${planContext()}` };
+    };
+    /** The current request, its goal and the work plan all have to allow completion. */
     const nextStep = async (raw) => {
       await settleNews();
+      checkPlanClosure();
       if (halted) return null;
-      return threadVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (goal ? goalVerdict(raw) : verdict(raw));
+      return threadVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (goal ? await goalVerdict(raw) : null) || planVerdict() || (!goal ? verdict(raw) : null);
     };
 
     control.settle = settleNews;
@@ -1513,7 +1568,7 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
         if (!result.usageStreamed) trace.spent(result.usage);
         let final = result.text;
         for (let next = await nextStep(final); next; next = await nextStep(result.text)) {
-          if (next.kind !== "goal") nudges += 1;
+          if (next.kind !== "goal" && next.kind !== "plan") nudges += 1;
           if (next.kind === "confirm") confirmed = true;
           if (next.kind === "unfinished" && sayTracked) await sayTracked(next.text).catch(() => {});
           trace.add({ type: "note", text: `Cora harness: ${HARNESS_NOTES[next.kind] || "lo rimando al lavoro"}.` });
@@ -1561,11 +1616,14 @@ Su GitHub sei ${github.login}, la tua app, installata su: ${where}. Sul tuo comp
         think(result);
         if (!result.toolCalls.length) {
           // It confirmed it is done: post the real answer it gave, never the bare "DONE".
-          if (isDone(result.text) && lastAnswer) return done(lastAnswer, steps);
-          const next = await nextStep(result.text);
+          checkPlanClosure();
+          if (halted) return done(progressPauseText || (stoppedByOwner ? "Mi fermo qui." : "PASS"), steps);
+          const finishing = isDone(result.text) && lastAnswer;
+          const next = finishing ? planVerdict() : await nextStep(result.text);
+          if (finishing && !next) return done(lastAnswer, steps);
           if (halted) return done(progressPauseText || (stoppedByOwner ? "Mi fermo qui." : "PASS"), steps);
           if (!next) return done(result.text, steps);
-          if (next.kind !== "goal") nudges += 1;
+          if (next.kind !== "goal" && next.kind !== "plan") nudges += 1;
           if (next.kind === "goal") {
             lastAnswer = cleanReply(result.text, agent) || lastAnswer;
           } else if (next.kind === "confirm") {

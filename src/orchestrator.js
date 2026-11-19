@@ -1526,7 +1526,7 @@ export class Orchestrator {
       const english = this.store.settings.language === "en";
       await this.postAs(agent, state, english ? "Cora restarted while I was working: picking up where I left off." : "Cora si è riavviata mentre lavoravo: riprendo da dove ero.", undefined, undefined, { ...this.replyDelivery(replyTo), delegationAuthorized });
       const occupied = await this.withSession(agent, state.id, trace.kind || "chat", () => this.brain.resumeTurn({
-        agent, trace, channel: this.turnChannel(state.id), replyTo,
+        agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized: delegationAuthorized,
         postFile: (file, caption, options = {}) => this.postAs(agent, state, caption, file, options.traceId, { ...this.replyDelivery(options.replyTo || replyTo), delegationAuthorized }),
         say: (text, target = state.id, options = {}) => this.postDirect(agent, state, target, text, { ...options, delegationAuthorized, ...(target === state.id ? this.replyDelivery(options.replyTo || replyTo) : {}) }),
         inbox: this.inbox(state, state.history, agent.id), routine,
@@ -2310,7 +2310,8 @@ export class Orchestrator {
     const closed = new Set(this.store.value("closedThreads", []));
     const known = new Map((this.channels?.known?.() || this.channels?.list?.() || []).map((channel) => [channel.id, channel]));
     const sessions = this.store.threadSessionsByChannel(12, agentIds);
-    const ids = [...new Set([...Object.keys(labels), ...sessions.map((session) => session.channelId)])];
+    const planned = new Map(this.store.plans.channels(agentIds).map(({ id, updatedAt }) => [id, updatedAt]));
+    const ids = [...new Set([...Object.keys(labels), ...sessions.map((session) => session.channelId), ...planned.keys()])];
     const names = this.threadNames(ids, known);
     const groups = new Map();
     const ensure = (id) => {
@@ -2326,7 +2327,7 @@ export class Orchestrator {
         id,
         name: labels[id] || channel?.name || saved?.name || info?.name || id,
         kind,
-        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs),
+        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs || planned.has(id)),
         parentId,
         parentName: parentId ? (known.get(parentId)?.name || "") : "",
         guildId,
@@ -2343,6 +2344,7 @@ export class Orchestrator {
     };
     for (const channel of known.values()) if (channel.thread || channel.parentId) ensure(channel.id);
     for (const id of Object.keys(labels)) ensure(id);
+    for (const [id, updatedAt] of planned) ensure(id).lastAt = updatedAt;
     const engagements = this.engagements || {};
     for (const [id, focus] of Object.entries(engagements)) if (focus?.ids?.length && !closed.has(id) && (slackIds(id)?.threadTs || transportOf(id) === "telegram")) ensure(id);
     const measured = [];
@@ -2388,7 +2390,7 @@ export class Orchestrator {
     for (const [flow, pid] of measured) if (usage.has(pid)) flow.usage = usage.get(pid);
     const parents = [...known.values()].filter((channel) => !channel.thread && !channel.parentId && (channel.kind === "discord" || channel.kind === "slack"))
       .map((channel) => ({ id: channel.id, name: channel.name, kind: channel.kind }));
-    return { threads: [...groups.values()].filter((group) => !allowed || group.flows.length || group.listening.length || emptyVisible.has(group.id)), parents, machine: this.processUsage.machine() };
+    return { threads: [...groups.values()].filter((group) => !allowed || group.flows.length || group.listening.length || planned.has(group.id) || emptyVisible.has(group.id)), parents, machine: this.processUsage.machine() };
   }
 
   /** One thread whole: its flows and every turn the agents took in it, with their steps. */
@@ -2404,7 +2406,16 @@ export class Orchestrator {
         const agent = this.store.agent(trace.agentId);
         return { ...trace, agentName: agent?.name || trace.agentId, color: agent?.color || "#f2a93b" };
       });
-    return { thread, traces };
+    const plans = thread.thread ? this.store.plans.list(id, scope.agentIds) : [];
+    const tasksByPlan = Map.groupBy(this.store.plans.tasks(plans.map((plan) => plan.id)), (task) => task.planId);
+    const tasksByTrace = Map.groupBy(this.store.plans.traceTasks(traces.map((trace) => trace.id)), (task) => task.traceId);
+    return {
+      thread,
+      traces: traces.map((trace) => ({ ...trace, planTasks: tasksByTrace.get(trace.id) || [] })),
+      plans: plans.map((plan) => ({
+        ...plan, agentName: this.store.agent(plan.agentId)?.name || plan.agentId, tasksWithReasoning: tasksByPlan.get(plan.id) || [],
+      })),
+    };
   }
 
   async createPlatformThread({ parentId, name }) {

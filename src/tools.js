@@ -8,6 +8,19 @@ import { summarizeTool, toolFor } from "./connectors/index.js";
 
 const XDOTOOL_BUTTON = { click: "1", double_click: "1", right_click: "3", middle_click: "2" };
 
+const planItems = { type: "array", items: { type: "string" }, minItems: 1, maxItems: 24 };
+const planVersion = { id: { type: "string" }, revision: { type: "integer", minimum: 1 } };
+const PLAN_TOOLS = [
+  { name: "thread_plan_list", description: "Read your plans in this thread, with the open plan first. Shows its revision, ordered checklist and next step.", parameters: { type: "object", properties: {} } },
+  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this thread. Save it before doing the work. Items are in execution order. Only one plan can be open in the thread.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems }, required: ["name", "items"] } },
+  { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears.", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" } }, required: ["id", "revision"] } },
+  { name: "thread_plan_resume", description: "Attach this turn's reasoning to the next checklist task when you start or resume working on an existing plan. Use it before doing the work in this turn.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
+  { name: "thread_plan_advance", description: "Mark the next 1-based checklist step done after it is verified. Then do the new next step. The final step completes the plan automatically.", parameters: { type: "object", properties: { ...planVersion, step: { type: "integer", minimum: 1 } }, required: ["id", "revision", "step"] } },
+  { name: "thread_plan_close", description: "Close your open plan when the person asks to close or abandon it. Keeps the checklist and actual progress visible.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
+];
+
+export const THREAD_PLAN_TOOLS = new Set(PLAN_TOOLS.map(({ name }) => name));
+
 /** Tools every agent has, also without its computer. */
 export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "remember", "forget", "recall", "update_core", "notify", "ask_owner", "brain_search", "brain_page", "brain_note"]);
 
@@ -17,9 +30,10 @@ export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "rem
  * changing, pausing or deleting one touches nothing else — so they are not
  * locked behind the computer, which only opens when the owner is the one asking.
  */
-export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, "read_attachment", "skill_read", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
+export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
 
 export const TOOL_DEFS = [
+  ...PLAN_TOOLS,
   { name: "list_agents", description: "Read the current directory of agents visible to you: id, name, description, configured email, enabled status and desktop setting. In a conversation, conversation.reachable says who can receive a call here and conversation.engaged says who is already involved. An absent colleague cannot receive your tag; do not wait for them or move the task to another thread. A delivered mention is not acceptance of a task. Look up a colleague's registered details here instead of asking them or the owner. No credentials, inbox content or permission to send, create accounts or access another desktop is granted.", parameters: { type: "object", properties: {} } },
   { name: "encrypted_request", description: "Request temporary access to a specific encrypted document/version. Only a link and request metadata are returned. The owner unlocks it in the panel; the separate tool-free worker saves encrypted results there. Never ask for passwords, keys or document plaintext in chat.", parameters: { type: "object", properties: { folder: { type: "string" }, document: { type: "string" }, version: { type: "integer" }, operation: { type: "string", enum: ["read", "edit"] } }, required: ["folder", "document", "version", "operation"] } },
   {
@@ -498,6 +512,14 @@ export async function executeTool(call, ctx) {
     }
     const memoryCall = ["remember", "forget", "recall", "update_core", "brain_search", "brain_page", "brain_note"].includes(call.name);
     ctx.knowledge?.assertCurrent(agent);
+    if (THREAD_PLAN_TOOLS.has(call.name)) {
+      if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current thread" };
+      const operation = call.name.slice("thread_plan_".length);
+      const plan = operation === "list" ? store.plans.list(channelId, [agent.id], 20)
+        : operation === "create" ? store.plans.create(channelId, agent.id, args)
+        : store.plans.change(channelId, agent.id, operation, args);
+      return { text: JSON.stringify(plan) };
+    }
     const externalBrain = agent.brainSource === "external";
     const selectedBrain = memoryCall && ctx.knowledge ? ctx.knowledge.forAgent(agent) : externalBrain ? null : ctx.companyBrain;
     if (memoryCall && externalBrain && ["remember", "forget", "update_core", "brain_note"].includes(call.name)) return { text: "error: the external Brain is read-only; internal memory writes are also disabled" };

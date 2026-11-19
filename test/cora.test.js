@@ -7084,6 +7084,141 @@ describe("harness recovery", () => {
   });
 });
 
+test("thread plans run sequentially and link reasoning to each checklist item", async (t) => {
+  const network = await fakeDiscord();
+  const f = await knowledgeWorld({ discordToken: "fixture-discord-plans", discordApi: network.url });
+  t.after(async () => { await f.close(); await network.close(); });
+  f.app.store.updateSettings({ transport: "discord", transports: ["discord"], guildIds: [GUILD], ownerIds: [OWNER] });
+  const agent = f.app.store.createAgent({ name: "Planner", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id, ownerId: "discord:" + OWNER, channelIds: [CHANNEL], chattiness: 0 });
+  await waitFor(() => f.app.discord.state === "ready");
+  const thread = { id: "800000000000000061", type: 11, parent_id: CHANNEL, guild_id: GUILD, name: "Plan lifecycle QA", thread_metadata: { archived: false } };
+  network.state.threads.set(thread.id, thread);
+  network.dispatch("THREAD_CREATE", thread);
+  await waitFor(() => f.app.channels.list().some((channel) => channel.id === thread.id));
+  const tool = (name, args, thinking) => ({ thinking, tool_calls: [{ function: { name, arguments: args } }] });
+  const observations = [];
+  f.state.answer = (body) => {
+    if (!body.tools?.length) return { content: JSON.stringify({ leave: [] }) };
+    observations.push(body);
+    const plan = f.app.store.plans.list(thread.id, [agent.id])[0];
+    const prompt = body.messages.map((message) => message.content).join("\n");
+    if (!plan) return tool("thread_plan_create", { name: "Release checks", items: ["Verify the build", "Check the receipt"] });
+    if (plan.status === "completed") return { content: "PLAN_EXECUTED_OK" };
+    if (!prompt.includes("Riprendi dal passo " + plan.next)) return { content: "Verdict still pending." };
+    return tool("thread_plan_advance", { id: plan.id, revision: plan.revision, step: plan.next }, "REASONING_FOR_STEP_" + plan.next);
+  };
+  network.say({ content: "@Planner, make a plan and run both release checks.", channel: thread.id });
+  await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === thread.id && post.content === "PLAN_EXECUTED_OK"));
+  assert.ok(observations[0].tools.some(({ function: tool }) => tool.name === "thread_plan_create"));
+  assert.ok(!observations[0].tools.some(({ function: tool }) => tool.name === "shell"));
+  const path = "/api/threads/" + thread.id;
+  const view = (await f.request(f.alice, path)).data;
+  const [plan] = view.plans;
+  assert.equal(plan.status, "completed");
+  assert.equal(plan.done, 2);
+  assert.deepEqual(view.traces[0].planTasks.map(({ taskId }) => taskId), plan.items.map(({ id }) => id));
+  for (const [index, task] of plan.items.entries()) {
+    const address = path + "/plans/" + plan.id + "/tasks/" + task.id;
+    const { status, data } = await f.request(f.alice, address);
+    assert.equal(status, 200);
+    const evidence = data.events.map(({ step }) => step.text).filter(Boolean);
+    assert.ok(evidence.includes("REASONING_FOR_STEP_" + (index + 1)));
+    assert.ok(!evidence.includes("REASONING_FOR_STEP_" + (2 - index)));
+    assert.equal((await f.request(f.bob, address)).status, 404);
+  }
+});
+
+test("thread plans let a panel owner create and close while other agents and threads stay isolated", async (t) => {
+  const network = await fakeDiscord();
+  const f = await knowledgeWorld({ discordToken: "fixture-discord-plan-panel", discordApi: network.url });
+  t.after(async () => { await f.close(); await network.close(); });
+  f.app.store.updateSettings({ transport: "discord", transports: ["discord"], guildIds: [GUILD], ownerIds: [OWNER] });
+  const agent = f.app.store.createAgent({ name: "PlanOwner", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id, ownerId: "discord:" + OWNER, channelIds: [CHANNEL], chattiness: 0 });
+  const other = f.app.store.createAgent({ name: "PlanGuest", model: "ollama/test-model", tools: false, brainOwnerId: f.bob.user.id, channelIds: [CHANNEL], chattiness: 0 });
+  await waitFor(() => f.app.discord.state === "ready");
+  const threadIds = ["800000000000000062", "800000000000000063"];
+  for (const id of threadIds) {
+    const thread = { id, type: 11, parent_id: CHANNEL, guild_id: GUILD, name: "Plan access QA", thread_metadata: { archived: false } };
+    network.state.threads.set(id, thread);
+    network.dispatch("THREAD_CREATE", thread);
+    for (const writer of [agent, other]) {
+      const session = f.app.orchestrator.sessions.begin({ agentId: writer.id, channelId: id, kind: "chat" });
+      f.app.orchestrator.sessions.finish(session);
+    }
+  }
+  await waitFor(() => threadIds.every((id) => f.app.channels.list().some((channel) => channel.id === id)));
+  const [path, elsewhere] = threadIds.map((id) => "/api/threads/" + id);
+  const create = (actor, agentId) => f.request(actor, path + "/plans", { method: "POST", body: { agentId, name: "Private release plan", items: ["Check signed package"] } });
+  assert.equal((await create(f.bob, agent.id)).status, 403);
+  const outcomes = await Promise.all([create(f.alice, agent.id), create(f.alice, agent.id)]);
+  assert.deepEqual(outcomes.map(({ status }) => status).sort(), [201, 409]);
+  const plan = outcomes.find(({ status }) => status === 201).data;
+  assert.deepEqual((await f.request(f.bob, path)).data.plans, []);
+  assert.deepEqual((await f.request(f.alice, elsewhere)).data.plans, []);
+  const close = (actor, route, revision = plan.revision) => f.request(actor, route + "/plans/" + plan.id + "/close", { method: "POST", body: { revision } });
+  assert.equal((await close(f.bob, path)).status, 404);
+  assert.equal((await close(f.alice, elsewhere)).status, 404);
+  assert.equal((await close(f.alice, path, 0)).status, 409);
+
+  const requests = [];
+  let authorized = false, aboutToAdvance = false;
+  const resume = Promise.withResolvers();
+  f.state.answer = async (body) => {
+    if (!body.tools?.length) return { content: JSON.stringify({ leave: [] }) };
+    requests.push(body);
+    if (!authorized) return { content: "PLAN_PERMISSION_CHECK" };
+    if (body.messages.some((message) => message.role === "tool")) {
+      aboutToAdvance = true;
+      await resume.promise;
+      return { tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: plan.id, revision: plan.revision, step: 1 } } }] };
+    }
+    return { tool_calls: [{ function: { name: "thread_plan_resume", arguments: { id: plan.id, revision: plan.revision } } }] };
+  };
+  const outsider = { id: "outsider", kind: "human", authorName: "Outsider", authorId: STRANGER, content: "Read the plan.", at: Date.now(), addressed: [agent.id] };
+  const denied = await f.app.brain.chatTurn({ agent, history: [outsider], channel: f.app.orchestrator.turnChannel(threadIds[0]), forced: true, computer: false, replyTo: outsider });
+  assert.equal(denied.text, "PLAN_PERMISSION_CHECK");
+  assert.ok(!requests[0].tools.some(({ function: tool }) => tool.name === "thread_plan_resume"));
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /Private release plan|Check signed package/);
+  authorized = true;
+  network.say({ content: "@PlanOwner, resume the open plan and report its state.", channel: threadIds[0] });
+  try {
+    await waitFor(() => aboutToAdvance);
+    assert.ok(requests.some((body) => body.messages.some((message) => message.content?.includes("[Piano del thread]") && message.content.includes("Check signed package"))));
+    assert.equal((await close(f.alice, path)).status, 200);
+  } finally { resume.resolve(); }
+  await waitFor(() => network.state.webhookPosts.some((post) => post.content === "Il piano è stato chiuso dal pannello."));
+  const ended = (await f.request(f.alice, path)).data.plans[0];
+  assert.equal(ended.status, "closed");
+  assert.equal(ended.done, 0);
+  assert.equal(ended.tasksWithReasoning.length, 1);
+});
+
+test("thread plans resume the saved next step instead of an interrupted trace's stale checklist", async (t) => {
+  const f = await knowledgeWorld(); t.after(f.close);
+  const agent = f.app.store.createAgent({ name: "ResumePlan", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id });
+  const channel = { id: "800000000000000064", name: "Resume QA", thread: true, parentId: CHANNEL };
+  const first = f.app.store.plans.create(channel.id, agent.id, { name: "Resume audit", items: ["Prepare file", "Verify file"] });
+  const original = f.app.traces.start({ agentId: agent.id, kind: "chat", channelId: channel.id, prompt: "Ora: original.\n\nReview the file.\n\n[Piano del thread]\n" + JSON.stringify(first) });
+  original.planTask = { planId: first.id, taskId: first.items[0].id, text: first.items[0].text };
+  original.add({ type: "thinking", text: "Prepared the file" });
+  original.finish({ status: "stopped" });
+  const current = f.app.store.plans.change(channel.id, agent.id, "advance", { id: first.id, revision: first.revision, step: 1 });
+  let resumedPrompt = "";
+  f.state.answer = (body) => {
+    if (!body.messages.some((message) => message.role === "tool")) {
+      resumedPrompt = body.messages.find((message) => message.role === "user").content;
+      return { thinking: "Verified the file", tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: current.id, revision: current.revision, step: 2 } } }] };
+    }
+    return { content: "Audit complete." };
+  };
+  const result = await f.app.brain.resumeTurn({ agent, trace: f.app.store.trace(original.id), channel, requestAuthorized: true });
+  assert.equal(result.text, "Audit complete.");
+  assert.equal(resumedPrompt.split("[Piano del thread]").length, 2);
+  assert.match(resumedPrompt, /"done":1,"next":2/);
+  assert.equal(f.app.store.plans.list(channel.id, [agent.id])[0].status, "completed");
+  assert.equal(f.app.store.plans.traceTasks([result.traceId])[0].taskId, first.items[1].id);
+});
+
 test("thread privacy enforces ownership for live traces, full history and a revoked co-owner", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);
   const agent = f.app.store.createAgent({ name: "Private history", brainOwnerId: f.bob.user.id, coOwnerIds: [f.alice.user.id] });

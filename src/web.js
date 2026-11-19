@@ -1,7 +1,7 @@
 import { keyHint } from "./key-hint.js";
 import { panelAssets } from "./panel-assets.js";
 import { VERSION } from "./version.js";
-import { encryptedSpaceFor, encryptedFolder } from "./encrypted-space.js";
+import { encryptedSpaceFor, encryptedFolder, encryptedOnly } from "./encrypted-space.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
@@ -1062,12 +1062,55 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       board.threads = board.threads.map((thread) => ({ ...thread, flows: thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) })) }));
       return send(res, 200, board);
     }
+    const threadPlanAgents = (id) => orchestrator.agentsFor(id).filter((agent) => canStopFlow(agent.id) && !encryptedOnly(store, agent));
+    const planAction = /^\/api\/threads\/([\w:.%-]{3,160})\/plans(?:\/([a-f0-9-]{36})\/(close|tasks)(?:\/([a-f0-9-]{36}))?)?$/.exec(path);
+    if (planAction) {
+      const [, encodedThreadId, planId, action, taskId] = planAction;
+      const id = decodeURIComponent(encodedThreadId);
+      const detail = await orchestrator.threadDetail(id, threadScope);
+      if (!detail?.thread.thread) throw new HttpError(404, "thread non trovato");
+      if (method === "POST" && !action) {
+        const body = await readJson(req, 40000);
+        const agent = threadPlanAgents(id).find(({ id }) => id === body?.agentId);
+        if (!agent || !(await orchestrator.conversationAgents(id)).some((item) => item.id === agent.id && item.reachable) || !canStopFlow(agent.id)) {
+          throw new HttpError(403, "Agente non autorizzato per questo thread.");
+        }
+        try {
+          const plan = store.plans.create(id, agent.id, body);
+          return send(res, 201, plan);
+        } catch (error) { throw new HttpError(error.status || 400, error.message); }
+      }
+      const plan = detail.plans.find((item) => item.id === planId);
+      if (!plan) throw new HttpError(404, "Piano non trovato.");
+      if (method === "POST" && action === "close" && !taskId) {
+        if (!canStopFlow(plan.agentId)) throw new HttpError(403, "Solo il proprietario dell’agente");
+        const body = await readJson(req, 1024);
+        try {
+          const closed = store.plans.change(id, plan.agentId, "close", { id: plan.id, revision: body?.revision });
+          return send(res, 200, closed);
+        } catch (error) { throw new HttpError(error.status || 400, error.message); }
+      }
+      if (method === "GET" && action === "tasks" && taskId) {
+        const task = plan.items.find((item) => item.id === taskId) || plan.tasksWithReasoning.find((item) => item.id === taskId);
+        if (!task) throw new HttpError(404, "Passo non trovato.");
+        const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : Number.MAX_SAFE_INTEGER;
+        if (!Number.isSafeInteger(before) || before <= 0) throw new HttpError(400, "Cursore non valido.");
+        const events = store.plans.reasoning(plan.id, taskId, before);
+        return send(res, 200, { plan: { id: plan.id, name: plan.name, agentId: plan.agentId, agentName: plan.agentName }, task, events,
+          next: events.length === 100 ? events.at(-1).seq : null });
+      }
+      throw new HttpError(405, "Metodo non consentito.");
+    }
     const threadPage = /^\/api\/threads\/([\w:.%-]{3,160})$/.exec(path);
     if (threadPage && !["rename", "stop", "close"].includes(threadPage[1]) && method === "GET") {
       const detail = await orchestrator.threadDetail(decodeURIComponent(threadPage[1]), threadScope);
       if (!detail) throw new HttpError(404, "thread non trovato");
       if (knowledge) detail.traces = detail.traces.filter((trace) => ownsEntry(trace, user));
       detail.thread.flows = detail.thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) }));
+      if (detail.thread.thread) {
+        detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
+        detail.planAgents = !store.plans.hasOpen(detail.thread.id) ? threadPlanAgents(detail.thread.id).map(({ id, name }) => ({ id, name })) : [];
+      }
       return send(res, 200, detail);
     }
     if (["/api/threads", "/api/threads/rename", "/api/threads/close"].includes(path) && method === "POST" && user.role !== "owner") {
