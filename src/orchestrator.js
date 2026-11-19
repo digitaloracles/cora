@@ -1348,11 +1348,23 @@ export class Orchestrator {
       const key = refused ? `${state.id}:${id}:${item.authorId}` : `${state.id}:${id}`;
       if (!agent || (this.offered.get(key) || 0) > now - 30 * 60000) continue;
       this.offered.set(key, now);
+      const transport = transportOf(state.id);
       if (refused) {
-        await this.notice(state.id, this.permissionNotice(agent, item, english, state.id));
+        // The agent says it itself with its own bot: Cora's bot may not be in a private channel.
+        const own = agent.enabled && transport === "discord" && !this.dmAgentId(state.id) ? await this.ownBotIn(agent, state.id) : null;
+        let told = false;
+        if (own) {
+          try {
+            await own.say(state.id, { content: this.permissionNotice(agent, item, english, state.id, true) });
+            told = true;
+          } catch (error) {
+            this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato dal bot di ${agent.name}: ${error.message}` });
+          }
+        }
+        if (!told) await this.notice(state.id, this.permissionNotice(agent, item, english, state.id)).catch((error) => this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato: ${error.message}` }));
+        await this.tellOwnerRefused(agent, item, state, own, english);
         continue;
       }
-      const transport = transportOf(state.id);
       const here = this.channelMeta(state.id)?.name;
       const where = agent.channelIds.filter((channelId) => transportOf(channelId) === transport).map((channelId) => this.channelMeta(channelId)?.name).filter(Boolean).map((name) => `#${name}`);
       const link = this.panelLink(state.id, `agent/${agent.id}/impostazioni/ascolto`);
@@ -1396,6 +1408,25 @@ export class Orchestrator {
     }
   }
 
+  /** With its own bot, the agent tells the person it belongs to, in private, who it turned away and where. */
+  async tellOwnerRefused(agent, item, state, own, english) {
+    const match = /^discord:(\d+)$/.exec(String(agent.ownerId || ""));
+    if (!own || !match || match[1] === String(item.authorId)) return;
+    const who = item.authorName || (english ? "Someone" : "Qualcuno");
+    const here = this.channelMeta(state.id)?.name || own?.channelInfo?.(state.id)?.name;
+    const where = here ? `#${here}` : (english ? "a channel" : "un canale");
+    const link = this.panelLink(state.id, `agent/${agent.id}/impostazioni/autorizzazioni`);
+    const content = english
+      ? `${who} tried to talk to me in ${where}, but has no permission to work with me, so I did not answer. You can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
+      : `${who} ha provato a parlarmi in ${where}, ma non ha il permesso di farmi lavorare e non ho risposto. Puoi darglielo in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
+    try {
+      const dm = await own.request("POST", "/users/@me/channels", { body: { recipient_id: match[1] } });
+      await own.say(dm.id, { content });
+    } catch (error) {
+      this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso privato a chi possiede ${agent.name} non inviato: ${error.message}` });
+    }
+  }
+
   /** The agent's own Discord bot, when it is connected and can read this channel. */
   async ownBotIn(agent, channelId) {
     const client = this.bots?.client?.(agent.id);
@@ -1404,13 +1435,22 @@ export class Orchestrator {
     catch { return null; }
   }
 
-  /** It listens here, but the person who called it has no permission on it: who can grant it, and where. */
-  permissionNotice(agent, item, english, channelId = "") {
+  /**
+   * It listens here, but the person who called it has no permission on it: who can grant it, and
+   * where. `own`: the agent says it itself, in first person.
+   */
+  permissionNotice(agent, item, english, channelId = "", own = false) {
     const ownerId = this.brain.knowledge?.ownerId?.(agent);
     const person = ownerId ? this.store.panelUser(ownerId) : null;
-    const owner = person && !person.blocked ? person.name || person.email : "";
+    const owner = person && !person.blocked ? person.name || person.email : (own ? this.store.agentOwner(agent)?.name || "" : "");
     const who = item.authorName || (english ? "this person" : "questa persona");
     const link = this.panelLink(channelId, `agent/${agent.id}/impostazioni/autorizzazioni`);
+    if (own) {
+      const sorry = english ? `Sorry${item.authorName ? ` ${item.authorName}` : ""}, I cannot answer you` : `Scusa${item.authorName ? ` ${item.authorName}` : ""}, non posso risponderti`;
+      return english
+        ? `${sorry}: ${owner ? `I only work for ${owner} and for whoever has their permission` : "you have no permission to work with me"}. ${owner || "My owner"} can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
+        : `${sorry}: ${owner ? `lavoro solo per ${owner} e per chi ha il suo permesso` : "non hai il permesso di farmi lavorare"}. ${owner ? `Te lo può dare ${owner}` : "Te lo può dare chi mi gestisce"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
+    }
     return english
       ? `**${agent.name}** does not answer ${who}: they have no permission to work with it. ${owner || "Its owner"} can grant it under Permissions in the panel${link ? `: ${link}` : ""}.`
       : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
