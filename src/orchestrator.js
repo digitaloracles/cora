@@ -159,6 +159,11 @@ function lastCalled(history, agents) {
 }
 
 
+/** The answers an agent offers, as one row of Discord buttons; the press says which agent asked and which answer. */
+function choiceButtons(agent, choices) {
+  return [{ type: 1, components: choices.slice(0, 5).map((label, index) => ({ type: 2, style: index ? 2 : 1, label: label.slice(0, 80), custom_id: `cora:choice:${agent.id}:${index}` })) }];
+}
+
 function discordConversationMessage(raw, archived = null) {
   return (raw.type === undefined || raw.type === 0 || raw.type === 19)
     && Boolean(raw.content?.trim() || raw.attachments?.length || raw.embeds?.length || raw.sticker_items?.length
@@ -665,7 +670,8 @@ export class Orchestrator {
     }
     const previous = state.focus?.ids || [];
     const calls = (agent) => tagged(item.content, agent.name) || (item.voice && spokenTo(item.content, agent.name));
-    const named = available.filter(calls).map((agent) => agent.id);
+    // A pressed answer is called to the agent that offered it.
+    const named = available.filter((agent) => calls(agent) || item.choiceFor === agent.id).map((agent) => agent.id);
     const candidates = available.filter((agent) => previous.includes(agent.id) || named.includes(agent.id));
     const recipientsForExit = named.length ? candidates.filter((agent) => named.includes(agent.id)) : candidates;
     const decision = recipientsForExit.length ? await this.brain.disengagement({ message: item.content, agents: recipientsForExit, history: state.history.filter((entry) => entry.id !== item.id), reminded: Boolean(state.focus?.remindedAt) }) : null;
@@ -1473,6 +1479,40 @@ export class Orchestrator {
       : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
   }
 
+  /**
+   * One of the answers an agent offered with ask_owner, pressed on Discord: it reaches that agent
+   * as the message of the person who pressed, and the buttons give way to the answer chosen. The owner,
+   * the person the agent belongs to and whoever has permission to work with it may answer.
+   */
+  async onChoice(interaction, client = this.discord) {
+    const match = /^cora:choice:(ag_[a-f0-9]{12}):(\d)$/.exec(String(interaction?.data?.custom_id || ""));
+    if (!match) return;
+    this.pressed ??= new Set();
+    if (interaction.id && this.pressed.has(interaction.id)) return;
+    if (interaction.id) { this.pressed.add(interaction.id); if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value); }
+    const english = this.store.settings.language === "en";
+    const user = interaction.member?.user || interaction.user || {};
+    const channelId = String(interaction.channel_id || "");
+    const agent = this.store.agent(match[1]);
+    if (!agent || !channelId) return client.answerInteraction(interaction, { content: english ? "That agent is no longer here." : "Questo agente non c'è più." });
+    const guildId = interaction.guild_id || this.channels.discordInfo(channelId)?.guildId;
+    if (guildId && !this.allowedGuild(guildId)) return;
+    const raw = { id: String(interaction.id), type: 0, channel_id: channelId, guild_id: guildId, author: user, member: interaction.member, content: "", mentions: [], attachments: [], timestamp: new Date().toISOString() };
+    const state = this.state(channelId);
+    const who = this.classify(raw);
+    if (who.kind !== "owner" && !this.authorized({ kind: who.kind, authorId: user.id }, agent, state)) {
+      return client.answerInteraction(interaction, { content: english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.` });
+    }
+    const buttons = (interaction.message?.components || []).flatMap((row) => row.components || []);
+    const label = String(buttons.find((button) => button.custom_id === interaction.data.custom_id)?.label || "").trim();
+    if (!label) return client.answerInteraction(interaction, { content: english ? "That answer is no longer available." : "Questa risposta non è più disponibile." });
+    const question = String(interaction.message?.content || "").trim();
+    await client.answerInteraction(interaction, { update: true, content: `${question}\n→ **${label}**${who.authorName ? ` (${who.authorName})` : ""}`.slice(0, 2000), components: [] });
+    this.log({ type: "message", agentId: agent.id, channelId, text: `${who.authorName} ha scelto «${label}» per ${agent.name}` });
+    await this.ensureHistory(state);
+    await this.ingest(state, { ...this.toItem({ ...raw, content: label }), choiceFor: agent.id });
+  }
+
   /** A link into the panel for a notice: on Discord in angle brackets, so no preview card covers the words. */
   panelLink(channelId, path) {
     if (!this.instanceUrl) return "";
@@ -1485,6 +1525,7 @@ export class Orchestrator {
    * arrived through): the owner of the space or the agent's own owner may put it to listen.
    */
   async onInteraction(interaction, client = this.discord) {
+    if (/^cora:choice:/.test(String(interaction?.data?.custom_id || ""))) return this.onChoice(interaction, client);
     const match = /^cora:listen:(ag_[a-f0-9]{12}):(\d+)$/.exec(String(interaction?.data?.custom_id || ""));
     if (!match) return;
     // The same press reaches every connection of the bot it was made on: it is handled once.
@@ -1935,7 +1976,7 @@ export class Orchestrator {
     }
   }
 
-  async deliver(agent, state, text, file, traceId, { ping = "", request, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
+  async deliver(agent, state, text, file, traceId, { ping = "", request, components, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
     if (isWebRoom(state.id)) return this.postWeb(agent, state, text, file, traceId, { request, passive, delegationAuthorized, returnToAgentId });
     const chatId = telegramChatId(state.id);
     const slack = slackIds(state.id);
@@ -1957,10 +1998,10 @@ export class Orchestrator {
     else if (slack) sent = await this.postSlack(agent, state, content, file);
     else {
       const own = this.bots?.client(agent.id);
-      const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file });
+      const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file, components });
       if (!own) sent = await shared();
       else {
-        try { sent = await own.say(state.id, { content, file }); }
+        try { sent = await own.say(state.id, { content, file, components }); }
         catch (error) {
           const channel = this.channelMeta(state.id);
           if (error.status !== 403 || error.sentCount || state.mainBlind || this.dmAgent.has(state.id) || !channel.guildId || !this.allowedGuild(channel.guildId)) throw error;
@@ -2187,8 +2228,11 @@ export class Orchestrator {
       const contacts = this.store.agentOwnerChats(agent).filter(id => id.startsWith(`${transport}:`)).map(id => id.slice(transport.length + 1));
       const own = contacts.includes(replyTo?.authorId) ? replyTo.authorId : contacts[0];
       const owner = own || (slack ? this.store.settings.slackOwnerIds[0] : !telegramChatId(state.id) && this.store.settings.ownerIds[0]);
-      const body = clean.length ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
-      await this.postAs(agent, state, body, undefined, traceId, { ping: owner ? `<@${owner}>` : "", request, ...this.replyDelivery(replyTo) });
+      // On Discord the answers are buttons: a press is the answer, typed or not. A reply in voice only says them.
+      const delivery = this.replyDelivery(replyTo);
+      const buttons = clean.length && !slack && !telegramChatId(state.id) && delivery.replyMode !== "voice" ? choiceButtons(agent, clean) : null;
+      const body = clean.length && !buttons ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
+      await this.postAs(agent, state, body, undefined, traceId, { ping: owner ? `<@${owner}>` : "", request, ...(buttons ? { components: buttons } : {}), ...delivery });
       item = state.history.findLast((entry) => entry.agentId === agent.id && entry.request === request);
     }
     state.request = { agentId: agent.id, at: Date.now() };

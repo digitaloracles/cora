@@ -502,7 +502,7 @@ export class Discord extends EventEmitter {
   }
 
   /** Post as an agent: through the channel's webhook (own name and avatar), or as the bot with a name prefix. */
-  async post(channelId, { username, avatarUrl, content, file }) {
+  async post(channelId, { username, avatarUrl, content, file, components }) {
     const info = this.channelInfo(channelId);
     const target = info?.parentId || channelId;
     const hook = await this.webhookFor(target);
@@ -512,11 +512,15 @@ export class Discord extends EventEmitter {
     for (let index = 0; index < Math.max(chunks.length, 1); index += 1) {
       const text = chunks[index] || "";
       const attach = index === Math.max(chunks.length, 1) - 1 ? file : null;
+      // Buttons go on the last part only, where the message ends.
+      const buttons = index === Math.max(chunks.length, 1) - 1 && components?.length ? { components } : {};
       let message;
       if (hook) {
         const query = new URLSearchParams({ wait: "true" });
         if (info?.parentId) query.set("thread_id", channelId);
-        const payload = { content: text, username, allowed_mentions: { parse: ["users"] } };
+        // This bot made the webhook: Discord takes its buttons only when asked to.
+        if (buttons.components) query.set("with_components", "true");
+        const payload = { content: text, username, allowed_mentions: { parse: ["users"] }, ...buttons };
         if (avatarUrl) payload.avatar_url = avatarUrl;
         message = await this.sendPayload(`/webhooks/${hook.id}/${hook.token}?${query}`, payload, attach, false);
       } else {
@@ -525,7 +529,7 @@ export class Discord extends EventEmitter {
         // it would only say it twice.
         const mine = this.user?.username === username;
         const body = text ? (mine ? text : `**${username}** · ${text}`) : (mine ? "" : `**${username}**`);
-        const payload = { content: body.slice(0, 2000), allowed_mentions: { parse: ["users"] } };
+        const payload = { content: body.slice(0, 2000), allowed_mentions: { parse: ["users"] }, ...buttons };
         message = await this.sendPayload(`/channels/${channelId}/messages`, payload, attach, true);
       }
       this.rememberOwn(message);
