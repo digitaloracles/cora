@@ -165,3 +165,55 @@ test("pairing codes expire, are refused to MCP tokens and throttle guesses", asy
   const fresh = await f.pair(f.alice);
   assert.equal((await f.exchange(f.codeOf(fresh.link))).status, 429, "guessing is throttled");
 });
+
+test("the app reads plans across threads, open and history, and hears every change of its own agents only", async (t) => {
+  const f = await appWorld(t);
+  const own = f.app.store.createAgent({ name: "Planner", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  const other = f.app.store.createAgent({ name: "Bob planner", brainOwnerId: f.bob.user.id, tools: false, enabled: true });
+  const plans = f.app.store.plans;
+  const running = plans.create("800000000000000081", own.id, { name: "Release the app", items: ["Server", "macOS", "iOS"] });
+  plans.create("800000000000000082", other.id, { name: "Bob secret plan", items: ["Hidden"] });
+  const history = [];
+  for (let i = 0; i < 3; i++) {
+    const channel = String(800000000000000090 + i);
+    const plan = plans.create(channel, own.id, { name: "Finished " + i, items: ["Only"] });
+    history.push(plans.change(channel, own.id, "advance", { ...plan, step: 1 }));
+  }
+  const bobDone = plans.create("800000000000000099", other.id, { name: "Bob finished plan", items: ["Hidden"] });
+  plans.change("800000000000000099", other.id, "close", bobDone);
+  const token = await f.connect(f.alice);
+
+  const snapshot = await f.read(token, "/app/v1/snapshot");
+  assert.equal(snapshot.status, 200);
+  assert.deepEqual(snapshot.data.plans.open.map(({ id, name, agentName, done, items }) => [id, name, agentName, done, items.length]), [[running.id, "Release the app", "Planner", 0, 3]]);
+  assert.deepEqual(snapshot.data.plans.history.map(({ id }) => id).sort(), history.map(({ id }) => id).sort());
+  assert.ok(snapshot.data.plans.history.every((plan) => plan.status === "completed" && plan.channelId));
+  assert.ok(!JSON.stringify(snapshot.data.plans).includes("Bob"), "another owner's plans stay private");
+
+  const open = await f.read(token, "/app/v1/plans?status=open");
+  assert.equal(open.status, 200); assert.deepEqual(open.data.plans.map(({ id }) => id), [running.id]);
+  const page = await f.read(token, "/app/v1/plans?status=history&limit=2");
+  assert.equal(page.data.plans.length, 2); assert.ok(page.data.next);
+  const tail = await f.read(token, `/app/v1/plans?status=history&limit=2&before=${encodeURIComponent(page.data.next)}`);
+  assert.equal(tail.data.plans.length, 1); assert.equal(tail.data.next, null);
+  assert.deepEqual([...page.data.plans, ...tail.data.plans].map(({ id }) => id).sort(), history.map(({ id }) => id).sort());
+  assert.equal((await f.read(token, "/app/v1/plans?status=draft")).status, 400);
+  assert.equal((await f.read(token, "/app/v1/plans?status=history&before=nope")).status, 400);
+  assert.ok(!JSON.stringify([open.data, page.data, tail.data]).includes("Bob"));
+  const panel = await f.request(f.bob, "/api/plans?status=history");
+  assert.deepEqual(panel.data.plans.map(({ name }) => name), ["Bob finished plan"], "the panel API scopes plans the same way");
+  const task = await f.read(token, `/app/v1/threads/800000000000000081/plans/${running.id}/tasks/${running.items[0].id}`);
+  assert.equal(task.status, 200); assert.deepEqual([task.data.plan.id, task.data.task.text, task.data.events], [running.id, "Server", []], "a step's reasoning is read through the panel's thread route");
+  const foreignTask = await f.read(token, `/app/v1/threads/800000000000000082/plans/${bobDone.id}/tasks/${bobDone.items[0].id}`);
+  assert.equal(foreignTask.status, 404);
+
+  const stream = sse(f.base, token); t.after(stream.close);
+  await stream.ready;
+  await stream.until((event) => event.type === "hello", "hello");
+  const hidden = plans.create("800000000000000083", other.id, { name: "Bob live plan", items: ["Hidden"] });
+  plans.change("800000000000000083", other.id, "close", hidden);
+  plans.change("800000000000000081", own.id, "advance", { ...running, step: 1 });
+  const change = await stream.until((event) => event.type === "plan" && event.planId === running.id, "own plan change");
+  assert.deepEqual([change.status, change.done, change.total, change.channelId], ["active", 1, 3, "800000000000000081"]);
+  assert.ok(!stream.events.some((event) => event.type === "plan" && event.agentId === other.id), "another owner's plan changes never reach the app");
+});

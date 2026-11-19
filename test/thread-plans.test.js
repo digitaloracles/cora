@@ -66,3 +66,31 @@ test("task reasoning survives trace rewrites, the rolling trace buffer and plan 
   assert.ok(!store.trace(trace.id).steps.some((step) => step.text === "Reasoning 0"));
   store.close();
 });
+
+test("plans across threads: every open plan, and the finished ones newest first with a stable cursor", () => {
+  const store = new Store(tempHome());
+  const agent = store.createAgent({ name: "Pilot" });
+  const other = store.createAgent({ name: "Crew" });
+  const changes = [];
+  store.plans.onChange = (plan) => changes.push([plan.id, plan.status]);
+  const open = store.plans.create("800000000000000061", agent.id, { name: "Open", items: ["One", "Two"] });
+  const blocked = store.plans.change("800000000000000061", agent.id, "update", { ...open, blocked_reason: "Wait" });
+  const foreign = store.plans.create("800000000000000062", other.id, { name: "Foreign", items: ["One"] });
+  const finished = [];
+  for (let i = 0; i < 5; i++) {
+    const channel = String(800000000000000070 + i);
+    const plan = store.plans.create(channel, agent.id, { name: "Done " + i, items: ["Only"] });
+    finished.push(i % 2 ? store.plans.change(channel, agent.id, "close", plan) : store.plans.change(channel, agent.id, "advance", { ...plan, step: 1 }));
+  }
+  assert.deepEqual(store.plans.recent({ open: true }).map(({ id }) => id).sort(), [blocked.id, foreign.id].sort());
+  assert.deepEqual(store.plans.recent({ open: true, agentIds: [agent.id] }).map(({ id, status, channelId }) => [id, status, channelId]), [[open.id, "blocked", "800000000000000061"]]);
+  const newest = [...finished].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id)).map(({ id }) => id);
+  const first = store.plans.recent({ open: false, limit: 2 });
+  assert.deepEqual(first.map(({ id }) => id), newest.slice(0, 2));
+  const rest = store.plans.recent({ open: false, limit: 10, before: `${first.at(-1).updatedAt}|${first.at(-1).id}` });
+  assert.deepEqual(rest.map(({ id }) => id), newest.slice(2));
+  assert.deepEqual(store.plans.recent({ open: false, agentIds: [other.id] }), []);
+  assert.ok(changes.some(([id, status]) => id === blocked.id && status === "blocked"));
+  assert.equal(changes.filter(([, status]) => status === "completed" || status === "closed").length, 5);
+  store.close();
+});

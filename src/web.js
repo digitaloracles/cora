@@ -503,6 +503,21 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     return step ? { type: step.type, at: step.at ? new Date(step.at).toISOString() : null, name: step.name || "", text: String(step.text || "").slice(0, 600) } : null;
   };
 
+  /** Plans across every thread this person sees: the open ones and the history of finished ones, newest first. */
+  const plansView = async (scope, { open = true, limit = 50, before = "", board = null } = {}) => {
+    const plans = store.plans.recent({ agentIds: scope.agentIds || null, open, limit: limit + 1, before });
+    const more = plans.length > limit;
+    if (more) plans.pop();
+    const threads = new Map(((board || await orchestrator.threadBoard(scope)).threads || []).map((thread) => [thread.id, thread]));
+    const tasks = Map.groupBy(store.plans.tasks(plans.map((plan) => plan.id)), (task) => task.planId);
+    const items = plans.map((plan) => {
+      const agent = store.agent(plan.agentId), thread = threads.get(plan.channelId);
+      return { ...plan, agentName: agent?.name || plan.agentId, color: agent?.color || "#f2a93b",
+        threadName: thread?.name || "", threadKind: thread?.kind || "", link: thread?.link || "", tasksWithReasoning: tasks.get(plan.id) || [] };
+    });
+    return { plans: items, next: more && items.length ? `${items.at(-1).updatedAt}|${items.at(-1).id}` : null };
+  };
+
   /** What the native app shows: the person's agents, the accounts they run on with their quotas, per-agent usage and live work. */
   const appSnapshot = async (user, req) => {
     const agents = quotaAgentsFor(user);
@@ -510,8 +525,12 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone, year: "numeric", month: "2-digit", day: "2-digit" });
     const today = day.format(new Date()), weekFrom = day.format(new Date(Date.now() - 6 * 86400000));
     const usage = store.usageByDay(31, config.timezone).filter((row) => ids.has(row.agentId));
-    const board = await orchestrator.threadBoard(threadScopeFor(user));
+    const scope = threadScopeFor(user);
+    const board = await orchestrator.threadBoard(scope);
     const live = [...(traces?.live.values() || [])].filter((trace) => ids.has(trace.agentId) && ownsEntry(trace.summary(), user));
+    const visiblePlan = (plan) => ids.has(plan.agentId);
+    const openPlans = (await plansView(scope, { open: true, limit: 100, board })).plans.filter(visiblePlan);
+    const history = await plansView(scope, { open: false, limit: 20, board });
     const names = new Map(board.threads.map((thread) => [thread.id, thread]));
     // Every active subscription of this person, with or without agents on it; never someone else's private login.
     const linked = (record) => !knowledge?.ownerMemory || record.connectedBy?.id === user.id || (record.server && user.role === "owner");
@@ -531,6 +550,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       space: { name: config.cloudSpace || config.publicHost || String(req.headers.host || ""), origin: connectorOrigin(req) },
       user: { id: user.id, name: user.name || user.email || "", email: user.email || "", role: user.role },
       accounts,
+      plans: { open: openPlans, history: history.plans.filter(visiblePlan), next: history.next },
       agents: agents.map((agent) => {
         const rows = usage.filter((row) => row.agentId === agent.id);
         const running = live.filter((trace) => trace.agentId === agent.id).map((trace) => {
@@ -559,7 +579,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     };
   };
 
-  const APP_EVENTS = new Set(["trace", "subscription-usage", "agents", "agent-owners"]);
+  const APP_EVENTS = new Set(["trace", "subscription-usage", "agents", "agent-owners", "plan"]);
   const appStreams = new Set();
 
   /** The native app's read-only API: one-time pairing, then a device token on every request. */
@@ -595,7 +615,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       return;
     }
     // The rest reads through the panel's own routes, as this person.
-    const forwarded = /^\/app\/v1\/(usage|traces\/tr_[0-9a-f]+|threads\/[\w:.%-]{3,160}|agents\/[\w-]+\/traces)$/.exec(path);
+    const forwarded = /^\/app\/v1\/(usage|plans|traces\/tr_[0-9a-f]+|threads\/[\w:.%-]{3,160}|threads\/[\w:.%-]{3,160}\/plans\/[a-f0-9-]{36}\/tasks\/[a-f0-9-]{36}|agents\/[\w-]+\/traces)$/.exec(path);
     if (forwarded) return api(req, res, new URL(`/api/${forwarded[1]}${url.search}`, "http://cora.internal"), user);
     throw new HttpError(404, "not found");
   }
@@ -1063,6 +1083,14 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       }
       board.threads = board.threads.map((thread) => ({ ...thread, flows: thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) })) }));
       return send(res, 200, board);
+    }
+    if (path === "/api/plans" && method === "GET") {
+      const status = url.searchParams.get("status") || "open";
+      if (!["open", "history"].includes(status)) throw new HttpError(400, "status: open oppure history.");
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
+      const before = url.searchParams.get("before") || "";
+      if (before && !/^[\d\-:.TZ]{10,40}\|[a-f0-9-]{36}$/.test(before)) throw new HttpError(400, "Cursore non valido.");
+      return send(res, 200, { status, ...(await plansView(threadScope, { open: status === "open", limit, before })) });
     }
     const threadPlanAgents = (id) => orchestrator.agentsFor(id).filter((agent) => canStopFlow(agent.id) && !encryptedOnly(store, agent));
     const planAction = /^\/api\/threads\/([\w:.%-]{3,160})\/plans(?:\/([a-f0-9-]{36})\/(close|tasks)(?:\/([a-f0-9-]{36}))?)?$/.exec(path);
@@ -2498,6 +2526,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       else client.write(line);
     }
   };
+
+  store.plans.onChange = (plan) => broadcast({ type: "plan", agentId: plan.agentId, channelId: plan.channelId, planId: plan.id, status: plan.status, done: plan.done, total: plan.items.length, at: plan.updatedAt });
 
   function events(req, res) {
     if (!authed(req)) return send(res, 401, { error: "login richiesto" });

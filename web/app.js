@@ -583,6 +583,10 @@ function connectEvents() {
       return;
     }
     if (entry.type === "subscriptions") return;
+    if (entry.type === "plan") {
+      if (route()[0] === "thread") S.threadsRefresh?.();
+      return;
+    }
     if (entry.type === "harness-versions" || entry.type === "models") {
       const view = location.hash;
       guard(loadState()).then(() => {
