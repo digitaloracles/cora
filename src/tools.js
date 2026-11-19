@@ -30,7 +30,7 @@ export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "rem
  * changing, pausing or deleting one touches nothing else — so they are not
  * locked behind the computer, which only opens when the owner is the one asking.
  */
-export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
+export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "skill_install", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
 
 export const TOOL_DEFS = [
   ...PLAN_TOOLS,
@@ -45,6 +45,11 @@ export const TOOL_DEFS = [
     name: "skill_read",
     description: "Read one of the skills installed for you (listed in your prompt under «Le tue skill»): its SKILL.md, or another of its files by relative path. Works on every model, with or without your desktop. Read a skill before a task its description matches, then follow it.",
     parameters: { type: "object", properties: { name: { type: "string", description: "the skill's name" }, file: { type: "string", description: "optional file inside the skill, e.g. references/api.md; default SKILL.md" } }, required: ["name"] },
+  },
+  {
+    name: "skill_install",
+    description: "Install or update a skill for yourself through Cora, when the owner asks you to: from GitHub (owner/repo, owner/repo@skill, a github.com/.../tree/... link, a skills.sh page or the whole `npx skills add ...` line). Cora keeps its copy, lists it in your Skill tab, puts it on your desktop in ~/.agents/skills for every harness and in your prompt from the next turn. Never install a skill with npx skills, a tool's own installer or by copying folders: Cora would only find it later on your desktop.",
+    parameters: { type: "object", properties: { source: { type: "string", description: "where the skill comes from, e.g. heygen-com/hyperframes or https://skills.sh/acme/kit/pdf" }, skill: { type: "string", description: "which skill, when the source holds several" } }, required: ["source"] },
   },
   {
     name: "git_commit",
@@ -435,6 +440,7 @@ export function summarizeArgs(name, args) {
   if (name === "open_url") return String(args.url || "").slice(0, 300);
   if (name === "remember") return `${args.shared ? "(condiviso) " : ""}${String(args.fact || "").slice(0, 300)}`;
   if (name === "recall") return String(args.query || "").slice(0, 200);
+  if (name === "skill_install") return `${String(args.source || "")}${args.skill ? ` · ${String(args.skill)}` : ""}`.slice(0, 200);
   if (name === "skill_read") return `${String(args.name || "")}${args.file ? `/${String(args.file)}` : ""}`.slice(0, 200);
   if (name === "update_core") return `${String(args.text || "").length} caratteri`;
   if (name === "forget") return String(args.memory_id || "");
@@ -551,6 +557,17 @@ export async function executeTool(call, ctx) {
         if (read.error) return { text: `error: ${read.error}` };
         return { text: `skill ${read.name} · ${read.file}${read.files.length > 1 ? ` (files: ${read.files.join(", ")})` : ""}\n\n${read.text}` };
       }
+      case "skill_install": {
+        if (!ctx.skills) return { text: "error: this Cora has no skills" };
+        if (ctx.requester?.kind !== "owner") return { text: "error: skills are installed only on the owner's request: propose the source to the owner instead" };
+        try {
+          const done = await ctx.skills.install(agent, { source: String(args.source || ""), skill: String(args.skill || "") }, { kind: "agent", id: agent.id, name: agent.name || "", requestedBy: ctx.requester.name || ctx.requester.id || "" });
+          const desktop = done.desktop?.off ? `not on your desktop yet (${done.desktop.reason}): Cora copies it when the desktop is on` : done.desktop?.error ? `desktop: ${done.desktop.error}` : "on your desktop in ~/.agents/skills, linked for every harness";
+          return { text: `${done.updated ? "UPDATED" : "INSTALLED"}: ${done.skill.name} (${done.skill.files} files${done.skill.source ? `, from ${done.skill.source}` : ""}), in your Skill tab${done.skill.enabled ? "" : ", switched off by the owner"}; ${desktop}. Read it with skill_read({name: "${done.skill.name}"}).` };
+        } catch (error) {
+          return { text: `error: ${error.message}` };
+        }
+      }
       case "read_attachment": {
         const image = ctx.attachments?.get(String(args.attachment_id || ""));
         return image ? { text: `Image ${args.attachment_id}: ${image.label}`, image: image.data, mimeType: image.mimeType }
@@ -572,6 +589,7 @@ export async function executeTool(call, ctx) {
         await boxes.ensure(agent);
         const timeoutMs = Math.min(600, Math.max(1, Number(args.timeout_seconds) || 120)) * 1000;
         const result = await boxes.shell(agent.id, String(args.command), { timeoutMs });
+        ctx.skills?.watch?.(agent);
         const status = result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit ${result.code}`;
         return { text: `[${status}]\n${result.output || "(no output)"}` };
       }

@@ -78,7 +78,10 @@ def check(expected):
       if name.startswith(".") or name in expected or not os.path.isfile(os.path.join(path,"SKILL.md")): continue
       entry=found.setdefault(name,{"name":name,"where":[],"linked":[]})
       (entry["linked"] if os.path.islink(path) else entry["where"]).append(rel)
-      if "description" not in entry: entry.update({k:v for k,v in frontmatter(os.path.join(path,"SKILL.md")).items() if k=="description"})
+      if "description" not in entry:
+        meta=frontmatter(os.path.join(path,"SKILL.md"))
+        if "description" in meta: entry["description"]=meta["description"]
+        if meta.get("name") and meta["name"]!=name: entry["declared"]=meta["name"]
   return {"skills":skills,"found":sorted(found.values(),key=lambda e:e["name"])[:100]}
 def remove(names,everywhere):
   for name in names:
