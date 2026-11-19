@@ -656,6 +656,8 @@ export class Orchestrator {
     const listening = this.agentsFor(state.id);
     const available = listening.filter((agent) => !this.brain.knowledge || this.brain.knowledge.acceptsMessage(agent, item, state.id));
     if (!state.focus) state.focus = this.engagements[state.id] || null;
+    // Someone it may not take messages from does not end its conversation with the others.
+    const kept = (state.focus?.ids || []).filter((id) => listening.some((agent) => agent.id === id) && !available.some((agent) => agent.id === id));
     if (state.focus) {
       const ids = state.focus.ids.filter((id) => available.some((agent) => agent.id === id));
       const turn = (state.focus.turn || ids).filter((id) => ids.includes(id));
@@ -683,7 +685,8 @@ export class Orchestrator {
     const ids = [...new Set([...previous, ...recipients])].filter((id) => !leaving.includes(id) && available.some((agent) => agent.id === id));
     const now = Number(item.at) || Date.now();
     const turn = (named.length ? named : partners).filter((id) => ids.includes(id));
-    state.focus = ids.length ? { ids, turn, at: now, remindedAt: 0, owner: item.kind === "owner" || Boolean(state.focus?.owner) } : null;
+    if (kept.length && !ids.length) state.focus = { ...state.focus, ids: kept, turn: kept };
+    else state.focus = ids.length ? { ids: [...ids, ...kept], turn, at: now, remindedAt: 0, owner: item.kind === "owner" || Boolean(state.focus?.owner) } : null;
     this.engagements[state.id] = state.focus;
     this.store.setValue("conversationEngagements", this.engagements);
     item.addressed = recipients.filter((id) => available.some((agent) => agent.id === id));
@@ -1353,6 +1356,15 @@ export class Orchestrator {
         // The agent says it itself with its own bot: Cora's bot may not be in a private channel.
         const own = agent.enabled && transport === "discord" && !this.dmAgentId(state.id) ? await this.ownBotIn(agent, state.id) : null;
         let told = false;
+        const tgBot = agent.enabled && transport === "telegram" ? this.tgBots?.client(agent.id) : null;
+        if (tgBot) {
+          try {
+            await tgBot.say(telegramChatId(state.id), { content: this.permissionNotice(agent, item, english, state.id, true), markdown: true });
+            told = true;
+          } catch (error) {
+            this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato dal bot di ${agent.name}: ${error.message}` });
+          }
+        }
         if (own) {
           try {
             await own.say(state.id, { content: this.permissionNotice(agent, item, english, state.id, true) });
@@ -1361,7 +1373,11 @@ export class Orchestrator {
             this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato dal bot di ${agent.name}: ${error.message}` });
           }
         }
-        if (!told) await this.notice(state.id, this.permissionNotice(agent, item, english, state.id)).catch((error) => this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato: ${error.message}` }));
+        if (!told) await this.notice(state.id, this.permissionNotice(agent, item, english, state.id)).catch((error) => {
+          // Not said: the next message from this person tries again instead of waiting half an hour.
+          this.offered.delete(key);
+          this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: `avviso permessi non inviato: ${error.message}` });
+        });
         await this.tellOwnerRefused(agent, item, state, own, english);
         continue;
       }
@@ -1411,7 +1427,8 @@ export class Orchestrator {
   /** With its own bot, the agent tells the person it belongs to, in private, who it turned away and where. */
   async tellOwnerRefused(agent, item, state, own, english) {
     const match = /^discord:(\d+)$/.exec(String(agent.ownerId || ""));
-    if (!own || !match || match[1] === String(item.authorId)) return;
+    own = own || (agent.enabled ? this.bots?.client?.(agent.id) : null);
+    if (!own || !match || (transportOf(state.id) === "discord" && match[1] === String(item.authorId))) return;
     const who = item.authorName || (english ? "Someone" : "Qualcuno");
     const here = this.channelMeta(state.id)?.name || own?.channelInfo?.(state.id)?.name;
     const where = here ? `#${here}` : (english ? "a channel" : "un canale");
@@ -1622,13 +1639,16 @@ export class Orchestrator {
 
   /** Messages people wrote in the channel after a turn started, each handed out once: how a busy agent gets steered. */
   inbox(state, seenItems, agentId = "") {
+    const agent = agentId ? this.store.agent(agentId) : null;
+    // A person it may not take messages from does not steer the work it is doing for someone else.
+    const refused = (item) => Boolean(agent && this.brain.knowledge && ["owner", "human"].includes(item.kind) && !this.brain.knowledge.acceptsMessage(agent, item, state.id));
     const colleagueReport = (item) => item.kind === "agent" && !item.passive && !item.request
       && item.addressed?.includes(agentId) && !item.handledBy?.includes(agentId) && state.humanQueue.has(item.id);
     const seen = new Set(seenItems.filter((item) => !colleagueReport(item)).map((item) => item.id));
     return () => {
       const fresh = state.history.filter((item) => !seen.has(item.id) && (item.kind === "owner" || item.kind === "human" || colleagueReport(item)));
       for (const item of fresh) seen.add(item.id);
-      return fresh;
+      return fresh.filter((item) => !refused(item));
     };
   }
 
