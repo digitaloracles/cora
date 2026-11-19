@@ -7385,6 +7385,30 @@ test("thread plans let a panel owner create and close while other agents and thr
   assert.equal(secondView.plans[0].revision, second.data.revision);
 });
 
+test("thread plans let agents link shared prerequisites without exposing another owner's plan", async (t) => {
+  const f = await knowledgeWorld();
+  t.after(f.close);
+  const agent = f.app.store.createAgent({ name: "Builder", brainOwnerId: f.alice.user.id });
+  const peer = f.app.store.createAgent({ name: "Tester", brainOwnerId: f.alice.user.id });
+  const foreign = f.app.store.createAgent({ name: "Foreign", brainOwnerId: f.bob.user.id });
+  const channelId = "800000000000000065";
+  const call = (actor, name, args = {}) => executeTool({ name: "thread_plan_" + name, args },
+    { agent: actor, channelId, canManagePlan: true, store: f.app.store });
+  const create = async (actor, args) => JSON.parse((await call(actor, "create", args)).text);
+  const source = await create(agent, { name: "Source", items: ["Publish test data"] });
+  const hidden = await create(foreign, { name: "Private plan", items: ["Private item"] });
+  const shared = JSON.parse((await call(peer, "list", { include_peers: true })).text);
+  assert.deepEqual(shared.map(({ id }) => id), [source.id]);
+  const denied = await call(peer, "create", { name: "Denied", items: ["Try private source"], dependencies: [{ plan_id: hidden.id }] });
+  assert.match(denied.text, /^error: choose an available prerequisite/);
+  const client = await create(peer, { name: "Client", items: ["Use test data"], dependencies: [{ plan_id: source.id }] });
+  assert.equal(client.next, null);
+  assert.deepEqual(JSON.parse((await call(peer, "list")).text).map(({ id }) => id), [client.id]);
+  await call(agent, "advance", { id: source.id, revision: source.revision, step: 1 });
+  const toolOutput = await call(peer, "advance", { id: client.id, revision: client.revision, step: 1 });
+  assert.equal(JSON.parse(toolOutput.text).status, "completed");
+});
+
 test("thread plans resume the saved next step instead of an interrupted trace's stale checklist", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);
   const agent = f.app.store.createAgent({ name: "ResumePlan", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id });

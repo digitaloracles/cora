@@ -152,6 +152,15 @@ export function startCora(overrides = {}) {
   // The company brain lives in Postgres (pgvector); without its URL the agents simply have no brain to read.
   const companyBrain = new CompanyBrain({ url: cfg.brainDatabaseUrl, embed: (model, texts) => llm.embed(model, texts, cfg.brainEmbedUrl), embedModel: () => store.settings.brainEmbedModel, log: activity, assertWritable: () => store.assertContentWriteAllowed() });
   const knowledge = new KnowledgeSources({ store, internal: companyBrain, storeSecret, tokenFor, allowLocal: cfg.knowledgeAllowLocal === true, ownerMemory: cfg.ownerMemory === true });
+  store.plans.canShare = (firstId, secondId) => {
+    if (firstId === secondId) return true;
+    const first = store.agent(firstId), second = store.agent(secondId);
+    if (!first || !second || knowledge.isSealed(first) || knowledge.isSealed(second)) return false;
+    if (!knowledge.ownerMemory) return true;
+    const owners = knowledge.proprietorIds(first);
+    const otherOwners = knowledge.proprietorIds(second);
+    return owners.length > 0 && owners.length === otherOwners.length && owners.every((id) => otherOwners.includes(id));
+  };
   knowledge.onSealChanged = async (agent) => {
     const desktop = await boxes.inspect(agent.id);
     if (desktop.exists || agent.tools) await boxes.upgrade(agent);
