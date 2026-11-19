@@ -179,7 +179,7 @@ export async function fakeDiscord() {
         id: id(), channel_id: channelId, guild_id: GUILD, content: payload.content, webhook_id: match[1],
         author: { id: match[1], username: payload.username, bot: true }, timestamp: new Date().toISOString(), attachments: [],
       };
-      state.webhookPosts.push({ ...payload, channelId, authorized: Boolean(req.headers.authorization) });
+      state.webhookPosts.push({ ...payload, channelId, authorized: Boolean(req.headers.authorization), withComponents: url.searchParams.get("with_components") === "true" });
       json(res, 200, message);
       setTimeout(() => dispatch("MESSAGE_CREATE", message), 20);
       return;

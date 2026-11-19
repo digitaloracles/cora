@@ -6045,7 +6045,7 @@ describe("talking with the agents", () => {
     await quiet();
   });
 
-  test("a question to the owner lands where they are talking, mentions them, and their next message goes to the agent who asked", async () => {
+  test("a question to the owner lands where they are talking, mentions them, offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
     replies.set("Pino", () => ({ content: "Ci sono anch'io!" }));
     replies.set("Olga", (body) => {
       if (body.messages[body.messages.length - 1].role === "tool") return { content: "PASS" };
@@ -6057,13 +6057,22 @@ describe("talking with the agents", () => {
     await call(`/api/routines/${routine.id}/run`, { method: "POST" });
     await waitFor(() => posts("Olga").length > before, { what: "the question on Discord" });
     await quiet();
-    assert.deepEqual(posts("Olga").slice(before), [`<@${OWNER}> Cancello i file vecchi?\nRisposte: Sì · No`], "asked once, in the channel, pinging the owner");
+    assert.deepEqual(posts("Olga").slice(before), [`<@${OWNER}> Cancello i file vecchi?`], "asked once, in the channel, pinging the owner");
+    const asked = discord.state.webhookPosts.findLast((item) => item.username === "Olga");
+    assert.ok(asked.withComponents, "the webhook is told to keep the buttons");
+    assert.deepEqual(asked.components[0].components.map((button) => [button.label, button.custom_id]), [["Sì", `cora:choice:${olga.id}:0`], ["No", `cora:choice:${olga.id}:1`]]);
     const archived = app.store.recentMessages(CHANNEL, 5).find((item) => item.request);
-    assert.deepEqual([archived.content, archived.request.choices], ["Cancello i file vecchi?\nRisposte: Sì · No", ["Sì", "No"]]);
+    assert.deepEqual([archived.content, archived.request.choices], ["Cancello i file vecchi?", ["Sì", "No"]]);
     assert.ok(!(await call("/api/state")).data.requests.some((item) => item.agentId === olga.id), "a Discord question is not left pending on the panel");
 
-    discord.say({ content: "Sì" });
-    await waitFor(() => posts("Olga").includes("Perfetto, cancello."), { what: "Olga acting on the answer" });
+    const press = (user, name, index) => discord.dispatch("INTERACTION_CREATE", { id: String(BigInt(Date.now()) * 1000n + BigInt(index)), token: `choice${user}`, type: 3, channel_id: CHANNEL, guild_id: GUILD, member: { user: { id: user, username: name } }, message: { content: asked.content, components: asked.components }, data: { custom_id: `cora:choice:${olga.id}:${index}` } });
+    press(STRANGER, "Sara", 1);
+    const refused = await waitFor(() => discord.state.interactionAnswers.find((answer) => answer.token === `choice${STRANGER}`), { what: "a stranger refused" });
+    assert.equal(refused.type, 4, "a stranger cannot answer for the owner");
+    press(OWNER, "Sam", 0);
+    await waitFor(() => posts("Olga").includes("Perfetto, cancello."), { what: "Olga acting on the pressed answer" });
+    const chosen = discord.state.interactionAnswers.find((answer) => answer.token === `choice${OWNER}`);
+    assert.deepEqual([chosen.type, chosen.data.content, chosen.data.components], [7, `<@${OWNER}> Cancello i file vecchi?\n→ **Sì** (Sam)`, []], "the buttons give way to the answer chosen");
     await quiet();
     assert.ok(!posts("Pino").includes("Ci sono anch'io!"), "the answer goes to the agent who asked, not to the chattiest one");
     await call(`/api/routines/${routine.id}`, { method: "DELETE" });
