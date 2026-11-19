@@ -11,6 +11,7 @@ import { HARNESSES, PI_SERVICES, SUBSCRIPTION_PROVIDERS, isSubscriptionProvider,
 import { modelKeyBackend } from "./hermes-keys.js";
 import { VOICE_LANGUAGES } from "./voice.js";
 import { aggregateMeters } from "./usage.js";
+import { ThreadPlans } from "./thread-plans.js";
 
 export const SHARED = "_shared";
 export const CONTEXT_LIMITS = { fileChars: 30000, totalChars: 60000, files: 20 };
@@ -616,6 +617,7 @@ export class Store {
     this.db = new DatabaseSync(this.path);
     try { chmodSync(this.path, 0o600); } catch {}
     this.db.exec(SCHEMA);
+    this.plans = new ThreadPlans(this.db);
     this.db.exec(`CREATE TABLE IF NOT EXISTS thread_sessions (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -1655,8 +1657,8 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
   }
 
   threadParticipantIds(channelId) {
-    return this.stmt("SELECT agent_id FROM thread_sessions WHERE channel_id = ? UNION SELECT agent_id FROM traces WHERE channel_id = ?")
-      .all(String(channelId), String(channelId)).map((row) => row.agent_id);
+    return this.stmt("SELECT agent_id FROM thread_sessions WHERE channel_id = ? UNION SELECT agent_id FROM traces WHERE channel_id = ? UNION SELECT agent_id FROM thread_plans WHERE channel_id = ?")
+      .all(String(channelId), String(channelId), String(channelId)).map((row) => row.agent_id);
   }
 
   /** Every thread with its newest sessions (live ones always) and how many it had in all. */

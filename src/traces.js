@@ -82,6 +82,10 @@ class Trace {
     if (entry.text !== undefined) entry.text = clip(entry.text);
     if (entry.result !== undefined) entry.result = clip(entry.result);
     if (entry.args !== undefined) entry.args = clipArgs(entry.args);
+    if (this.planTask) {
+      entry.planTask = this.planTask;
+      this.owner.store.plans.record(this.id, this.planTask, entry);
+    }
     this.steps.push(entry);
     if (this.steps.length > MAX_STEPS) {
       this.steps.shift();

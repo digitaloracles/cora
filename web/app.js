@@ -401,7 +401,7 @@ async function api(path, { method = "GET", body } = {}) {
     throw new Error("login richiesto");
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || response.statusText);
+  if (!response.ok) throw Object.assign(new Error(data.error || response.statusText), { status: response.status });
   return data;
 }
 
@@ -10797,7 +10797,221 @@ async function renderThreads() {
   S.timers.push(setInterval(() => { if (!document.hidden) void refresh(); }, 4000));
 }
 
-function threadTurn(trace, open) {
+const THREAD_PLAN_STATUS = {
+  active: ["In corso", "agent"], blocked: ["Bloccato", "agent"], completed: ["Completato", "ok"], closed: ["Chiuso", ""],
+};
+
+function threadPlanLink(threadId, section, planId, taskId) {
+  const query = new URLSearchParams({ plan: planId, task: taskId });
+  return `${threadHref(threadId)}/${section}?${query}`;
+}
+
+function threadPlansPanel(threadId, apiRoot, refresh) {
+  const active = h("div", { class: "thread-plan-list" });
+  const past = h("div", { class: "thread-plan-list" });
+  const history = h("div", { class: "thread-plan-history", hidden: true }, h("h3", { class: "label" }, "Storico dei piani"), past);
+  const noPlans = empty("list", "Nessun piano in questo thread.");
+  const name = h("input", { name: "name", required: true, maxlength: 120 });
+  const agent = h("select", { name: "agentId", required: true });
+  const items = h("textarea", { name: "items", rows: 5, required: true });
+  const problem = h("p", { class: "err-text", role: "alert", hidden: true });
+  let saving = false;
+  const submit = btn("Crea piano", { icon: "check", cls: "primary", type: "submit" });
+  const form = h("form", { class: "thread-plan-form stack-sm", hidden: true, onsubmit: async (event) => {
+    event.preventDefault();
+    if (saving || submit.disabled) return;
+    problem.hidden = true;
+    const checklist = items.value.split("\n").map((item) => item.trim()).filter(Boolean);
+    const failure = !checklist.length ? "Aggiungi almeno un passo."
+      : checklist.length > 24 ? "Il piano può contenere fino a 24 passi."
+      : checklist.some((item) => item.length > 300) ? "Ogni passo può contenere fino a 300 caratteri." : "";
+    if (failure) {
+      problem.hidden = false;
+      problem.textContent = tr(failure);
+      items.focus();
+      return;
+    }
+    saving = submit.disabled = true;
+    try {
+      await api(`${apiRoot}/plans`, { method: "POST", body: { name: name.value, agentId: agent.value, items: checklist } });
+      form.reset();
+      form.hidden = true;
+      await refresh();
+      toast("Piano creato");
+    } catch (error) {
+      problem.hidden = false;
+      problem.textContent = tr(error.message);
+    } finally {
+      saving = false;
+      submit.disabled = !agent.options.length;
+    }
+  } },
+  field("Nome del piano", name), field("Agente", agent),
+  field("Checklist", items, "Scrivi un passo per riga, nell’ordine in cui va eseguito."), problem,
+  h("div", { class: "thread-plan-actions" }, btn("Annulla", { cls: "ghost", onclick: () => {
+    form.hidden = true;
+    noPlans.hidden = Boolean(active.children.length || past.children.length);
+    add.hidden = !agent.options.length;
+    add.focus();
+  } }), submit));
+  const add = btn("Nuovo piano", { icon: "plus", cls: "sm primary", onclick: () => {
+    form.hidden = !form.hidden;
+    noPlans.hidden = !form.hidden || Boolean(active.children.length || past.children.length);
+    add.hidden = true;
+    name.focus();
+  } });
+  const view = panel({ icon: "list", title: "Piani", cls: "thread-plans-panel", actions: add }, form, active, noPlans, history);
+  let agentsSignature = "";
+  const closeButton = (plan) => {
+    let armed = false, busy = false;
+    return btn("Chiudi piano", { icon: "stop", cls: "sm ghost", onclick: async (event) => {
+      if (busy) return;
+      const button = event.currentTarget;
+      const label = button.querySelector("span");
+      if (!armed) {
+        armed = true;
+        button.classList.add("danger");
+        label.textContent = tr("Conferma chiusura");
+        return;
+      }
+      busy = button.disabled = true;
+      try {
+        await api(`${apiRoot}/plans/${plan.id}/close`, { method: "POST", body: { revision: plan.revision } });
+        await refresh();
+        toast("Piano chiuso");
+      } catch (error) {
+        toast(error.message, true);
+        await refresh();
+      } finally { busy = button.disabled = false; }
+    } });
+  };
+  const card = (plan, old, isOpen) => {
+    const [status, cls] = THREAD_PLAN_STATUS[plan.status];
+    const reasoned = new Set(plan.tasksWithReasoning.map((item) => item.id));
+    const taskRow = (item, index = -1) => {
+      const done = index >= 0 && index < plan.done;
+      const next = index + 1 === plan.next;
+      const title = done ? "Passo completato" : next ? "Passo corrente" : index < 0 ? "Passo rimosso" : "Passo da fare";
+      return h("li", { class: `thread-plan-step${done ? " done" : ""}${next ? " next" : ""}`, "data-task": item.id, "aria-current": next ? "step" : null },
+        h("span", { class: "thread-plan-mark", title, "aria-label": title }, done ? icon("check") : index < 0 ? icon("minus") : raw(String(index + 1))),
+        h("span", { class: "thread-plan-text" }, raw(item.text)),
+        reasoned.has(item.id) ? btn("", { icon: "bulb", cls: "sm ghost", title: tr("Ragionamento del passo: {step}", { step: item.text }), href: threadPlanLink(threadId, "ragionamento", plan.id, item.id) }) : null);
+    };
+    const removed = plan.tasksWithReasoning.filter((item) => !plan.items.some(({ id }) => id === item.id));
+    return h("details", { class: "thread-plan", open: old ? old.open : isOpen, "data-plan": plan.id },
+      h("summary", {},
+        h("span", { class: "thread-plan-title" }, h("strong", {}, raw(plan.name)), h("small", {}, raw(plan.agentName))),
+        h("span", { class: "thread-plan-progress" }, h("span", {}, raw(tr("{done} di {total}", { done: plan.done, total: plan.items.length }))), tag(status, cls)),
+        icon("next", "thread-turn-chev")),
+      h("div", { class: "thread-plan-body" },
+        plan.blockedReason ? h("p", { class: "notice warn" }, raw(plan.blockedReason)) : null,
+        h("ol", { class: "thread-plan-checklist", "aria-label": "Checklist" }, plan.items.map(taskRow)),
+        removed.length ? h("div", {}, h("h4", { class: "label" }, "Passi rimossi"), h("ul", { class: "thread-plan-checklist" }, removed.map((item) => taskRow(item)))) : null,
+        isOpen && plan.canClose ? h("div", { class: "thread-plan-actions" }, closeButton(plan)) : null));
+  };
+  let selected = "";
+  const draw = (detail, params) => {
+    const plans = detail.plans || [];
+    const open = plans.filter((plan) => ["active", "blocked"].includes(plan.status));
+    const closed = plans.filter((plan) => !open.includes(plan));
+    const renderCards = (slot, records, isOpen) => keyedChildren(slot, records.map((plan) => ({
+      key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.canClose, plan.tasksWithReasoning.map(({ id }) => id)]), build: (old) => card(plan, old, isOpen),
+    })), () => false);
+    renderCards(active, open, true);
+    renderCards(past, closed, false);
+    noPlans.hidden = plans.length > 0 || !form.hidden;
+    history.hidden = !closed.length;
+    const agents = detail.planAgents || [];
+    const options = JSON.stringify(agents);
+    if (options !== agentsSignature) {
+      agentsSignature = options;
+      const previous = agent.value;
+      agent.replaceChildren(...agents.map(({ id, name }) => h("option", { value: id, selected: previous === id }, raw(name))));
+    }
+    add.hidden = !agents.length || !form.hidden;
+    submit.disabled = saving || !agents.length;
+    const planId = params.get("plan"), taskId = params.get("task");
+    if (planId && taskId && selected !== `${planId}:${taskId}`) {
+      const found = [...view.querySelectorAll("[data-plan]")].find((node) => node.dataset.plan === planId);
+      const row = [...(found?.querySelectorAll("[data-task]") || [])].find((node) => node.dataset.task === taskId);
+      if (row) {
+        selected = `${planId}:${taskId}`;
+        found.open = true;
+        row.classList.add("selected");
+        requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
+      }
+    }
+  };
+  return { view, draw };
+}
+
+function threadTaskPanel(threadId, apiRoot, isCurrent) {
+  const content = h("div", { class: "stack-sm" });
+  const view = panel({ icon: "bulb", title: "Ragionamento del passo", cls: "thread-task-panel" }, content);
+  const steps = h("div", { class: "steps-log thread-task-steps" });
+  let cursor = null, loading = false, paged = false;
+  const older = btn("Carica i passi precedenti", { icon: "clock", cls: "sm ghost", onclick: () => load(cursor) });
+  older.hidden = true;
+  const events = new Map();
+  const title = h("h3", { class: "thread-task-title" });
+  const back = h("div", { class: "thread-task-links" });
+  const nothing = empty("bulb", "Nessun ragionamento registrato per questo passo.");
+  const error = h("p", { class: "err-text", role: "alert", hidden: true });
+  content.append(back, title, error, nothing, steps, older);
+  let target = null;
+  async function load(before = null) {
+    if (!target || loading || !isCurrent(target)) return;
+    loading = older.disabled = true;
+    const { plan, task } = target;
+    try {
+      const url = `${apiRoot}/plans/${encodeURIComponent(plan)}/tasks/${encodeURIComponent(task)}${before ? `?before=${before}` : ""}`;
+      const data = await api(url);
+      if (!isCurrent(target)) return;
+      error.hidden = true;
+      const href = threadPlanLink(threadId, "piani", plan, task);
+      back.replaceChildren(btn(raw(data.plan.name), { icon: "back", cls: "sm ghost", href }),
+        btn("Tutti i turni", { cls: "sm ghost", href: `${threadHref(threadId)}/ragionamento` }));
+      title.textContent = data.task.text;
+      for (const entry of data.events) events.set(entry.seq, entry);
+      if (before || !paged) cursor = data.next;
+      if (before) paged = true;
+      older.hidden = !cursor;
+      nothing.hidden = Boolean(events.size);
+      const turns = Map.groupBy([...events.values()].sort((a, b) => b.seq - a.seq), (event) => event.traceId);
+      keyedChildren(steps, [...turns].map(([traceId, entries]) => ({
+        key: traceId, sig: JSON.stringify([entries[0].startedAt, entries.map(({ seq }) => seq)]),
+        build: (old) => {
+          const expanded = new Set([...(old?.querySelectorAll("details[open][data-seq]") || [])].map((step) => step.dataset.seq));
+          const startedAt = entries[0].startedAt;
+          const stamp = startedAt ? Date.parse(startedAt) : entries.at(-1).step.at;
+          return h("section", { class: "thread-task-event" },
+            h("div", { class: "thread-task-meta" }, h("time", { datetime: new Date(stamp).toISOString() }, raw(fmtTime(stamp, true))),
+              startedAt ? btn("Turno", { icon: "external", cls: "sm ghost", href: `#/agent/${data.plan.agentId}/ragionamento/${traceId}` }) : null),
+            h("div", { class: "steps-log" }, entries.map(({ seq, step }) => {
+              const row = stepEl(step, stamp);
+              row.dataset.seq = String(seq);
+              if (row.tagName === "DETAILS") row.open = expanded.has(row.dataset.seq);
+              return row;
+            })));
+        },
+      })));
+    } catch (failure) {
+      if (!isCurrent(target)) return;
+      error.hidden = false;
+      error.textContent = tr(failure.message);
+      if (failure.status === 403 || failure.status === 404) {
+        events.clear();
+        steps.replaceChildren();
+        title.textContent = "";
+        back.replaceChildren();
+        older.hidden = nothing.hidden = true;
+      }
+    } finally { loading = older.disabled = false; }
+  }
+  return { view, open: (plan, task) => { target = { plan, task }; nothing.hidden = true; return load(); }, refresh: load };
+}
+
+function threadTurn(trace, open, threadId) {
   const startedAt = Date.parse(trace.startedAt);
   const steps = h("div", { class: "steps-log" });
   let lastHidden = false;
@@ -10826,6 +11040,8 @@ function threadTurn(trace, open) {
     h("div", { class: "thread-turn-body" },
       h("h3", { class: "label" }, trace.status === "pass" ? "Risposta (ha deciso di passare)" : "Risposta"),
       answer,
+      trace.planTasks?.length ? h("div", { class: "thread-task-links thread-turn-plan-links" }, trace.planTasks.map(({ planId, taskId, text }) =>
+        btn(raw(text), { icon: "list", cls: "sm ghost", href: threadPlanLink(threadId, "piani", planId, taskId) }))) : null,
       h("h3", { class: "label" }, "Passi, dal più recente"),
       steps,
       h("div", { class: "thread-turn-foot" },
@@ -10837,11 +11053,13 @@ function threadTurn(trace, open) {
 
 /** What a turn shows once it is over; while it runs its steps arrive live and do not redraw it. */
 function turnSig(trace) {
-  return JSON.stringify([trace.status, trace.output || "", trace.error || "", trace.tokensIn || 0, trace.tokensOut || 0, trace.endedAt || "", trace.status === "running" ? 0 : (trace.steps || []).length, trace.agentName, trace.model || ""]);
+  return JSON.stringify([trace.status, trace.output || "", trace.error || "", trace.tokensIn || 0, trace.tokensOut || 0, trace.endedAt || "", trace.status === "running" ? 0 : (trace.steps || []).length, trace.agentName, trace.model || "", trace.planTasks || []]);
 }
 
 async function renderThreadPage(id) {
-  const key = location.hash;
+  let key = location.hash;
+  const apiRoot = `/api/threads/${encodeURIComponent(id)}`;
+  const params = () => new URLSearchParams(location.hash.split("?")[1] || "");
   const back = S.threadBack || "#/thread/attivi";
   const known = S.threadNames?.get(id);
   shell([
@@ -10853,7 +11071,7 @@ async function renderThreadPage(id) {
   ], { title: known?.name || "Thread", back });
   let detail = null;
   let failed = "";
-  try { detail = await api(`/api/threads/${encodeURIComponent(id)}`); }
+  try { detail = await api(apiRoot); }
   catch (error) { failed = error.message; }
   if (location.hash !== key) return;
   if (!detail) {
@@ -10883,6 +11101,24 @@ async function renderThreadPage(id) {
   } });
   const reasoning = panel({ icon: "bulb", title: "Ragionamento", hint: "Ogni turno, dal più recente.", actions: toggleAll }, chipsSlot, list, listEmpty);
   const hint = reasoning.querySelector(".panel-title p");
+  const plans = threadPlansPanel(id, apiRoot, () => refresh());
+  const taskPanel = threadTaskPanel(id, apiRoot, ({ plan, task }) =>
+    location.hash === key && route()[3] === "ragionamento" && params().get("plan") === plan && params().get("task") === task);
+  const setReasoningView = () => {
+    const query = params();
+    const task = route()[3] === "ragionamento" && query.has("plan") && query.has("task");
+    reasoning.hidden = task;
+    taskPanel.view.hidden = !task;
+  };
+  const workspace = thread.thread ? sectionWorkspace({ title: "Thread", base: threadHref(id), current: route()[3] || "ragionamento", phoneSwitch: true,
+    entries: [
+      ["ragionamento", "Ragionamento", "bulb", "Ogni turno, dal più recente.", [reasoning, taskPanel.view]],
+      ["piani", "Piani", "list", "Checklist", [plans.view]],
+    ], onSelect: () => {
+      key = location.hash;
+      setReasoningView();
+      app.querySelector(".appbar a.icon-btn")?.setAttribute("href", back);
+    } }) : reasoning;
   const sigs = { agents: "", flows: "", manage: "", head: "" };
   const draw = (next) => {
     thread = next.thread;
@@ -10934,13 +11170,14 @@ async function renderThreadPage(id) {
     keyedChildren(list, traces.map((trace, index) => ({
       key: trace.id,
       sig: turnSig(trace),
-      build: (old) => threadTurn(trace, old ? old.open : first ? index < 2 : true),
+      build: (old) => threadTurn(trace, old ? old.open : first ? index < 2 : true, id),
     })), () => false);
     for (const card of list.children) card.hidden = Boolean(only) && card.dataset.agent !== only;
     if (traces.length) listEmpty.remove();
     else list.after(listEmpty);
     toggleAll.hidden = traces.length <= 2;
     if (hint) hint.textContent = tr(traces.length >= 60 ? "Gli ultimi 60 turni, dal più recente." : "Ogni turno, dal più recente.");
+    if (thread.thread) plans.draw(next, params());
   };
   draw(detail);
   shell([
@@ -10948,17 +11185,26 @@ async function renderThreadPage(id) {
     h("div", { class: "page-head" }, h("div", { class: "page-title" }, title, place), linkSlot),
     sum,
     flowsSlot,
-    reasoning,
+    workspace,
   ], { title: thread.name, back });
+  if (thread.thread && !taskPanel.view.hidden) void taskPanel.open(params().get("plan"), params().get("task"));
   let loading = false;
   let again = false;
   const refresh = async () => {
     if (loading) { again = true; return; }
     loading = true;
     try {
-      const next = await api(`/api/threads/${encodeURIComponent(id)}`);
-      if (location.hash === key && list.isConnected) draw(next);
-    } catch {}
+      const next = await api(apiRoot);
+      if (location.hash === key && list.isConnected) {
+        draw(next);
+        if (!taskPanel.view.hidden) void taskPanel.refresh();
+      }
+    } catch (error) {
+      if ((error.status === 403 || error.status === 404) && location.hash === key && list.isConnected) {
+        shell([btn("Thread", { icon: "back", href: back, cls: "ghost sm back-link thread-back" }),
+          panel({ icon: "alert", title: "Thread non trovato", hint: error.message })], { title: "Thread", back });
+      }
+    }
     finally {
       loading = false;
       if (again) { again = false; void refresh(); }
@@ -10971,7 +11217,15 @@ async function renderThreadPage(id) {
   };
   S.live = (entry) => {
     if (entry.type !== "trace") return;
-    if (entry.event === "step" && entry.channelId === thread.id) list.querySelector(`[data-trace="${CSS.escape(String(entry.traceId))}"]`)?.addStep?.(entry.step);
+    if (entry.event === "step" && entry.channelId === thread.id) {
+      list.querySelector(`[data-trace="${CSS.escape(String(entry.traceId))}"]`)?.addStep?.(entry.step);
+      if (entry.step.planTask || String(entry.step.name || "").startsWith("thread_plan_")) {
+        if (!S.threadPlanReload) S.threadPlanReload = setTimeout(() => {
+          S.threadPlanReload = null;
+          if (location.hash === key && list.isConnected) void refresh();
+        }, 600);
+      }
+    }
     if ((entry.event === "start" || entry.event === "end") && entry.trace?.channelId === thread.id) {
       clearTimeout(S.threadReload);
       S.threadReload = setTimeout(() => { if (location.hash === key) void refresh(); }, entry.event === "end" ? 600 : 200);
