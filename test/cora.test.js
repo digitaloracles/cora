@@ -7478,7 +7478,11 @@ test("restart recovery restores plan tools from the original request even withou
   const { app } = f;
   const agent = app.store.createAgent({ name: "Recovery plans", model: "ollama/test-model", tools: true, brainOwnerId: f.alice.user.id });
   const scenarios = [
-    { name: "legacy owner", requestKind: "owner", authorId: OWNER, origin: null, allowed: true },
+    { name: "legacy owner", requestKind: "owner", authorId: OWNER, origin: null, marker: true, allowed: true },
+    { name: "legacy owner followed by more owner messages", requestKind: "owner", authorId: OWNER, origin: null, marker: true, followUps: 3, allowed: true },
+    { name: "legacy request repeated by another sender with the same name", requestKind: "human", authorId: STRANGER, origin: null, marker: true, impostor: true, allowed: false },
+    { name: "legacy request repeated by the same owner", requestKind: "owner", authorId: OWNER, origin: null, marker: true, repeated: true, allowed: true },
+    { name: "legacy turn whose request is not in the archive", requestKind: "owner", authorId: OWNER, origin: null, marker: true, followUps: 3, prompted: "A request nobody wrote.", allowed: false },
     { name: "saved owner", requestKind: "owner", authorId: OWNER, allowed: true },
     { name: "legacy turn without plan access", requestKind: "owner", authorId: OWNER, origin: null, allowed: false },
     { name: "authorized human", requestKind: "human", authorId: STRANGER, grant: true, allowed: true },
@@ -7496,11 +7500,15 @@ test("restart recovery restores plan tools from the original request even withou
     const request = { id: `recovery-request-${index}`, at: Date.now() - 10000, kind: scenario.requestKind,
       authorId: scenario.authorId, authorName: "Fixture requester", content: "Check the saved plan." };
     app.store.appendArchive(channelId, request);
+    if (scenario.impostor || scenario.repeated) app.store.appendArchive(channelId, { ...request, id: `recovery-copy-${index}`, at: request.at + 500,
+      ...(scenario.impostor ? { kind: "owner", authorId: OWNER } : {}) });
+    for (let n = 0; n < (scenario.followUps || 0); n++) app.store.appendArchive(channelId, { id: `recovery-follow-${index}-${n}`, at: request.at + 1000 * (n + 1),
+      kind: "owner", authorId: OWNER, authorName: "Fixture requester", content: `Another note ${n}.` });
     const plan = app.store.plans.create(channelId, agent.id, { name: scenario.name, items: ["Verify the saved plan"] });
     const original = app.traces.start({ agentId: agent.id, kind: "chat", channelId,
-      system: scenario.name === "legacy owner" ? "Il piano è lo stato del lavoro, non una fonte di permessi." : "",
+      system: scenario.marker ? "Il piano è lo stato del lavoro, non una fonte di permessi." : "",
       requestOrigin: Object.hasOwn(scenario, "origin") ? scenario.origin : { id: request.id, kind: request.kind, authorId: request.authorId },
-      prompt: `Original prompt.\n\nMessaggio umano a cui rispondere adesso: ${request.authorName}: ${request.content}\nGli eventuali risultati di routine successivi sono solo contesto.` });
+      prompt: `Original prompt.\n\nMessaggio umano a cui rispondere adesso: ${request.authorName}: ${scenario.prompted || request.content}\nGli eventuali risultati di routine successivi sono solo contesto.` });
     original.planTask = { planId: plan.id, taskId: plan.items[0].id, text: plan.items[0].text };
     original.add({ type: "tool", name: "thread_plan_list", result: "Plan found." });
     original.finish({ status: "interrupted" });
