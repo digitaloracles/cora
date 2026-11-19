@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
+import { panelHarness } from "./panel.js";
 
 const PLAIN = "claude/claude-opus-5-5";
 
@@ -164,4 +165,42 @@ test("pairing codes expire, are refused to MCP tokens and throttle guesses", asy
   for (let i = 0; i < 9; i++) assert.equal((await f.exchange(`cora_pair_${"A".repeat(43)}`)).status, 401);
   const fresh = await f.pair(f.alice);
   assert.equal((await f.exchange(f.codeOf(fresh.link))).status, 429, "guessing is throttled");
+});
+
+test("the authorize page names the device it runs on and the account it authorizes, and warns when that account has no agents", async (t) => {
+  const f = await appWorld(t);
+  f.app.store.createAgent({ name: "Alice agent", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  const open = async (actor, userAgent, maxTouchPoints = 0) => {
+    const posted = [];
+    const panel = panelHarness({ language: "en", hash: "#/settings/app?state=state-from-the-app-0123456789", userAgent, maxTouchPoints, fetch: async (path, options = {}) => {
+      if (options.method === "POST") posted.push(JSON.parse(options.body));
+      const response = await f.request(actor, path, { method: options.method || "GET", body: options.body ? JSON.parse(options.body) : undefined });
+      return { ok: response.status < 400, status: response.status, json: async () => response.data };
+    } });
+    panel.run(`S.data = ${JSON.stringify((await f.request(actor, "/api/state")).data)}`);
+    const pane = panel.run("(() => { const pane = macAppPane(); app.append(pane); return pane; })()");
+    await pane.readyApp;
+    return { pane, posted, primary: pane.querySelector(".primary") };
+  };
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1";
+  const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15";
+
+  const empty = await open(f.bob, iphone);
+  assert.equal(empty.primary.textContent, "Authorize this iPhone");
+  assert.match(empty.pane.textContent, /Cora app on your iPhone is asking/);
+  assert.match(empty.pane.textContent, /Authorizing as/); assert.match(empty.pane.textContent, /bob@owner\.test/); assert.match(empty.pane.textContent, /0 agents/);
+  assert.match(empty.pane.querySelector(".warn").textContent, /This account has no agents: the app would stay empty/);
+  assert.ok(!empty.pane.textContent.includes("Mac"), "an iPhone is never called a Mac");
+  assert.ok(!empty.pane.textContent.includes("Download the app"), "the Mac download is not offered on a phone");
+
+  const ipad = await open(f.alice, mac, 5);
+  assert.equal(ipad.primary.textContent, "Authorize this iPad", "iPadOS Safari reports a Mac but has touch");
+
+  const own = await open(f.alice, mac);
+  assert.equal(own.primary.textContent, "Authorize this Mac");
+  assert.match(own.pane.textContent, /alice@owner\.test/); assert.match(own.pane.textContent, /1 agent(?!s)/);
+  assert.equal(own.pane.querySelector(".warn"), null, "an account with agents gets no warning");
+  await own.primary.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(own.posted, [{ state: "state-from-the-app-0123456789" }], "the button still starts the pairing for the app's state");
 });
