@@ -91,7 +91,7 @@ export class Telegram extends EventEmitter {
           this.emit("ready", this.user);
         }
         const updates = await this.request("getUpdates", {
-          offset: this.offset, timeout: this.pollTimeout, allowed_updates: ["message", "my_chat_member"],
+          offset: this.offset, timeout: this.pollTimeout, allowed_updates: ["message", "my_chat_member", "callback_query"],
         }, { timeoutMs: (this.pollTimeout + 15) * 1000, poll: true });
         if (!live()) return;
         retries = 0;
@@ -135,6 +135,7 @@ export class Telegram extends EventEmitter {
       }
     }
     if (message) this.emit("message", message);
+    if (update.callback_query) this.emit("callback", update.callback_query);
   }
 
   async request(method, params = {}, { form = null, timeoutMs = 30000, poll = false } = {}) {
@@ -175,7 +176,7 @@ export class Telegram extends EventEmitter {
   }
 
   /** Post text (and optionally a file); `name` puts the agent's name in bold on top, for agents without their own bot. */
-  async say(chatId, { content = "", file = null, name = "", markdown = false }) {
+  async say(chatId, { content = "", file = null, name = "", markdown = false, keyboard = null }) {
     const header = name ? `<b>${escapeHtml(name)}</b>\n` : "";
     const html = markdown ? markdownHtml : escapeHtml;
     const sent = [];
@@ -190,13 +191,17 @@ export class Telegram extends EventEmitter {
       if (caption.length <= MAX_CAPTION) {
         form.set("caption", caption);
         text = "";
+        if (keyboard) form.set("reply_markup", JSON.stringify({ inline_keyboard: keyboard }));
       } else if (header) form.set("caption", header.trim());
       sent.push(await this.request(photo ? "sendPhoto" : "sendDocument", {}, { form, timeoutMs: 120000 }));
       if (!text) return sent;
     }
-    for (const chunk of splitMessage(text, MAX_TEXT - header.length)) {
+    const chunks = splitMessage(text, MAX_TEXT - header.length);
+    for (const [index, chunk] of chunks.entries()) {
+      // Buttons go on the last part only, where the message ends.
+      const markup = keyboard && index === chunks.length - 1 ? { reply_markup: { inline_keyboard: keyboard } } : {};
       sent.push(await this.request("sendMessage", {
-        chat_id: chatId, text: header + html(chunk), parse_mode: "HTML", link_preview_options: { is_disabled: true },
+        chat_id: chatId, text: header + html(chunk), parse_mode: "HTML", link_preview_options: { is_disabled: true }, ...markup,
       }));
     }
     return sent;

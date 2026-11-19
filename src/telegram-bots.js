@@ -23,6 +23,8 @@ export class TelegramBots {
     this.pollTimeout = pollTimeout;
     /** Called with (agentId, message) for every message one of the bots hears. */
     this.onMessage = null;
+    /** Called with (agentId, callbackQuery) when someone presses a button one of the bots posted. */
+    this.onCallback = null;
     /** Called with a group the bots joined or left, to offer it in Settings. */
     this.onChat = null;
     this.clients = new Map();
@@ -58,6 +60,7 @@ export class TelegramBots {
       const fresh = { client, token, user: null, error: "", named: "" };
       this.clients.set(agentId, fresh);
       client.on("message", (message) => this.onMessage?.(agentId, message));
+      client.on("callback", (query) => this.onCallback?.(agentId, query));
       client.on("chat", (info) => this.onChat?.(info));
       client.on("status", (status) => {
         if (this.clients.get(agentId) !== fresh || status.state !== "error") return;

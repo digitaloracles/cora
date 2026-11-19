@@ -279,7 +279,7 @@ export const TOOL_DEFS = [
   },
   {
     name: "ask_owner",
-    description: "Ask your owner something that needs their answer or decision: permission, a choice, missing information. Your owner is the person you belong to when you have one, otherwise the owner of the space. The question is posted in this conversation, addressed to them (it reaches the owner's phone), and their answer comes back to you here later: do not wait for it and do not repeat the question, just stop. Write the question so it makes sense on its own, and offer up to 4 short choices when they fit: whenever you propose alternative solutions or need a yes/no, put them in choices instead of asking to type 1, 2 or 3. On Discord they become buttons and the one pressed comes back to you as the answer.",
+    description: "Ask your owner something that needs their answer or decision: permission, a choice, missing information. Your owner is the person you belong to when you have one, otherwise the owner of the space. The question is posted in this conversation, addressed to them (it reaches the owner's phone), and their answer comes back to you here later: do not wait for it and do not repeat the question, just stop. Write the question so it makes sense on its own, and offer up to 4 short choices when they fit: whenever you propose alternative solutions or need a yes/no, put them in choices instead of asking to type 1, 2 or 3. On Discord and Telegram they become buttons and the one pressed comes back to you as the answer.",
     parameters: {
       type: "object",
       properties: {
