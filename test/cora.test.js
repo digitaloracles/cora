@@ -1406,6 +1406,69 @@ test("an agent that listens here but may not take this person's messages: Cora n
   f.app.store.updateSettings({ permissions: [] });
 });
 
+test("a person an agent may not take messages from: its own Telegram bot says so, the work it does for others is not steered, and it keeps listening", async (t) => {
+  const telegram = await fakeTelegram();
+  telegram.addBot("owner-refusal-own-bot", { id: 89004, username: "fixture_cora_bot", first_name: "Cora" });
+  const f = await knowledgeWorld({ telegramToken: "owner-refusal-own-bot", telegramApi: telegram.url });
+  t.after(async () => { await f.close(); await telegram.close(); });
+  await f.request(f.admin, "/api/settings", { method: "PUT", body: { transport: "telegram", transports: ["telegram"], telegramChatIds: [TG_GROUP], telegramOwnerIds: [TG_OWNER] } });
+  const nico = (await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Nico", model: "ollama/test-model", tools: false } })).data;
+  const channelId = "tg:" + TG_GROUP, state = f.app.orchestrator.state(channelId);
+  const orchestrator = f.app.orchestrator;
+  f.app.store.updateSettings({ permissions: [{ id: "telegram:" + TG_OWNER, name: "Seb", agents: [nico.id] }] });
+  const prompts = [];
+  f.state.answer = (body) => { prompts.push(body); return { content: "NOT_ALLOWED_REPLY" }; };
+
+  const ownSaid = [];
+  const realClient = orchestrator.tgBots.client.bind(orchestrator.tgBots);
+  orchestrator.tgBots.client = (id) => id === nico.id ? { say: async (chatId, message) => { ownSaid.push({ chatId, ...message }); return []; }, typing() {} } : realClient(id);
+  const mainSent = () => telegram.state.sent.filter((item) => item.method === "sendMessage" && item.token === "owner-refusal-own-bot");
+
+  // Busy on Seb's request: Seb's word steers the turn, the stranger's does not.
+  state.focus = { ids: [nico.id], turn: [nico.id], at: Date.now(), remindedAt: 0, owner: true };
+  orchestrator.engagements[state.id] = state.focus;
+  const inbox = orchestrator.inbox(state, state.history.slice(), nico.id);
+  const before = mainSent().length;
+  await orchestrator.ingest(state, { id: "stranger-steer-1", kind: "human", authorId: TG_STRANGER, authorName: "Enrico", content: "@Nico fai invece una ricerca legislativa", at: Date.now() });
+  await waitFor(() => ownSaid.length > 0, { what: "the notice from Nico's own bot" });
+  assert.equal(ownSaid[0].chatId, TG_GROUP);
+  assert.match(ownSaid[0].content, /Enrico/, "the notice names the person it turned away");
+  assert.equal(mainSent().length, before, "Cora's main bot is not needed when the agent has its own");
+  assert.ok(state.focus?.ids.includes(nico.id), "a refused message does not end the conversation with Seb");
+  assert.equal(prompts.length, 0, "no turn for the refused message");
+  await orchestrator.ingest(state, { id: "owner-steer-1", kind: "owner", authorId: TG_OWNER, authorName: "Seb", content: "Aggiungi anche i prezzi di Brevo", at: Date.now() });
+  const steered = inbox().map((item) => item.id);
+  assert.ok(steered.includes("owner-steer-1"), "Seb steers the work he asked for");
+  assert.ok(!steered.includes("stranger-steer-1"), "the person without permission does not steer it");
+});
+
+test("a permission notice that could not be posted is tried again on the next message", async (t) => {
+  const telegram = await fakeTelegram();
+  telegram.addBot("owner-refusal-retry", { id: 89005, username: "fixture_cora_bot", first_name: "Cora" });
+  const f = await knowledgeWorld({ telegramToken: "owner-refusal-retry", telegramApi: telegram.url });
+  t.after(async () => { await f.close(); await telegram.close(); });
+  await f.request(f.admin, "/api/settings", { method: "PUT", body: { transport: "telegram", transports: ["telegram"], telegramChatIds: [TG_GROUP], telegramOwnerIds: [TG_OWNER] } });
+  const nico = (await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Nico", model: "ollama/test-model", tools: false } })).data;
+  const state = f.app.orchestrator.state("tg:" + TG_GROUP);
+  f.state.answer = () => ({ content: "NOT_ALLOWED_REPLY" });
+  const orchestrator = f.app.orchestrator;
+  const realNotice = orchestrator.notice.bind(orchestrator);
+  let failing = true;
+  const notices = [];
+  orchestrator.notice = async (channelId, text) => {
+    if (failing) throw new Error("Telegram sendMessage -> 404: Not Found");
+    notices.push(text);
+    return realNotice(channelId, text);
+  };
+  await orchestrator.ingest(state, { id: "retry-1", kind: "human", authorId: TG_STRANGER, authorName: "Enrico", content: "@Nico ci sei?", at: Date.now() });
+  await sleep(200);
+  failing = false;
+  await orchestrator.ingest(state, { id: "retry-2", kind: "human", authorId: TG_STRANGER, authorName: "Enrico", content: "@Nico ci sei?", at: Date.now() });
+  await waitFor(() => notices.length > 0, { what: "the notice on the second try" });
+  assert.match(notices[0], /non risponde a Enrico/);
+  assert.ok(nico.id);
+});
+
 test("owner isolation hides private platform resources from other members and the space administrator", async (t) => {
   const f = await knowledgeWorld(); t.after(f.close);
   const created = await f.request(f.alice, "/api/agents", { method: "POST", body: { name: "Alice private assistant", core: "PRIVATE_CORE", tools: false } });
