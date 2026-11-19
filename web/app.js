@@ -11264,7 +11264,7 @@ async function renderThreadPage(id) {
     reasoning.hidden = task;
     taskPanel.view.hidden = !task;
   };
-  const workspace = thread.thread ? sectionWorkspace({ title: "Thread", base: threadHref(id), current: route()[3] || "ragionamento", phoneSwitch: true,
+  const workspace = sectionWorkspace({ title: thread.thread ? "Thread" : "Canale", base: threadHref(id), current: route()[3] || "ragionamento", phoneSwitch: true,
     entries: [
       ["ragionamento", "Ragionamento", "bulb", "Ogni turno, dal più recente.", [reasoning, taskPanel.view]],
       ["piani", "Piani", "list", "Checklist", [plans.view]],
@@ -11272,7 +11272,7 @@ async function renderThreadPage(id) {
       key = location.hash;
       setReasoningView();
       app.querySelector(".appbar a.icon-btn")?.setAttribute("href", back);
-    } }) : reasoning;
+    } });
   const sigs = { agents: "", flows: "", manage: "", head: "" };
   const draw = (next) => {
     thread = next.thread;
@@ -11331,7 +11331,7 @@ async function renderThreadPage(id) {
     else list.after(listEmpty);
     toggleAll.hidden = traces.length <= 2;
     if (hint) hint.textContent = tr(traces.length >= 60 ? "Gli ultimi 60 turni, dal più recente." : "Ogni turno, dal più recente.");
-    if (thread.thread) plans.draw(next, params());
+    plans.draw(next, params());
   };
   draw(detail);
   shell([
@@ -11341,7 +11341,7 @@ async function renderThreadPage(id) {
     flowsSlot,
     workspace,
   ], { title: thread.name, back });
-  if (thread.thread && !taskPanel.view.hidden) void taskPanel.open(params().get("plan"), params().get("task"));
+  if (!taskPanel.view.hidden) void taskPanel.open(params().get("plan"), params().get("task"));
   let loading = false;
   let again = false;
   const refresh = async () => {
