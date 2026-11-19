@@ -393,7 +393,8 @@ export class Skills {
     for (const entry of failed.filter((item) => !known.has(item.name))) this.log({ type: "skill", agentId: agent.id, text: `skill sul desktop fuori da Cora: ${entry.name} (${entry.error})` });
     const shown = (previous?.found || []).map((entry) => entry.name).sort().join("\0");
     const now = failed.map((entry) => entry.name).sort().join("\0");
-    if (adopted.length || off.length || shown !== now) this.store.setValue(`agentSkillsCheck:${agent.id}`, { ...(previous || { skills: {}, desktop: { state: "ok" } }), found: failed, scannedAt: Date.now() });
+    const at = Date.now();
+    if (adopted.length || off.length || shown !== now) this.store.setValue(`agentSkillsCheck:${agent.id}`, { ...(previous || { skills: {}, desktop: { state: "ok" } }), found: failed, checkedAt: at, scannedAt: at });
     return { adopted, off, found: failed };
   }
 
@@ -439,7 +440,12 @@ export class Skills {
         }
       } catch {}
     }));
-    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found: (desktop.found || []).filter((entry) => !this.find(agent.id, entry.name)) };
+    const found = (desktop.found || []).filter((entry) => !this.find(agent.id, entry.name)).map((entry) => {
+      if (entry.problem) return { ...entry, error: `desktop: ${entry.problem}` };
+      const managed = entry.declared ? this.find(agent.id, skillName(entry.declared)) : null;
+      return managed && managed.name !== entry.name ? { ...entry, error: `copia di ${managed.name}, già gestita da Cora` } : entry;
+    });
+    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found };
     this.store.setValue(`agentSkillsCheck:${agent.id}`, result);
     return result;
   }

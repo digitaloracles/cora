@@ -4506,7 +4506,7 @@ async function skillsTab(agent) {
   }
 
   function foundRow(found) {
-    const adopt = btn("Prendi in Cora", { icon: "download", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
+    const adopt = found.error ? null : btn("Prendi in Cora", { icon: "download", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
       const done = await guard(api(`${url}/${found.name}/adopt`, { method: "POST" }), tr("{name} ora è gestita da Cora", { name: found.name }));
       if (done) await reload();
     }) });
@@ -4519,7 +4519,7 @@ async function skillsTab(agent) {
       h("div", { class: "skill-text" },
         h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(found.name))),
         found.description ? h("p", { class: "skill-desc" }, raw(found.description)) : null,
-        h("div", { class: "skill-meta" }, [...found.where, ...found.linked.map((dir) => `${dir} ↪`)].map((dir) => h("code", {}, raw(`~/${dir}`))))),
+        h("div", { class: "skill-meta" }, [...found.where, ...found.linked.map((dir) => `${dir} ↪`)].map((dir) => h("code", {}, raw(`~/${dir}`))), found.error ? h("span", { class: "tag err" }, raw(found.error)) : null)),
       h("div", { class: "skill-actions row" }, adopt, remove));
   }
 
@@ -4601,6 +4601,7 @@ async function skillsTab(agent) {
 
   function drawCheck() {
     const check = data.check;
+    const checkedAt = Number(check?.checkedAt || check?.scannedAt || 0);
     const run = btn("Verifica ora", { icon: "refresh", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
       const done = await guard(api(`${url}/check`, { method: "POST" }), "Verifica completata");
       if (done) await reload();
@@ -4633,7 +4634,7 @@ async function skillsTab(agent) {
           h("td", {}, skill.source ? skillState("upstream", result.upstream) : h("span", { class: "skill-led" }, h("i", { class: "dot" }), h("span", {}, "Dal desktop"))));
       })))) : null;
     checkPane.replaceChildren(
-      panel({ icon: "check", title: "Verifica", hint: check ? tr("Ultima verifica {when}", { when: fmtTime(new Date(check.checkedAt).toISOString(), true) }) : "Controlla la copia sul server, quella sul desktop e i link di ogni harness, la sorgente su GitHub e gli audit di skills.sh.", actions: [repair, run] },
+      panel({ icon: "check", title: "Verifica", hint: check && checkedAt ? tr("Ultima verifica {when}", { when: fmtTime(new Date(checkedAt).toISOString(), true) }) : "Controlla la copia sul server, quella sul desktop e i link di ogni harness, la sorgente su GitHub e gli audit di skills.sh.", actions: [repair, run] },
         data.skills.length ? [desktopLine ? h("div", { class: "badges" }, desktopLine) : null, matrix || empty("check", "Non ancora verificate.", null)]
           : empty("skill", "Nessuna skill da verificare.")),
       panel({ icon: "layers", title: "Come le vede ogni harness" },

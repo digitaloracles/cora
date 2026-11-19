@@ -310,6 +310,9 @@ test("a skill an agent puts on its desktop outside Cora shows in its Skill tab: 
   const view = (await call(`/api/agents/${agent.id}/skills`)).data;
   assert.deepEqual(view.skills.map((skill) => [skill.name, skill.enabled]), [["kit", true]], "it shows in the Skill tab, switched on");
   assert.deepEqual(view.check.found.map((entry) => [entry.name, entry.error]), [["heavy", "desktop: skill too large to adopt (200 files, 4 MB)"], ["kit-old", "copia di kit, già gestita da Cora"]], "what cannot be taken stays listed, and a copy never overwrites the managed skill");
+  assert.ok(Number.isFinite(view.check.checkedAt), "the automatic scan leaves a verification time for the Skill tab");
+  const recheck = (await call(`/api/agents/${agent.id}/skills/check`, { method: "POST" })).data;
+  assert.deepEqual(recheck.found.map((entry) => [entry.name, entry.error]), [["heavy", "desktop: skill too large to adopt (200 files, 4 MB)"], ["kit-old", "copia di kit, già gestita da Cora"]], "a manual check keeps the reason it cannot be taken");
   assert.match(readFileSync(join(desktop, ".agents/skills/kit/SKILL.md"), "utf8"), /KIT_CANARY/);
 
   // A second look with nothing new changes nothing.
