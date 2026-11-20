@@ -146,3 +146,47 @@ test("artifacts and secrets through the specific tools: upload a commit, read a 
   assert.ok(!JSON.stringify(secrets).includes("never-returned-canary"));
   assert.equal((await f.call(owner, "cora_secret_delete", { name: "MCP_FIXTURE_KEY" })).structuredContent.status, 200);
 });
+
+test("an external orchestrator delegates to a Cora agent as its subagent and gets the result, its question, or the work still running", async (t) => {
+  const f = await mcpWorld(t), alice = await f.issue(f.alice), bob = await f.issue(f.bob), reader = await f.issue(f.alice, { readOnly: true });
+  const init = await f.rpc(alice, "initialize", { protocolVersion: "2025-06-18" });
+  assert.match(init.data.result.instructions, /subagent[\s\S]*cora_delegate[\s\S]*cora_delegation_wait/);
+  const tools = (await f.rpc(alice, "tools/list", {}, "/mcp?areas=subagents")).data.result.tools.map((tool) => tool.name);
+  assert.deepEqual(tools.filter((name) => name.startsWith("cora_delegat")), ["cora_delegate", "cora_delegation_wait"]);
+  const readTools = (await f.rpc(reader, "tools/list")).data.result.tools.map((tool) => tool.name);
+  assert.ok(!readTools.includes("cora_delegate") && readTools.includes("cora_delegation_wait"), "a read-only access waits but never delegates");
+
+  const agent = (await f.call(alice, "cora_agent_create", { name: "Worker", tools: false })).structuredContent.data;
+  let questions = 0;
+  f.state.answer = (body) => {
+    const text = JSON.stringify(body.messages.at(-1)?.content || "");
+    if (/Nothing to answer here/.test(text)) return { content: "PASS" };
+    if (/Which report/.test(text) && body.tools?.length) return questions++ ? { content: "PASS" } : { tool_calls: [{ function: { name: "ask_owner", arguments: { question: "Report for Q3 or Q4?", choices: ["Q3", "Q4"] } } }] };
+    if (/Sum 40 and 2/.test(text)) return { content: "The result is 42." };
+    return { content: "PASS" };
+  };
+  const done = (await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "Sum 40 and 2 and return only the number.", wait_seconds: 60 })).structuredContent;
+  assert.equal(done.status, 200, JSON.stringify(done));
+  assert.equal(done.data.status, "done", JSON.stringify(done.data));
+  assert.match(done.data.replies.map((reply) => reply.text).join("\n"), /42/);
+  assert.deepEqual(done.data.running, []);
+  const room = f.app.store.recentMessages("web-" + agent.id, 20);
+  assert.ok(room.some((message) => message.id === done.data.message_id && message.kind === "owner" && /Sum 40 and 2/.test(message.content)), "the task is a direct message in the agent's private chat");
+
+  const again = (await f.call(alice, "cora_delegation_wait", { agent_id: agent.id, after: done.data.message_id, wait_seconds: 0 })).structuredContent.data;
+  assert.equal(again.status, "done");
+  assert.deepEqual(again.replies.map((reply) => reply.id), done.data.replies.map((reply) => reply.id));
+
+  const asked = (await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "Which report should I prepare? Ask me first.", wait_seconds: 60 })).structuredContent.data;
+  assert.equal(asked.status, "waiting_for_you", JSON.stringify(asked));
+  assert.deepEqual(asked.replies.at(-1).question.choices, ["Q3", "Q4"]);
+  assert.match(asked.next, /cora_delegate/);
+
+  const queued = (await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "Nothing to answer here.", wait_seconds: 0 })).structuredContent.data;
+  assert.equal(queued.status, "working");
+  assert.match(queued.next, new RegExp(`cora_delegation_wait[\\s\\S]*${queued.message_id}`));
+
+  assert.equal((await f.call(bob, "cora_delegate", { agent_id: agent.id, task: "Do my work", wait_seconds: 0 })).structuredContent.status, 403, "nobody delegates to another person's agent");
+  assert.equal((await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "", wait_seconds: 0 })).rpcError.code, -32602);
+  assert.equal((await f.call(alice, "cora_delegation_wait", { agent_id: agent.id, after: "web_missing", wait_seconds: 0 })).structuredContent.status, 404);
+});

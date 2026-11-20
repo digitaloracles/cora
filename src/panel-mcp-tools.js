@@ -101,6 +101,7 @@ const SETTINGS_FIELDS = {
 
 /** Every tool: area, method, native path (with {placeholders}), path/query/body fields. */
 export const AREAS = [
+  { id: "subagents", title: "Subagents", summary: "Cora's agents as your subagents: hand a task to one in a direct message, wait for its result, answer its questions and steer it. The agent does the work on its own computer, with its own tools, memory and connectors." },
   { id: "agents", title: "Agents", summary: "Everything about an agent: profile, model, personality, character, owners, chat permissions, avatar, duplicate, export and import, desktop, chat." },
   { id: "skills", title: "Skills", summary: "Search, discover, install, enable, disable, update, adopt, remove, check and sync each agent's skills, and read their files." },
   { id: "connectors", title: "Connectors", summary: "Connector catalog, key and OAuth connections, which agents may use each one, Google accounts." },
@@ -119,6 +120,9 @@ export const AREAS = [
 const T = (area, name, title, method, path, description, spec = {}) => ({ area, name, title, method, path, description, ...spec });
 
 export const TOOLS = [
+  // Subagents
+  T("subagents", "cora_delegate", "Delegate a task to a Cora agent", "POST", null, "Hand a task to a Cora agent as your subagent, in a direct message (its private panel chat), and wait for its result. The agent runs the computation itself: its own computer, tools, memory, connectors and colleagues, with your authority. Write a self-contained brief (goal, inputs, constraints, what to return). The answer has status done (the agent finished: replies hold its result), working (still running when the wait ended: continue with cora_delegation_wait) or waiting_for_you (it asked you something: answer with cora_delegate again in the same DM). Several agents can work in parallel: delegate to each, then wait on each.", { params: AGENT, body: { task: str("The brief for the agent, up to 3000 characters.", { maxLength: 3000 }), wait_seconds: int("How long to wait for the result, 0-600 (default 120). 0 returns at once.", { minimum: 0, maximum: 600 }) }, required: ["task"], composite: "delegate" }),
+  T("subagents", "cora_delegation_wait", "Wait for a delegated task", "GET", null, "Wait for the result of a task handed over with cora_delegate: the agent's replies after that message, whether it is still working and the turns running. Same statuses as cora_delegate.", { params: { ...AGENT, after: str("message_id returned by cora_delegate.", { pattern: "^[\\w-]{1,80}$" }) }, query: { wait_seconds: int("How long to wait, 0-600 (default 120).", { minimum: 0, maximum: 600 }) }, composite: "delegationWait" }),
   // Agents
   T("agents", "cora_agents_list", "List agents", "GET", "/api/state", "Every agent you can see with its id, name, model, subscription, enabled and tools flags, channels, platforms, voice, owners and desktop. Start here to get agent ids.", { pick: (data) => ({ agents: data.agents }) }),
   T("agents", "cora_agent_get", "Read an agent", "GET", "/api/agents/{agent_id}", "One agent's whole profile: identity, personality, character sheet, core card, model, subscription, credential, effort, channels, platforms, voice, owners, bots and avatar.", { params: AGENT }),
