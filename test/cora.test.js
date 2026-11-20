@@ -6078,6 +6078,43 @@ describe("talking with the agents", () => {
     await call(`/api/routines/${routine.id}`, { method: "DELETE" });
   });
 
+  test("a question with choices shows in the native app, the answer pressed there reaches the agent, and the Discord question shows it in place of its buttons", async () => {
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    replies.set("Olga", (body) => ({ content: lastChatLine(body).endsWith(": Rimando") ? "Va bene, rimando." : "Ok." }));
+    const pairing = (await call("/api/app/pairings", { method: "POST", body: {} })).data;
+    const exchanged = await fetch(base + "/app/v1/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Cora": "1" }, body: JSON.stringify({ code: new URL(pairing.link).searchParams.get("code"), name: "iPhone", platform: "iOS 26" }) });
+    const { token } = await exchanged.json();
+    const fromApp = async (path, body) => {
+      const response = await fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json", "X-Cora": "1" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      return { status: response.status, data: await response.json() };
+    };
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "Pubblico adesso?", choices: ["Pubblica", "Rimando"] }, { channelId: CHANNEL });
+    const request = (await fromApp("/app/v1/snapshot")).data.requests.find((item) => item.agentId === olga.id);
+    assert.deepEqual([request.question, request.choices, request.channelId, request.agentName], ["Pubblico adesso?", ["Pubblica", "Rimando"], CHANNEL, "Olga"]);
+    assert.equal((await fromApp(`/app/v1/choices/${request.id}`, { index: 7 })).status, 400, "only one of the answers offered");
+    assert.equal((await fromApp("/app/v1/choices/ch_000000000000", { index: 0 })).status, 404);
+    const answered = await fromApp(`/app/v1/choices/${request.id}`, { index: 1 });
+    assert.deepEqual([answered.status, answered.data.answer], [200, "Rimando"]);
+    await waitFor(() => posts("Olga").includes("Va bene, rimando."), { what: "Olga acting on the answer from the app" });
+    const edit = discord.state.messageEdits.at(-1);
+    assert.match(edit.content, new RegExp(`^<@${OWNER}> Pubblico adesso\\?\\n→ \\*\\*Rimando\\*\\* \\(.+\\)$`), "the question in the chat shows the answer chosen");
+    assert.deepEqual([edit.components, edit.webhookId, edit.authorized], [[], "500000000000000001", false], "its buttons go, through the webhook that posted it");
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === request.id), "answered, it leaves the app");
+    const again = await fromApp(`/app/v1/choices/${request.id}`, { index: 0 });
+    assert.deepEqual([again.status, again.data.error], [409, "Già risposta: Rimando"]);
+    await quiet();
+
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "E la newsletter?", choices: ["Sì", "No"] }, { channelId: CHANNEL });
+    const second = app.orchestrator.choices.open().find((item) => item.agentId === olga.id);
+    const asked = discord.state.webhookPosts.findLast((item) => item.username === "Olga");
+    discord.dispatch("INTERACTION_CREATE", { id: String(BigInt(Date.now()) * 1000n + 9n), token: "choice-app", type: 3, channel_id: CHANNEL, guild_id: GUILD, member: { user: { id: OWNER, username: "Sam" } }, message: { id: second.ref.messageId, content: asked.content, components: asked.components }, data: { custom_id: `cora:choice:${olga.id}:1` } });
+    await waitFor(() => app.orchestrator.choices.get(second.id).status === "answered", { what: "the Discord press closing the question" });
+    assert.deepEqual([app.orchestrator.choices.get(second.id).answer, app.orchestrator.choices.get(second.id).via], ["No", "discord"]);
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === second.id), "pressed on Discord, it leaves the app too");
+    await quiet();
+  });
+
   test("Cora harness: a task goes past the old 14 steps, an agent that announces work is sent back to it, and the end is confirmed before posting", async () => {
     let calls = 0;
     const nudges = [];
@@ -8100,6 +8137,8 @@ describe("agents in Telegram", () => {
     assert.deepEqual(edit.entities, [{ type: "bold", offset: 23, length: 2 }]);
     assert.equal(edit.reply_markup, undefined);
     assert.equal(telegram.state.answers.length, 2, "every press is answered, so the button stops spinning");
+    const pressed = app.orchestrator.choices.all().findLast((item) => item.agentId === tina.id && item.question === "Pubblico la landing?");
+    assert.deepEqual([pressed.status, pressed.answer, pressed.via], ["answered", "Sì", "telegram"], "pressed in the chat, it leaves the native app too");
     await quiet();
 
     const before = app.store.agent(tina.id);
@@ -8114,6 +8153,17 @@ describe("agents in Telegram", () => {
       assert.equal(mentioned.text, `<a href="tg://user?id=${TG_OWNER}">Seb</a> Pubblico anche il blog?`, "a group gets a real Telegram mention of the owner");
       assert.doesNotMatch(mentioned.text, /<@/, "never the Discord mention markup");
       assert.equal(mentioned.parse_mode, "HTML");
+      await quiet();
+
+      const open = app.orchestrator.choices.open().find((item) => item.agentId === tina.id);
+      assert.equal(open.question, "Pubblico anche il blog?");
+      telegram.state.edits.length = 0;
+      assert.deepEqual(await app.orchestrator.answerChoice(open.id, 1, { authorName: "Seb" }), { id: open.id, answer: "No" });
+      const shown = await waitFor(() => telegram.state.edits.find((item) => item.method === "editMessageText"), { what: "the Telegram question showing the answer from the app" });
+      assert.deepEqual([shown.token, String(shown.message_id)], [TINA_TG, open.ref.messageId], "the question's own message, through the bot that sent it");
+      assert.match(shown.text, /Pubblico anche il blog\?\n→ No \(Seb\)$/);
+      assert.equal(shown.reply_markup, undefined, "its buttons go");
+      assert.equal(app.orchestrator.choices.get(open.id).via, "app");
       await quiet();
     } finally {
       app.store.updateAgent(tina.id, before);
@@ -8648,6 +8698,18 @@ describe("agents in Slack", () => {
     assert.deepEqual([update.app, update.ts], ["silvia", asked.ts]);
     assert.deepEqual(JSON.parse(update.blocks), [blocks[0], { type: "section", text: { type: "mrkdwn", text: "→ *Sì* (Sam)" } }], "the buttons give way to the answer chosen");
     assert.equal(slack.state.updates.length, 1);
+    await quiet();
+
+    app.orchestrator.requestsByAgent.delete(silvia.id);
+    replies.set("Silvia", (body) => ({ content: lastChatLine(body).endsWith(": No") ? "Allora aspetto." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(silvia.id), { question: "E la newsletter?", choices: ["Sì", "No"] }, { channelId: `sl:${SLACK_CHANNEL}` });
+    const second = await waitFor(() => slack.postsIn(SLACK_CHANNEL).find((post) => post.blocks && post.text?.includes("newsletter")), { what: "the second question" });
+    const open = app.orchestrator.choices.open().find((item) => item.agentId === silvia.id);
+    assert.equal(open.ref.ts, second.ts);
+    await app.orchestrator.answerChoice(open.id, 1, { authorName: "Sam" });
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Allora aspetto."), { what: "Silvia acting on the answer from the app" });
+    const fromApp = slack.state.updates.at(-1);
+    assert.deepEqual([fromApp.app, fromApp.ts, JSON.parse(fromApp.blocks)[1].text.text], ["silvia", second.ts, "→ *No* (Sam)"], "the question in Slack shows the answer chosen in the app, through the app that posted it");
     await quiet();
   });
 

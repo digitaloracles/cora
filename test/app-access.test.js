@@ -217,3 +217,26 @@ test("the app reads plans across threads, open and history, and hears every chan
   assert.deepEqual([change.status, change.done, change.total, change.channelId], ["active", 1, 3, "800000000000000081"]);
   assert.ok(!stream.events.some((event) => event.type === "plan" && event.agentId === other.id), "another owner's plan changes never reach the app");
 });
+
+test("in a panel room the person who manages the agent answers its question from the app, and nobody else sees or answers it", async (t) => {
+  const f = await appWorld(t);
+  const own = f.app.store.createAgent({ name: "Chooser", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  f.app.store.createAgent({ name: "Bob agent", brainOwnerId: f.bob.user.id, tools: false, enabled: true });
+  const room = `web-${own.id}`;
+  const alice = await f.connect(f.alice), bob = await f.connect(f.bob);
+  const stream = sse(f.base, alice); t.after(stream.close); await stream.ready;
+  await f.app.orchestrator.askOwner(f.app.store.agent(own.id), { question: "Which layout?", choices: ["Grid", "List"] }, { channelId: room });
+  await stream.until((event) => event.type === "choice" && event.status === "open", "the question reaching the app");
+  const request = (await f.read(alice, "/app/v1/snapshot")).data.requests[0];
+  assert.deepEqual([request.question, request.choices, request.agentId], ["Which layout?", ["Grid", "List"], own.id]);
+  assert.deepEqual((await f.read(bob, "/app/v1/snapshot")).data.requests, [], "someone else's agent asks nothing of them");
+  const post = (token, index) => fetch(f.base + `/app/v1/choices/${request.id}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Cora": "1" }, body: JSON.stringify({ index }) });
+  assert.equal((await post(bob, 0)).status, 404);
+  assert.equal((await fetch(f.base + "/app/v1/snapshot", { method: "POST", headers: { Authorization: `Bearer ${alice}`, "X-Cora": "1" } })).status, 405, "the app still only reads otherwise");
+  const answered = await post(alice, 0);
+  assert.deepEqual([answered.status, (await answered.json()).answer], [200, "Grid"]);
+  await stream.until((event) => event.type === "choice" && event.status === "answered", "the answer reaching the app");
+  const said = f.app.orchestrator.state(room).history.find((item) => item.kind === "owner");
+  assert.deepEqual([said.content, said.choiceFor], ["Grid", own.id], "the answer is the owner's message in the room, called to the agent that asked");
+  assert.deepEqual((await f.read(alice, "/app/v1/snapshot")).data.requests, []);
+});
