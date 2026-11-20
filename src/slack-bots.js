@@ -44,8 +44,9 @@ export function shortDescription(agent) {
 
 /**
  * The manifest that creates this agent's Slack app in one paste: Socket Mode
- * on (no public URL), the scopes above, and the agent's own name, which is
- * the only place Slack takes a bot's name from.
+ * on (no public URL), the scopes above, interactivity for the answer buttons
+ * (pressed over the same socket), and the agent's own name, which is the only
+ * place Slack takes a bot's name from.
  */
 export function appManifest(agent) {
   return {
@@ -60,7 +61,7 @@ export function appManifest(agent) {
     oauth_config: { scopes: { bot: BOT_SCOPES } },
     settings: {
       event_subscriptions: { bot_events: BOT_EVENTS },
-      interactivity: { is_enabled: false },
+      interactivity: { is_enabled: true },
       org_deploy_enabled: false,
       socket_mode_enabled: true,
       token_rotation_enabled: false,
@@ -151,6 +152,7 @@ export class SlackBots {
         if (event.channel_type === "im") this.onDirect?.(agentId, event);
         else this.onGuild?.(event, agentId);
       });
+      client.on("interactive", (payload) => this.onInteractive?.(agentId, payload));
       client.on("ready", () => {
         this.log?.({ type: "slack", agentId, text: `app Slack collegata come @${client.user?.name}` });
         client.listChannels().catch(() => {});

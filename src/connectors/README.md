@@ -25,6 +25,7 @@ that is not authorised for a connector does not even see its tool.
 | `canva.js` | Canva: an OAuth integration authorised by the owner; 20 `canva_` actions (designs, exports, uploads, folders, brand templates, comments) and `canva_api`. |
 | `firecrawl/index.js` | Firecrawl: the official remote MCP server, with API key or dynamically registered OAuth; exact tools and schemas discovered on connection, scoped to the selected team. |
 | `earendil.js` | Eärendil studio: the studio's own MCP server (`earendil.studio/api/mcp`, stateless Streamable HTTP) with an agent key `earendil_…`; its tools discovered on connection and offered as `earendil_<name>`, audio and pictures saved on the agent's computer. |
+| `higgsfield.js` | Higgsfield: the official remote MCP server (`mcp.higgsfield.ai/mcp`) with the owner's account, through OAuth on Higgsfield's Clerk with a dynamically registered public client, PKCE and refresh tokens; its catalog (over 200 tools) read on connection; the main tools are offered whole as `higgsfield_<name>`, the others through `higgsfield_tool_info` and `higgsfield_call`; pictures saved on the agent's computer. The MCP server takes no API key. |
 | `remote-mcp.js` | Shared JSON/SSE transport, sessions, recovery and image files for Lovable and Firecrawl. |
 | `lovable.js` | Lovable: the official MCP server (`mcp.lovable.dev`), reached by Cora as an MCP client with the owner's OAuth token; 31 `lovable_` actions (projects, the project agent's messages, diffs and files, knowledge, skills, database, deploy, analytics, uploads) and `lovable_mcp`. |
 | `google.js` | Google: accounts connected through Cora's OAuth broker (`GoogleConnector`); 14 `gmail_` actions (send, reply, search, read, attachments, labels, archive, drafts) and `gmail_api`. |
@@ -244,3 +245,19 @@ and every picture go to `/home/agent/work/earendil/`; an answer longer than 36,0
 characters (a long transcript) is written whole to a JSON file there and the agent gets
 the short fields plus `full_answer`. `earendil_video_add_picture` also takes `path`, a
 picture on the agent's computer, sent to the studio as base64.
+
+`higgsfield.js` signs in on Higgsfield's Clerk (`higgsfield.ai/_clerk`) with a public
+client registered dynamically, PKCE S256, scopes `openid email offline_access` and the MCP
+resource `https://mcp.higgsfield.ai/mcp`; the card shows the e-mail of the `id_token`.
+Higgsfield's catalog has over 200 tools and about 640 KB of schemas, too much for an
+agent's context. Cora keeps the whole catalog in the record but offers only the main
+tools whole (`CORE`: generation of images, video and audio, models, presets, job status,
+media upload, balance, voices), about 50 KB. Every other tool is reached by name:
+`higgsfield_tool_info` lists them (with `readOnly` and `destructive`) or answers one
+description and schema, and `higgsfield_call` runs it with its arguments. Names inside
+descriptions are rewritten to `higgsfield_<name>` only for the tools offered whole; the
+others keep Higgsfield's spelling, which is the name `higgsfield_call` takes. A remote
+tool whose Cora name would shadow the gateway is skipped. Disconnecting revokes the
+refresh token on Clerk's revocation endpoint, with the client's own `client_id` (Clerk
+refuses an anonymous revocation); the access token already issued stays valid until it
+expires, as Clerk issues it.

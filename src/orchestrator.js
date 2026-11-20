@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ThreadState } from "./thread-state.js";
+import { OpenChoices } from "./open-choices.js";
 import { ThreadSessions, killPid, noteChildPid, pidAlive, recoverHarness, sessionFailure } from "./thread-sessions.js";
 import { ProcessUsage } from "./process-usage.js";
+import { escapeSlack, isDirectChannel } from "./slack.js";
 import { TRANSPORT_LABELS, isSlackChannel, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
 import { MEMORY_TOOLS } from "./tools.js";
@@ -159,6 +161,23 @@ function lastCalled(history, agents) {
 }
 
 
+/** The answers an agent offers, as one row of Discord buttons; the press says which agent asked and which answer. */
+function choiceButtons(agent, choices) {
+  return [{ type: 1, components: choices.slice(0, 5).map((label, index) => ({ type: 2, style: index ? 2 : 1, label: label.slice(0, 80), custom_id: `cora:choice:${agent.id}:${index}` })) }];
+}
+
+/** The same answers as a Telegram inline keyboard, one button per row so long labels stay whole. */
+function choiceKeyboard(agent, choices) {
+  return choices.slice(0, 5).map((label, index) => [{ text: label.slice(0, 64), callback_data: `cora:choice:${agent.id}:${index}` }]);
+}
+
+/** The same answers as Slack buttons, for the actions block under the question. */
+function choiceSlackButtons(agent, choices) {
+  return choices.slice(0, 5).map((label, index) => ({
+    type: "button", text: { type: "plain_text", text: label.slice(0, 75), emoji: true }, action_id: `cora:choice:${agent.id}:${index}`, value: String(index), ...(index ? {} : { style: "primary" }),
+  }));
+}
+
 function discordConversationMessage(raw, archived = null) {
   return (raw.type === undefined || raw.type === 0 || raw.type === 19)
     && Boolean(raw.content?.trim() || raw.attachments?.length || raw.embeds?.length || raw.sticker_items?.length
@@ -204,6 +223,7 @@ export class Orchestrator {
     this.slack = slack;
     this.skBots = skBots;
     this.emit = emit;
+    this.choices = new OpenChoices({ store });
     this.filesDir = filesDir;
     this.store = store;
     this.discord = discord;
@@ -665,7 +685,8 @@ export class Orchestrator {
     }
     const previous = state.focus?.ids || [];
     const calls = (agent) => tagged(item.content, agent.name) || (item.voice && spokenTo(item.content, agent.name));
-    const named = available.filter(calls).map((agent) => agent.id);
+    // A pressed answer is called to the agent that offered it.
+    const named = available.filter((agent) => calls(agent) || item.choiceFor === agent.id).map((agent) => agent.id);
     const candidates = available.filter((agent) => previous.includes(agent.id) || named.includes(agent.id));
     const recipientsForExit = named.length ? candidates.filter((agent) => named.includes(agent.id)) : candidates;
     const decision = recipientsForExit.length ? await this.brain.disengagement({ message: item.content, agents: recipientsForExit, history: state.history.filter((entry) => entry.id !== item.id), reminded: Boolean(state.focus?.remindedAt) }) : null;
@@ -676,7 +697,10 @@ export class Orchestrator {
     // The answer to an agent's question comes from whoever it asked: the owner, or the person the agent belongs to.
     const askedBy = state.request ? this.store.agent(state.request.agentId) : null;
     const asked = state.request && !item.others?.length && (item.kind === "owner" || this.ownsAgent(item, askedBy, state)) ? state.request : null;
-    if (asked) state.request = null;
+    if (asked) {
+      state.request = null;
+      if (!item.choiceFor) this.closeChoice((record) => record.agentId === asked.agentId && record.channelId === state.id, { answer: item.content, by: item.authorName, via: "text" });
+    }
     const direct = roomAgentId(state.id) || this.dmAgentId(state.id);
     const inferred = lastCalled(state.history, available).filter((id) => previous.includes(id));
     const remembered = (state.focus?.turn || []).filter((id) => previous.includes(id));
@@ -888,6 +912,131 @@ export class Orchestrator {
       });
     }
     await this.ingest(state, item);
+  }
+
+  /**
+   * One of the answers an agent offered with ask_owner, pressed on Telegram: like on Discord it
+   * reaches that agent as the presser's message, and the keyboard gives way to the answer chosen.
+   * The press arrives at the bot that posted the question, the main one or the agent's own.
+   */
+  async onTelegramChoice(query, viaAgentId = null) {
+    const data = String(query?.data || "");
+    const match = /^cora:choice:(ag_[a-f0-9]{12}):(\d)$/.exec(data);
+    const message = query?.message;
+    if (!match || !message?.chat) return;
+    const client = (viaAgentId && this.tgBots?.client(viaAgentId)) || this.telegram;
+    this.pressed ??= new Set();
+    if (query.id && this.pressed.has(`tg:${query.id}`)) return;
+    if (query.id) { this.pressed.add(`tg:${query.id}`); if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value); }
+    const english = this.store.settings.language === "en";
+    const toast = (text) => client.request("answerCallbackQuery", { callback_query_id: query.id, ...(text ? { text } : {}) }).catch(() => {});
+    if (encryptionRequired(this.store) || !this.channels.on("telegram")) return toast();
+    const chatId = String(message.chat.id);
+    const privateWith = viaAgentId && message.chat.type === "private" ? viaAgentId : null;
+    if (!privateWith && !this.store.settings.telegramChatIds.includes(chatId)) return toast();
+    const agent = this.store.agent(match[1]);
+    if (!agent || (privateWith && privateWith !== agent.id)) return toast(english ? "That agent is no longer here." : "Questo agente non c'è più.");
+    const from = query.from || {};
+    if (from.is_bot) return toast();
+    const channelId = telegramChannel(chatId, privateWith || "");
+    if (privateWith) this.dmAgent.set(channelId, privateWith);
+    const state = this.state(channelId);
+    const owner = this.isTelegramOwner(from.id) && !(privateWith && !this.store.settings.telegramOwnerIds.length);
+    const kind = owner ? "owner" : "human";
+    const authorName = userName(from);
+    if (kind !== "owner" && !this.authorized({ kind, authorId: String(from.id || "") }, agent, state)) {
+      return toast(english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.`);
+    }
+    const buttons = (message.reply_markup?.inline_keyboard || []).flat();
+    const label = String(buttons.find((button) => button.callback_data === data)?.text || "").trim();
+    if (!label) return toast(english ? "That answer is no longer available." : "Questa risposta non è più disponibile.");
+    await toast();
+    // The question keeps its formatting: the answer is appended after it, so its entities still fit.
+    const question = String(message.text ?? message.caption ?? "");
+    const chosen = `\n→ ${label}`;
+    const text = `${question}${chosen} (${authorName})`;
+    const entities = [...(message.entities || message.caption_entities || []), { type: "bold", offset: question.length + 3, length: label.length }];
+    const edit = message.text !== undefined
+      ? client.request("editMessageText", { chat_id: message.chat.id, message_id: message.message_id, text: text.slice(0, 4096), entities, link_preview_options: { is_disabled: true } })
+      : client.request("editMessageCaption", { chat_id: message.chat.id, message_id: message.message_id, caption: text.slice(0, 1024), caption_entities: entities });
+    await edit.catch(() => client.request("editMessageReplyMarkup", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {}));
+    this.closeButtonChoice(agent.id, channelId, "messageId", message.message_id, { answer: label, by: authorName, via: "telegram" });
+    this.log({ type: "message", agentId: agent.id, channelId, text: `${authorName} ha scelto «${label}» per ${agent.name}` });
+    await this.ensureHistory(state);
+    await this.ingest(state, {
+      id: `tg_${chatId}${privateWith ? `@${privateWith}` : ""}_cb${query.id}`,
+      at: Date.now(),
+      authorId: String(from.id || ""),
+      authorName,
+      kind,
+      agentId: null,
+      content: label,
+      choiceFor: agent.id,
+    });
+  }
+
+  /**
+   * One of the answers an agent offered with ask_owner, pressed on Slack: like on Discord and Telegram it
+   * reaches that agent as the presser's message, and the buttons give way to the answer chosen. Slack
+   * delivers the press to the app that posted the question, over its own socket.
+   */
+  async onSlackChoice(payload, viaAgentId = null) {
+    const action = (payload?.actions || []).find((entry) => /^cora:choice:/.test(String(entry?.action_id || "")));
+    const match = /^cora:choice:(ag_[a-f0-9]{12}):(\d)$/.exec(String(action?.action_id || ""));
+    const message = payload?.message;
+    const channel = String(payload?.channel?.id || payload?.container?.channel_id || "");
+    if (!match || !message?.ts || !channel) return;
+    const client = (viaAgentId && this.skBots?.client(viaAgentId)) || this.slack;
+    if (!client?.user) return;
+    const key = `sl:${channel}:${message.ts}:${action.action_ts || payload.trigger_id || ""}`;
+    this.pressed ??= new Set();
+    if (this.pressed.has(key)) return;
+    this.pressed.add(key);
+    if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value);
+    const english = this.store.settings.language === "en";
+    const user = payload.user || {};
+    const threadTs = message.thread_ts && message.thread_ts !== message.ts ? message.thread_ts : "";
+    const notice = (text) => client.request("chat.postEphemeral", { channel, user: user.id, text, ...(threadTs ? { thread_ts: threadTs } : {}) }).catch(() => {});
+    if (encryptionRequired(this.store) || !this.channels.on("slack") || !user.id) return;
+    const direct = isDirectChannel(channel);
+    const privateWith = direct ? viaAgentId : null;
+    if (direct ? !privateWith : !this.store.settings.slackChannelIds.includes(channel)) return;
+    const agent = this.store.agent(match[1]);
+    if (!agent || (privateWith && privateWith !== agent.id)) return notice(english ? "That agent is no longer here." : "Questo agente non c'è più.");
+    const channelId = slackChannel(channel, threadTs);
+    if (privateWith) this.dmAgent.set(channelId, privateWith);
+    const state = this.state(channelId);
+    if (viaAgentId && !direct) state.heardFrom.add(viaAgentId);
+    const kind = this.isSlackOwner(user.id) ? "owner" : "human";
+    if (kind !== "owner" && !this.authorized({ kind, authorId: String(user.id) }, agent, state)) {
+      return notice(english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.`);
+    }
+    const blocks = message.blocks || [];
+    const button = blocks.flatMap((block) => block.type === "actions" ? block.elements || [] : []).find((element) => element.action_id === action.action_id);
+    const label = String(button?.text?.text || "").trim();
+    if (!label) return notice(english ? "That answer is no longer available." : "Questa risposta non è più disponibile.");
+    const authorName = await client.userName(user.id);
+    // The question keeps its words; the buttons give way to the answer and who chose it.
+    const sections = blocks.filter((block) => block.type !== "actions");
+    const chosen = `→ *${escapeSlack(label)}* (${escapeSlack(authorName)})`;
+    await client.request("chat.update", {
+      channel, ts: message.ts,
+      text: `${message.text || ""}\n${chosen}`.slice(0, 3900),
+      blocks: [...sections, { type: "section", text: { type: "mrkdwn", text: chosen } }],
+    }).catch((error) => this.log({ type: "warning", agentId: agent.id, channelId, text: `pulsante Slack: la domanda non si aggiorna (${error.slack || error.message})` }));
+    this.closeButtonChoice(agent.id, channelId, "ts", message.ts, { answer: label, by: authorName, via: "slack" });
+    this.log({ type: "message", agentId: agent.id, channelId, text: `${authorName} ha scelto «${label}» per ${agent.name}` });
+    await this.ensureHistory(state);
+    await this.ingest(state, {
+      id: `sl_${channel}_cb${String(action.action_ts || Date.now()).replace(/\D/g, "")}`,
+      at: Date.now(),
+      authorId: String(user.id),
+      authorName,
+      kind,
+      agentId: null,
+      content: label,
+      choiceFor: agent.id,
+    });
   }
 
   /* ---------- Slack ---------- */
@@ -1186,6 +1335,9 @@ export class Orchestrator {
           return;
         }
       } else this.brain.clearProgressPause(agent.id, state.id);
+      // The invocation authority must outlive the in-memory queue and reply steering.
+      const origin = mayUseComputer ? queued || snapshot.findLast((item) => item.kind === "owner") : null;
+      const requestOrigin = this.requestOrigin(origin);
       const computer = Boolean(agent.tools && mayUseComputer && !this.threadWork.has(state.id, agent.id));
       this.acknowledge(state, agent.id, [...state.humanQueue.values()].filter((item) => item.id === queued?.id || snapshot.includes(item)).map((item) => item.id));
       const delegationAuthorized = queued ? queued.kind === "owner" || Boolean(queued.delegated) : state.ownerOrigin;
@@ -1201,7 +1353,7 @@ export class Orchestrator {
       try {
         const occupied = await this.withSession(agent, state.id, "chat", () => {
           return this.brain.chatTurn({
-            agent, history: snapshot, channel, forced: isForced, computer, authorized: authorized && computer, requestAuthorized: Boolean(mayUseComputer), belongsTo: this.ownsAgent(queued, agent, state),
+            agent, history: snapshot, channel, forced: isForced, computer, authorized: authorized && computer, requestAuthorized: Boolean(mayUseComputer), requestOrigin, belongsTo: this.ownsAgent(queued, agent, state),
             computerDenied: Boolean(agent.tools && !mayUseComputer),
             replyTo: queued,
             postFile: (file, caption, { replyTo = queued, traceId } = {}) => this.postAs(agent, state, caption, file, traceId, { ...this.replyDelivery(replyTo), delegationAuthorized }),
@@ -1473,6 +1625,41 @@ export class Orchestrator {
       : `**${agent.name}** non risponde a ${who}: non ha il permesso di farlo lavorare. ${owner ? `Glielo può dare ${owner}` : "Glielo può dare il suo proprietario"} in Autorizzazioni nel pannello${link ? `: ${link}` : ""}.`;
   }
 
+  /**
+   * One of the answers an agent offered with ask_owner, pressed on Discord: it reaches that agent
+   * as the message of the person who pressed, and the buttons give way to the answer chosen. The owner,
+   * the person the agent belongs to and whoever has permission to work with it may answer.
+   */
+  async onChoice(interaction, client = this.discord) {
+    const match = /^cora:choice:(ag_[a-f0-9]{12}):(\d)$/.exec(String(interaction?.data?.custom_id || ""));
+    if (!match) return;
+    this.pressed ??= new Set();
+    if (interaction.id && this.pressed.has(interaction.id)) return;
+    if (interaction.id) { this.pressed.add(interaction.id); if (this.pressed.size > 500) this.pressed.delete(this.pressed.values().next().value); }
+    const english = this.store.settings.language === "en";
+    const user = interaction.member?.user || interaction.user || {};
+    const channelId = String(interaction.channel_id || "");
+    const agent = this.store.agent(match[1]);
+    if (!agent || !channelId) return client.answerInteraction(interaction, { content: english ? "That agent is no longer here." : "Questo agente non c'è più." });
+    const guildId = interaction.guild_id || this.channels.discordInfo(channelId)?.guildId;
+    if (guildId && !this.allowedGuild(guildId)) return;
+    const raw = { id: String(interaction.id), type: 0, channel_id: channelId, guild_id: guildId, author: user, member: interaction.member, content: "", mentions: [], attachments: [], timestamp: new Date().toISOString() };
+    const state = this.state(channelId);
+    const who = this.classify(raw);
+    if (who.kind !== "owner" && !this.authorized({ kind: who.kind, authorId: user.id }, agent, state)) {
+      return client.answerInteraction(interaction, { content: english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.` });
+    }
+    const buttons = (interaction.message?.components || []).flatMap((row) => row.components || []);
+    const label = String(buttons.find((button) => button.custom_id === interaction.data.custom_id)?.label || "").trim();
+    if (!label) return client.answerInteraction(interaction, { content: english ? "That answer is no longer available." : "Questa risposta non è più disponibile." });
+    const question = String(interaction.message?.content || "").trim();
+    await client.answerInteraction(interaction, { update: true, content: `${question}\n→ **${label}**${who.authorName ? ` (${who.authorName})` : ""}`.slice(0, 2000), components: [] });
+    this.closeButtonChoice(agent.id, channelId, "messageId", interaction.message?.id, { answer: label, by: who.authorName, via: "discord" });
+    this.log({ type: "message", agentId: agent.id, channelId, text: `${who.authorName} ha scelto «${label}» per ${agent.name}` });
+    await this.ensureHistory(state);
+    await this.ingest(state, { ...this.toItem({ ...raw, content: label }), choiceFor: agent.id });
+  }
+
   /** A link into the panel for a notice: on Discord in angle brackets, so no preview card covers the words. */
   panelLink(channelId, path) {
     if (!this.instanceUrl) return "";
@@ -1485,6 +1672,7 @@ export class Orchestrator {
    * arrived through): the owner of the space or the agent's own owner may put it to listen.
    */
   async onInteraction(interaction, client = this.discord) {
+    if (/^cora:choice:/.test(String(interaction?.data?.custom_id || ""))) return this.onChoice(interaction, client);
     const match = /^cora:listen:(ag_[a-f0-9]{12}):(\d+)$/.exec(String(interaction?.data?.custom_id || ""));
     if (!match) return;
     // The same press reaches every connection of the bot it was made on: it is handled once.
@@ -1584,6 +1772,25 @@ export class Orchestrator {
     return this.store.routines(trace.agentId).find((routine) => routine.channelId === trace.channelId && routine.name === name) || null;
   }
 
+  requestOrigin(item) {
+    if (!item) return {};
+    return { id: item.id, kind: item.kind, authorId: item.authorId, delegated: Boolean(item.delegated) };
+  }
+
+  recoveredRequestAuthorized(origin, agent, state) {
+    if (origin.kind === "agent") return Boolean(origin.delegated);
+    if (origin.kind === "owner" && origin.authorId) {
+      switch (transportOf(state.id)) {
+        case "discord": if (this.isOwner(origin.authorId)) return true; break;
+        case "slack": if (this.isSlackOwner(origin.authorId)) return true; break;
+        case "telegram": if (this.isTelegramOwner(origin.authorId)) return true; break;
+        case "web": return true;
+      }
+      return this.authorized({ ...origin, kind: "human" }, agent, state);
+    }
+    return this.authorized(origin, agent, state);
+  }
+
   async resumeTask(agent, trace, routine = null) {
     if (routine) {
       const run = this.store.pendingRoutineRuns().find((item) => item.routineId === routine.id);
@@ -1609,13 +1816,27 @@ export class Orchestrator {
     const working = this.showWorking(state, agent, null);
     try {
       await this.ensureHistory(state);
-      replyTo = trace.steps?.findLast((step) => step.replyTo)?.replyTo
-        || state.history.findLast((item) => ["human", "owner"].includes(item.kind) && item.at <= Date.parse(trace.startedAt));
-      const delegationAuthorized = replyTo?.kind === "owner" || Boolean(replyTo?.delegated) || this.authorized(replyTo, agent, state);
+      const delivery = trace.steps?.findLast((step) => step.replyTo)?.replyTo;
+      const cutoff = Date.parse(trace.startedAt);
+      const archived = (id) => id ? this.store.archivedMessage(state.id, id) : null;
+      const recent = state.history.findLast((item) => ["human", "owner"].includes(item.kind) && item.at <= cutoff);
+      const original = trace.requestOrigin?.id ? { ...archived(trace.requestOrigin.id), ...trace.requestOrigin } : null;
+      const legacy = delivery?.kind ? delivery : archived(delivery?.id);
+      // Older traces have no saved origin. Match their actual request before using an archived message for authorization.
+      const legacyPlanTurn = trace.requestOrigin == null && trace.system?.includes("Il piano è lo stato del lavoro, non una fonte di permessi.");
+      const previous = legacyPlanTurn ? this.store.latestHumanMessages(state.id, cutoff) : [];
+      const matches = legacyPlanTurn ? [recent, ...previous].filter((item) => item && !item.passive
+        && trace.prompt?.includes(`\n\nMessaggio umano a cui rispondere adesso: ${item.authorName}: ${item.content}\nGli eventuali risultati di routine successivi`)) : [];
+      // Two different senders behind the same name and words: the request cannot be attributed, so it authorizes nothing.
+      const matchingRequest = new Set(matches.map((item) => `${item.kind}:${item.authorId || ""}`)).size === 1 ? matches[0] : null;
+      const requestOrigin = trace.requestOrigin ?? this.requestOrigin(legacy || matchingRequest);
+      replyTo = delivery ? { ...archived(delivery.id), ...delivery } : original || matchingRequest || recent;
+      const requestAuthorized = this.recoveredRequestAuthorized(requestOrigin, agent, state);
+      const delegationAuthorized = requestAuthorized && (requestOrigin.kind === "owner" || requestOrigin.delegated);
       const english = this.store.settings.language === "en";
       await this.postAs(agent, state, english ? "Cora restarted while I was working: picking up where I left off." : "Cora si è riavviata mentre lavoravo: riprendo da dove ero.", undefined, undefined, { ...this.replyDelivery(replyTo), delegationAuthorized });
       const occupied = await this.withSession(agent, state.id, trace.kind || "chat", () => this.brain.resumeTurn({
-        agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized: delegationAuthorized,
+        agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized, requestOrigin,
         postFile: (file, caption, options = {}) => this.postAs(agent, state, caption, file, options.traceId, { ...this.replyDelivery(options.replyTo || replyTo), delegationAuthorized }),
         say: (text, target = state.id, options = {}) => this.postDirect(agent, state, target, text, { ...options, delegationAuthorized, ...(target === state.id ? this.replyDelivery(options.replyTo || replyTo) : {}) }),
         inbox: this.inbox(state, state.history, agent.id), routine,
@@ -1935,7 +2156,7 @@ export class Orchestrator {
     }
   }
 
-  async deliver(agent, state, text, file, traceId, { ping = "", request, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
+  async deliver(agent, state, text, file, traceId, { ping = "", tgMention = null, request, components, keyboard, slackButtons, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
     if (isWebRoom(state.id)) return this.postWeb(agent, state, text, file, traceId, { request, passive, delegationAuthorized, returnToAgentId });
     const chatId = telegramChatId(state.id);
     const slack = slackIds(state.id);
@@ -1953,14 +2174,14 @@ export class Orchestrator {
     const body = chatId ? text || "" : slack ? await this.slackMentions(agent, state, text) : await this.discordMentions(agent, state, text);
     const content = ping && body ? `${ping} ${body}` : body;
     let sent;
-    if (chatId) sent = await this.postTelegram(agent, chatId, content, file, state.id);
-    else if (slack) sent = await this.postSlack(agent, state, content, file);
+    if (chatId) sent = await this.postTelegram(agent, chatId, content, file, state.id, keyboard, tgMention);
+    else if (slack) sent = await this.postSlack(agent, state, content, file, slackButtons);
     else {
       const own = this.bots?.client(agent.id);
-      const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file });
+      const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file, components });
       if (!own) sent = await shared();
       else {
-        try { sent = await own.say(state.id, { content, file }); }
+        try { sent = await own.say(state.id, { content, file, components }); }
         catch (error) {
           const channel = this.channelMeta(state.id);
           if (error.status !== 403 || error.sentCount || state.mainBlind || this.dmAgent.has(state.id) || !channel.guildId || !this.allowedGuild(channel.guildId)) throw error;
@@ -2057,9 +2278,9 @@ export class Orchestrator {
   }
 
   /** As the agent's own Slack app when it is in the conversation, otherwise through the main app with its name and avatar. */
-  async postSlack(agent, state, text, file) {
+  async postSlack(agent, state, text, file, buttons = null) {
     const info = this.channels.info(state.id);
-    const payload = { content: text || "", file, threadTs: info.threadTs };
+    const payload = { content: text || "", file, threadTs: info.threadTs, ...(buttons ? { buttons } : {}) };
     const own = this.skBots?.client(agent.id);
     if (own && (info.direct || await this.skBots.inChannel(agent.id, info.channelId))) {
       try {
@@ -2094,25 +2315,25 @@ export class Orchestrator {
     return privateBot ? this.tgBots?.client(privateBot) || null : null;
   }
 
-  async postTelegram(agent, chatId, text, file, channelId = "") {
+  async postTelegram(agent, chatId, text, file, channelId = "", keyboard = null, mention = null) {
     if (telegramBotAgent(channelId)) {
       const bot = this.telegramClientFor(channelId);
       if (!bot) throw new Error("il bot Telegram di questo agente non è collegato");
-      return bot.say(chatId, { content: text || "", file });
+      return bot.say(chatId, { content: text || "", file, keyboard, mention });
     }
     const own = this.tgBots?.client(agent.id);
     // Without a main bot, an agent's own bot is the only voice there is.
     const main = Boolean(this.telegram.token);
     if (own && (!main || await this.tgBots.inChat(agent.id, chatId))) {
       try {
-        return await own.say(chatId, { content: text || "", file });
+        return await own.say(chatId, { content: text || "", file, keyboard, mention });
       } catch (error) {
         if (!main) throw error;
         this.tgBots.forgetMembership(agent.id);
         this.log({ type: "warning", agentId: agent.id, channelId: telegramChannel(chatId), text: `bot Telegram suo: ${error.message}; scrivo col bot principale` });
       }
     }
-    return this.telegram.say(chatId, { content: text || "", file, name: agent.name });
+    return this.telegram.say(chatId, { content: text || "", file, name: agent.name, keyboard, mention });
   }
 
   /** A message in a panel room: archived like a Discord one and pushed live to the panel. */
@@ -2150,8 +2371,8 @@ export class Orchestrator {
 
   /**
    * An agent asking the owner something. The question lands where the
-   * conversation is: in a Discord or Telegram channel it mentions the owner and
-   * lists the answers as text (the app on their phone does the notifying); in a
+   * conversation is: in a Discord, Telegram or Slack channel it mentions the owner and
+   * offers the answers as buttons (as text in voice); in a
    * panel room it shows quick answers and goes out as a push. Without a
    * conversation it goes to the agent's private room. The owner's next message
    * there, typed or tapped, is the answer and goes to this agent.
@@ -2171,7 +2392,7 @@ export class Orchestrator {
     const clean = [...new Set((Array.isArray(choices) ? choices : []).map((choice) => String(choice).trim().slice(0, 40)).filter(Boolean))].slice(0, 4);
     const request = { choices: clean };
     const english = this.store.settings.language === "en";
-    let item;
+    let item, ref = null;
     if (isWebRoom(state.id)) {
       [item] = await this.postAs(agent, state, text, undefined, traceId, { request, ...this.replyDelivery(replyTo) });
       this.emit({ type: "request", agentId: agent.id });
@@ -2187,13 +2408,119 @@ export class Orchestrator {
       const contacts = this.store.agentOwnerChats(agent).filter(id => id.startsWith(`${transport}:`)).map(id => id.slice(transport.length + 1));
       const own = contacts.includes(replyTo?.authorId) ? replyTo.authorId : contacts[0];
       const owner = own || (slack ? this.store.settings.slackOwnerIds[0] : !telegramChatId(state.id) && this.store.settings.ownerIds[0]);
-      const body = clean.length ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
-      await this.postAs(agent, state, body, undefined, traceId, { ping: owner ? `<@${owner}>` : "", request, ...this.replyDelivery(replyTo) });
+      // On Discord, Telegram and Slack the answers are buttons: a press is the answer, typed or not. A reply in voice only says them.
+      const delivery = this.replyDelivery(replyTo);
+      const pressable = clean.length && delivery.replyMode !== "voice";
+      const markup = !pressable ? {} : slack ? { slackButtons: choiceSlackButtons(agent, clean) } : telegramChatId(state.id) ? { keyboard: choiceKeyboard(agent, clean) } : { components: choiceButtons(agent, clean) };
+      const body = clean.length && !pressable ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
+      // Telegram has no <@id> markup: a group gets a real mention of the owner, a private chat is already theirs.
+      const tgChat = telegramChatId(state.id);
+      const tgMention = tgChat && owner && Number(tgChat) < 0 ? { id: owner, name: (replyTo?.authorId === owner && replyTo?.authorName) || this.store.ownerName() || (english ? "Owner" : "Proprietario") } : null;
+      const sent = await this.postAs(agent, state, body, undefined, traceId, { ping: owner && !tgChat ? `<@${owner}>` : "", tgMention, request, ...markup, ...delivery });
       item = state.history.findLast((entry) => entry.agentId === agent.id && entry.request === request);
+      const last = Array.isArray(sent) ? sent.at(-1) : null;
+      ref = slack ? { ts: String(last?.ts || ""), channel: String(last?.channel || "") }
+        : telegramChatId(state.id) ? { messageId: String(last?.message_id || ""), content: String(last?.text ?? last?.caption ?? "") }
+        : { messageId: String(last?.id || ""), webhook: Boolean(last?.webhook_id), botId: String(last?.author?.id || ""), content: String(last?.content || "") };
+    }
+    if (clean.length) {
+      const record = this.choices.add({ agentId: agent.id, channelId: state.id, question: text, choices: clean, ref: ref || { messageId: String(item?.id || "") } });
+      this.emit({ type: "choice", agentId: agent.id, channelId: state.id, id: record.id, status: "open" });
     }
     state.request = { agentId: agent.id, at: Date.now() };
     this.log({ type: "request", agentId: agent.id, channelId: state.id, text: text.slice(0, 300) });
     return { id: item?.id, where: this.channels?.label(state.id) || state.id, here: Boolean(here) };
+  }
+
+  /** A button pressed in the chat: the question it belongs to, found by its message, or else the agent's open one in that thread. */
+  closeButtonChoice(agentId, channelId, key, value, answer) {
+    const ref = String(value || "");
+    const own = ref && this.choices.all().some((record) => record.channelId === channelId && record.ref?.[key] === ref);
+    return this.closeChoice((record) => record.channelId === channelId && (own ? record.ref?.[key] === ref : record.agentId === agentId), answer);
+  }
+
+  closeChoice(match, answer) {
+    const record = this.choices.resolve(match, answer);
+    if (record) this.emit({ type: "choice", agentId: record.agentId, channelId: record.channelId, id: record.id, status: record.status });
+    return record;
+  }
+
+  /**
+   * One of the answers an agent offered with ask_owner, pressed in the native app: like a button on Discord,
+   * Telegram or Slack it reaches that agent as the owner's message, and the question in the chat shows the answer
+   * chosen in place of its buttons. In a panel room it is the owner's message there.
+   */
+  async answerChoice(id, index, { user, authorName = "" }) {
+    const fail = (message, status) => Object.assign(new Error(message), { status });
+    const english = this.store.settings.language === "en";
+    const record = this.choices.get(String(id || ""));
+    if (!record) throw fail(english ? "Question not found." : "Domanda non trovata.", 404);
+    if (record.status !== "open") throw fail(record.answer ? (english ? `Already answered: ${record.answer}` : `Già risposta: ${record.answer}`) : (english ? "This question is closed." : "Questa domanda è chiusa."), 409);
+    const label = record.choices[Number(index)];
+    if (!Number.isInteger(Number(index)) || !label) throw fail(english ? "That answer is not among the choices." : "Questa risposta non è tra le scelte.", 400);
+    const agent = this.store.agent(record.agentId);
+    if (!agent) throw fail(english ? "That agent is no longer here." : "Questo agente non c'è più.", 410);
+    const by = String(authorName || user?.name || user?.email || this.store.ownerName() || "").slice(0, 80);
+    if (!this.closeChoice((entry) => entry.id === record.id, { answer: label, by, via: "app" })) throw fail(english ? "This question is closed." : "Questa domanda è chiusa.", 409);
+    this.log({ type: "message", agentId: agent.id, channelId: record.channelId, text: `${by} ha scelto «${label}» per ${agent.name} dall'app` });
+    if (isWebRoom(record.channelId)) {
+      await this.onWebMessage({ room: record.channelId, text: label, user, choiceFor: agent.id });
+      return { id: record.id, answer: label };
+    }
+    await this.showChoice(record, agent, label, by).catch((error) => this.log({ type: "warning", agentId: agent.id, channelId: record.channelId, text: `scelta dall'app: la domanda non si aggiorna (${error.message})` }));
+    const transport = transportOf(record.channelId);
+    const settings = this.store.settings;
+    const authorId = String((transport === "telegram" ? settings.telegramOwnerIds : transport === "slack" ? settings.slackOwnerIds : settings.ownerIds)?.[0] || "app");
+    const state = this.state(record.channelId);
+    await this.ensureHistory(state);
+    await this.ingest(state, { id: `app_${record.id}`, at: Date.now(), authorId, authorName: by, kind: "owner", agentId: null, content: label, choiceFor: agent.id });
+    return { id: record.id, answer: label };
+  }
+
+  /** The question in the chat gives way to the answer chosen in the app, as it does when a button is pressed there. */
+  async showChoice(record, agent, label, by) {
+    const ref = record.ref || {};
+    const question = String(ref.content || record.question);
+    const chatId = telegramChatId(record.channelId);
+    const slack = slackIds(record.channelId);
+    if (chatId) {
+      if (!ref.messageId) return;
+      const text = `${question}\n→ ${label} (${by})`.slice(0, 4096);
+      const entities = [{ type: "bold", offset: question.length + 3, length: label.length }];
+      const clients = [this.telegramClientFor(record.channelId), this.tgBots?.client(agent.id), this.telegram].filter((client, index, all) => client?.request && all.indexOf(client) === index);
+      let last;
+      for (const client of clients) {
+        try { return await client.request("editMessageText", { chat_id: chatId, message_id: Number(ref.messageId), text, entities, link_preview_options: { is_disabled: true } }); }
+        catch (error) { last = error; }
+      }
+      if (last) throw last;
+      return;
+    }
+    if (slack) {
+      if (!ref.ts) return;
+      const chosen = `→ *${escapeSlack(label)}* (${escapeSlack(by)})`;
+      const payload = { channel: ref.channel || slack.channelId, ts: ref.ts, text: `${question}\n${chosen}`.slice(0, 3900),
+        blocks: [{ type: "section", text: { type: "mrkdwn", text: escapeSlack(question).slice(0, 2900) } }, { type: "section", text: { type: "mrkdwn", text: chosen } }] };
+      const clients = [this.skBots?.client(agent.id), this.slack].filter((client, index, all) => client?.request && all.indexOf(client) === index);
+      let last;
+      for (const client of clients) {
+        try { return await client.request("chat.update", payload); }
+        catch (error) { last = error; }
+      }
+      if (last) throw last;
+      return;
+    }
+    if (!ref.messageId) return;
+    const body = { content: `${question}\n→ **${label}** (${by})`.slice(0, 2000), components: [], allowed_mentions: { parse: [] } };
+    if (ref.webhook) {
+      const parentId = this.discord.channelInfo?.(record.channelId)?.parentId;
+      const hook = await this.discord.webhookFor(parentId || record.channelId);
+      if (!hook) throw new Error("no webhook");
+      return this.discord.request("PATCH", `/webhooks/${hook.id}/${hook.token}/messages/${ref.messageId}${parentId ? `?thread_id=${record.channelId}` : ""}`, { body, auth: false });
+    }
+    const own = this.bots?.client(agent.id);
+    const client = own && ref.botId && own.user?.id === ref.botId ? own : this.discord;
+    return client.request("PATCH", `/channels/${record.channelId}/messages/${ref.messageId}`, { body });
   }
 
   saveWebFile(file, agent = null) {
@@ -2207,7 +2534,7 @@ export class Orchestrator {
   }
 
   /** The owner writing from the panel: same flow as a Discord message from the owner. */
-  async onWebMessage({ room, text, user, clientId = null }) {
+  async onWebMessage({ room, text, user, clientId = null, choiceFor = "" }) {
     if (encryptionRequired(this.store)) throw Object.assign(new Error("La cifratura è obbligatoria: apri una sessione cifrata dal pannello."), { status: 409 });
     const content = String(text || "").trim().slice(0, 3000);
     if (!content) return null;
@@ -2215,7 +2542,7 @@ export class Orchestrator {
     // The panel names each message it sends: the same name sent again is the same message, not a second one.
     const sent = clientId ? (state.webClientIds ||= new Map()) : null;
     if (sent?.has(clientId)) return { ...(await sent.get(clientId)), clientId };
-    const posting = this.postWebMessage(state, room, content, user, clientId);
+    const posting = this.postWebMessage(state, room, content, user, clientId, choiceFor);
     if (sent) {
       sent.set(clientId, posting);
       posting.catch(() => sent.delete(clientId));
@@ -2225,7 +2552,7 @@ export class Orchestrator {
     return clientId && item ? { ...item, clientId } : item;
   }
 
-  async postWebMessage(state, room, content, user, clientId) {
+  async postWebMessage(state, room, content, user, clientId, choiceFor = "") {
     await this.ensureHistory(state);
     const item = {
       id: `web_${randomBytes(8).toString("hex")}`,
@@ -2235,6 +2562,7 @@ export class Orchestrator {
       kind: "owner",
       agentId: null,
       content,
+      ...(choiceFor ? { choiceFor } : {}),
     };
     await this.ingest(state, item);
     this.emit({ type: "web-message", room, item: clientId ? { ...item, clientId } : item });
@@ -2419,7 +2747,7 @@ export class Orchestrator {
         id,
         name: labels[id] || channel?.name || saved?.name || info?.name || id,
         kind,
-        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs || planned.has(id)),
+        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs),
         parentId,
         parentName: parentId ? (known.get(parentId)?.name || "") : "",
         guildId,
@@ -2498,7 +2826,7 @@ export class Orchestrator {
         const agent = this.store.agent(trace.agentId);
         return { ...trace, agentName: agent?.name || trace.agentId, color: agent?.color || "#f2a93b" };
       });
-    const plans = thread.thread ? this.store.plans.list(id, scope.agentIds) : [];
+    const plans = this.store.plans.list(id, scope.agentIds);
     const tasksByPlan = Map.groupBy(this.store.plans.tasks(plans.map((plan) => plan.id)), (task) => task.planId);
     const tasksByTrace = Map.groupBy(this.store.plans.traceTasks(traces.map((trace) => trace.id)), (task) => task.traceId);
     return {

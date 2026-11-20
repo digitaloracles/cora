@@ -544,6 +544,11 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       server: Boolean(record.server), resident: Boolean(record.resident), usage: quota || null,
       agentIds: agents.filter((agent) => usesQuotaAccount(agent, record)).map((agent) => agent.id),
     }));
+    const requests = orchestrator.choices.open().filter((record) => ids.has(record.agentId) && mayAnswer(user, record)).map((record) => {
+      const agent = store.agent(record.agentId), thread = names.get(record.channelId);
+      return { id: record.id, agentId: record.agentId, agentName: agent?.name || record.agentId, color: agent?.color || "#f2a93b", channelId: record.channelId,
+        threadName: thread?.name || "", link: thread?.link || "", question: record.question, choices: record.choices, askedAt: record.askedAt };
+    }).reverse();
     return {
       version: 1,
       generatedAt: new Date().toISOString(),
@@ -552,6 +557,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       user: { id: user.id, name: user.name || user.email || "", email: user.email || "", role: user.role },
       accounts,
       plans: { open: openPlans, history: history.plans.filter(visiblePlan), next: history.next },
+      requests,
       agents: agents.map((agent) => {
         const rows = usage.filter((row) => row.agentId === agent.id);
         const running = live.filter((trace) => trace.agentId === agent.id).map((trace) => {
@@ -580,7 +586,9 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     };
   };
 
-  const APP_EVENTS = new Set(["trace", "subscription-usage", "agents", "agent-owners", "plan"]);
+  const APP_EVENTS = new Set(["trace", "subscription-usage", "agents", "agent-owners", "plan", "choice"]);
+  // In a chat the answer counts as the owner's word, so only the owner of the space gives it from the app; in a panel room whoever manages the agent.
+  const mayAnswer = (user, record) => user.role === "owner" || (isWebRoom(record.channelId) && Boolean(knowledge?.canManage(store.agent(record.agentId), user)));
   const appStreams = new Set();
 
   /** The native app's read-only API: one-time pairing, then a device token on every request. */
@@ -608,7 +616,15 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       try { return send(res, 200, { ...appAccess.setPush(device.id, body), enabled: Boolean(push?.enabled && push.apns) }); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
-    if (method !== "GET") throw new HttpError(405, "L’app legge soltanto.");
+    const choice = /^\/app\/v1\/choices\/(ch_[a-f0-9]{12})$/.exec(path);
+    if (choice && method === "POST") {
+      const body = await readJson(req, 4096);
+      const record = orchestrator.choices.get(choice[1]);
+      if (!record || !quotaAgentsFor(user).some((agent) => agent.id === record.agentId) || !mayAnswer(user, record)) throw new HttpError(404, "Domanda non trovata.");
+      try { return send(res, 200, await orchestrator.answerChoice(record.id, body.index, { user })); }
+      catch (error) { throw new HttpError(error.status || 400, error.message); }
+    }
+    if (method !== "GET") throw new HttpError(405, "L’app risponde solo alle scelte degli agenti.");
     if (path === "/app/v1/snapshot") return send(res, 200, await appSnapshot(user, req));
     if (path === "/app/v1/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
@@ -1104,7 +1120,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       const [, encodedThreadId, planId, action, taskId] = planAction;
       const id = decodeURIComponent(encodedThreadId);
       const detail = await orchestrator.threadDetail(id, threadScope);
-      if (!detail?.thread.thread) throw new HttpError(404, "thread non trovato");
+      if (!detail) throw new HttpError(404, "thread non trovato");
       if (method === "POST" && !action) {
         const body = await readJson(req, 40000);
         const agent = threadPlanAgents(id).find(({ id }) => id === body?.agentId);
@@ -1143,10 +1159,10 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       if (!detail) throw new HttpError(404, "thread non trovato");
       if (knowledge) detail.traces = detail.traces.filter((trace) => ownsEntry(trace, user));
       detail.thread.flows = detail.thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) }));
-      if (detail.thread.thread) {
-        detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
-        detail.planAgents = !store.plans.hasOpen(detail.thread.id) ? threadPlanAgents(detail.thread.id).map(({ id, name }) => ({ id, name })) : [];
-      }
+      detail.plans = detail.plans.map((plan) => ({ ...plan, canClose: canStopFlow(plan.agentId) }));
+      detail.planAgents = threadPlanAgents(detail.thread.id)
+        .filter(({ id }) => !store.plans.open(detail.thread.id, id))
+        .map(({ id, name }) => ({ id, name }));
       return send(res, 200, detail);
     }
     if (["/api/threads", "/api/threads/rename", "/api/threads/close"].includes(path) && method === "POST" && user.role !== "owner") {

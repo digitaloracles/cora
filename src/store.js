@@ -603,7 +603,7 @@ function traceRow(row, full) {
     output: full ? row.output : row.output.slice(0, 240),
     error: row.error,
   };
-  if (full) Object.assign(trace, { system: row.system || "", prompt: row.prompt, steps: JSON.parse(row.steps) });
+  if (full) Object.assign(trace, { system: row.system || "", prompt: row.prompt, steps: JSON.parse(row.steps), requestOrigin: row.request_origin ? JSON.parse(row.request_origin) : null });
   return trace;
 }
 
@@ -646,6 +646,7 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
       try { this.db.exec(`ALTER TABLE traces ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`); } catch {}
     }
     try { this.db.exec("ALTER TABLE traces ADD COLUMN meter TEXT"); } catch {}
+    try { this.db.exec("ALTER TABLE traces ADD COLUMN request_origin TEXT"); } catch {}
     // The goal a task worked toward: the column is new, so older traces get it back from their "Obiettivo" notes.
     try {
       this.db.exec("ALTER TABLE traces ADD COLUMN goal TEXT NOT NULL DEFAULT ''");
@@ -1276,6 +1277,11 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     return Boolean(this.stmt("SELECT 1 FROM messages WHERE id = ?").get(String(id)));
   }
 
+  archivedMessage(channelId, id) {
+    const row = this.stmt("SELECT * FROM messages WHERE id = ? AND channel_id = ?").get(String(id), String(channelId));
+    return row ? messageRow(row) : null;
+  }
+
   /** The last messages of one channel, oldest first. */
   recentMessages(channelId, limit = 50) {
     return this.stmt("SELECT * FROM (SELECT * FROM messages WHERE channel_id = ? ORDER BY at DESC LIMIT ?) ORDER BY at").all(String(channelId), limit).map(messageRow);
@@ -1564,12 +1570,12 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
       systemHash = createHash("sha256").update(trace.system).digest("hex");
       this.stmt("INSERT OR IGNORE INTO trace_systems(hash, text) VALUES (?, ?)").run(systemHash, trace.system);
     }
-    this.stmt(`INSERT OR REPLACE INTO traces(id, agent_id, kind, channel_id, model, started_at, ended_at, status, step_count, tools, system_hash, prompt, steps, output, error, tokens_in, tokens_out, goal, meter)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    this.stmt(`INSERT OR REPLACE INTO traces(id, agent_id, kind, channel_id, model, started_at, ended_at, status, step_count, tools, system_hash, prompt, steps, output, error, tokens_in, tokens_out, goal, meter, request_origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       trace.id, trace.agentId, trace.kind, trace.channelId || null, trace.model || "", trace.startedAt, trace.endedAt || null, trace.status,
       trace.steps.length + (trace.dropped || 0), tools, systemHash, trace.prompt || "", JSON.stringify(trace.steps), trace.output || "", trace.error || "",
       Number(trace.tokensIn) || 0, Number(trace.tokensOut) || 0, String(trace.goal || "").slice(0, 600),
-      trace.meter ? JSON.stringify(trace.meter) : null,
+      trace.meter ? JSON.stringify(trace.meter) : null, trace.requestOrigin ? JSON.stringify(trace.requestOrigin) : null,
     );
     if (trace.status !== "running" && Math.random() < 0.05) this.pruneTraces(trace.agentId);
   }
@@ -1588,9 +1594,14 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
       .all(agentId, limit).map((row) => traceRow(row, false));
   }
 
-  latestHumanMessage(channelId) {
-    const row = this.stmt("SELECT * FROM messages WHERE channel_id = ? AND kind IN ('owner', 'human') ORDER BY at DESC LIMIT 1").get(String(channelId));
+  latestHumanMessage(channelId, before = Number.MAX_SAFE_INTEGER) {
+    const row = this.stmt("SELECT * FROM messages WHERE channel_id = ? AND kind IN ('owner', 'human') AND at <= ? ORDER BY at DESC LIMIT 1").get(String(channelId), before);
     return row ? messageRow(row) : null;
+  }
+
+  /** The latest human messages of one channel up to `before`, newest first. */
+  latestHumanMessages(channelId, before = Number.MAX_SAFE_INTEGER, limit = 20) {
+    return this.stmt("SELECT * FROM messages WHERE channel_id = ? AND kind IN ('owner', 'human') AND at <= ? ORDER BY at DESC LIMIT ?").all(String(channelId), before, limit).map(messageRow);
   }
 
   agentThreadTraces(agentId, channelId, since = 0, limit = 4) {

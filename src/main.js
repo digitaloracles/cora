@@ -155,6 +155,15 @@ export function startCora(overrides = {}) {
   // The company brain lives in Postgres (pgvector); without its URL the agents simply have no brain to read.
   const companyBrain = new CompanyBrain({ url: cfg.brainDatabaseUrl, embed: (model, texts) => llm.embed(model, texts, cfg.brainEmbedUrl), embedModel: () => store.settings.brainEmbedModel, log: activity, assertWritable: () => store.assertContentWriteAllowed() });
   const knowledge = new KnowledgeSources({ store, internal: companyBrain, storeSecret, tokenFor, allowLocal: cfg.knowledgeAllowLocal === true, ownerMemory: cfg.ownerMemory === true });
+  store.plans.canShare = (firstId, secondId) => {
+    if (firstId === secondId) return true;
+    const first = store.agent(firstId), second = store.agent(secondId);
+    if (!first || !second || knowledge.isSealed(first) || knowledge.isSealed(second)) return false;
+    if (!knowledge.ownerMemory) return true;
+    const owners = knowledge.proprietorIds(first);
+    const otherOwners = knowledge.proprietorIds(second);
+    return owners.length > 0 && owners.length === otherOwners.length && owners.every((id) => otherOwners.includes(id));
+  };
   knowledge.onSealChanged = async (agent) => {
     const desktop = await boxes.inspect(agent.id);
     if (desktop.exists || agent.tools) await boxes.upgrade(agent);
@@ -186,6 +195,7 @@ export function startCora(overrides = {}) {
   // Every agent's Slack app listens: a channel is heard as long as one of them is in it.
   skBots.onGuild = (event, agentId) => orchestrator.onSlackMessage(event, agentId).catch((error) => activity({ type: "error", agentId, text: `slack: ${error.message}` }));
   skBots.onDirect = (agentId, event) => orchestrator.onSlackDirect(agentId, event).catch((error) => activity({ type: "error", agentId, text: `slack dm: ${error.message}` }));
+  skBots.onInteractive = (agentId, payload) => orchestrator.onSlackChoice(payload, agentId).catch((error) => activity({ type: "error", agentId, text: `pulsante Slack: ${error.message}` }));
   brain.ask = (agent, request, where) => orchestrator.askOwner(agent, request, where);
   // Threads opened and written in through Cora, never through another bot.
   brain.openThread = (agent, currentId, options) => orchestrator.openThread(agent, currentId, options);
@@ -314,6 +324,9 @@ export function startCora(overrides = {}) {
   slack.on("message", (event) => {
     orchestrator.onSlackMessage(event).catch((error) => activity({ type: "error", text: `slack: ${error.message}` }));
   });
+  slack.on("interactive", (payload) => {
+    orchestrator.onSlackChoice(payload).catch((error) => activity({ type: "error", text: `pulsante Slack: ${error.message}` }));
+  });
   slack.on("status", (status) => web.broadcast({ type: "slack", state: status.state, error: status.error }));
   const publishSlackChannels = () => {
     if (stopping) return;
@@ -338,6 +351,9 @@ export function startCora(overrides = {}) {
   telegram.on("message", (message) => {
     orchestrator.onTelegramMessage(message).catch((error) => activity({ type: "error", text: `telegram: ${error.message}` }));
   });
+  telegram.on("callback", (query) => {
+    orchestrator.onTelegramChoice(query).catch((error) => activity({ type: "error", text: `pulsante Telegram: ${error.message}` }));
+  });
   telegram.on("status", (status) => web.broadcast({ type: "telegram", state: status.state, error: status.error }));
   telegram.on("ready", () => activity({ type: "telegram", text: `connesso come @${telegram.user?.username}` }));
   telegram.on("chat", () => {
@@ -347,6 +363,9 @@ export function startCora(overrides = {}) {
   // Agents' own bots listen as well: their private chats, and groups the main bot is not in.
   tgBots.onMessage = (agentId, message) => {
     orchestrator.onTelegramMessage(message, agentId).catch((error) => activity({ type: "error", agentId, text: `telegram: ${error.message}` }));
+  };
+  tgBots.onCallback = (agentId, query) => {
+    orchestrator.onTelegramChoice(query, agentId).catch((error) => activity({ type: "error", agentId, text: `pulsante Telegram: ${error.message}` }));
   };
   tgBots.onChat = (info) => {
     if (info.type === "private" || JSON.stringify(telegram.chats.get(info.id)) === JSON.stringify(info)) return;

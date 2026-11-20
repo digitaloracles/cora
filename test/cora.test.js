@@ -657,7 +657,7 @@ test("external configuration MCP uses personal hashed credentials and the curren
   assert.match(packageVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(initialize.data.result.serverInfo.version, packageVersion, "the MCP server reports the release in package.json");
   const tools = (await f.rpc(alice, "tools/list")).data.result.tools;
-  assert.deepEqual(tools.map(tool => tool.name), ["cora_state", "cora_configurations", "cora_request"]);
+  for (const name of ["cora_state", "cora_configurations", "cora_request", "cora_agents_list", "cora_agent_overview"]) assert.ok(tools.some(tool => tool.name === name), name);
   const state = (await f.rpc(alice, "tools/call", { name: "cora_state", arguments: { userId: f.bob.user.id, role: "owner" } }, { headers: f.admin.headers })).data.result;
   assert.equal(state.structuredContent.data.currentUser.id, f.alice.user.id);
   assert.equal(state.structuredContent.data.version, packageVersion, "/api/state reports the release in package.json");
@@ -736,7 +736,9 @@ test("external configuration MCP restricts owner operations, read-only keys, exp
   }
   assert.equal(JSON.stringify(f.app.store.settings), before);
   assert.equal((await f.invoke(reader, { method: "PUT", path: "/api/settings", body: { language: "en" } })).data.result.structuredContent.status, 403);
-  assert.deepEqual((await f.rpc(reader, "tools/list")).data.result.tools.find(tool => tool.name === "cora_request").inputSchema.properties.method.enum, ["GET"]);
+  const readerTools = (await f.rpc(reader, "tools/list")).data.result.tools;
+  assert.deepEqual(readerTools.find(tool => tool.name === "cora_request").inputSchema.properties.method.enum, ["GET"]);
+  assert.ok(!readerTools.some(tool => tool.name === "cora_settings_update"), "a read-only access lists no write tool");
   assert.equal((await f.invoke(admin, { method: "PUT", path: "/api/settings", body: { language: "en" } })).data.result.structuredContent.status, 200);
   assert.equal(f.app.store.settings.language, "en");
   f.app.store.updateAccessPolicy({ domains: [], emails: ["bob@owner.test"] });
@@ -3847,6 +3849,8 @@ describe("agents in Discord", () => {
     assert.equal(run.geminiSettings.useG1Credits, false);
     assert.equal(run.geminiSettings.modelProvider, "");
     assert.deepEqual(Object.keys(run.geminiMcp.mcpServers), ["cora"]);
+    assert.equal(run.geminiMcp.mcpServers.cora.env.CORA_TOOLS_BUDGET, "60000", "Antigravity drops tools past its schema cap: Cora fits them under it");
+    assert.ok(run.geminiMcp.mcpServers.cora.env.CORA_TOOLS_CORE.split(",").includes("remember"));
     assert.ok(run.tools.includes("remember") && !run.tools.includes("shell"));
     assert.deepEqual(run.secretEnv, []);
     assert.ok(!existsSync(run.cwd), "the per-turn MCP configuration is removed");
@@ -6045,7 +6049,7 @@ describe("talking with the agents", () => {
     await quiet();
   });
 
-  test("a question to the owner lands where they are talking, mentions them, and their next message goes to the agent who asked", async () => {
+  test("a question to the owner lands where they are talking, mentions them, offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
     replies.set("Pino", () => ({ content: "Ci sono anch'io!" }));
     replies.set("Olga", (body) => {
       if (body.messages[body.messages.length - 1].role === "tool") return { content: "PASS" };
@@ -6057,16 +6061,62 @@ describe("talking with the agents", () => {
     await call(`/api/routines/${routine.id}/run`, { method: "POST" });
     await waitFor(() => posts("Olga").length > before, { what: "the question on Discord" });
     await quiet();
-    assert.deepEqual(posts("Olga").slice(before), [`<@${OWNER}> Cancello i file vecchi?\nRisposte: Sì · No`], "asked once, in the channel, pinging the owner");
+    assert.deepEqual(posts("Olga").slice(before), [`<@${OWNER}> Cancello i file vecchi?`], "asked once, in the channel, pinging the owner");
+    const asked = discord.state.webhookPosts.findLast((item) => item.username === "Olga");
+    assert.ok(asked.withComponents, "the webhook is told to keep the buttons");
+    assert.deepEqual(asked.components[0].components.map((button) => [button.label, button.custom_id]), [["Sì", `cora:choice:${olga.id}:0`], ["No", `cora:choice:${olga.id}:1`]]);
     const archived = app.store.recentMessages(CHANNEL, 5).find((item) => item.request);
-    assert.deepEqual([archived.content, archived.request.choices], ["Cancello i file vecchi?\nRisposte: Sì · No", ["Sì", "No"]]);
+    assert.deepEqual([archived.content, archived.request.choices], ["Cancello i file vecchi?", ["Sì", "No"]]);
     assert.ok(!(await call("/api/state")).data.requests.some((item) => item.agentId === olga.id), "a Discord question is not left pending on the panel");
 
-    discord.say({ content: "Sì" });
-    await waitFor(() => posts("Olga").includes("Perfetto, cancello."), { what: "Olga acting on the answer" });
+    const press = (user, name, index) => discord.dispatch("INTERACTION_CREATE", { id: String(BigInt(Date.now()) * 1000n + BigInt(index)), token: `choice${user}`, type: 3, channel_id: CHANNEL, guild_id: GUILD, member: { user: { id: user, username: name } }, message: { content: asked.content, components: asked.components }, data: { custom_id: `cora:choice:${olga.id}:${index}` } });
+    press(STRANGER, "Sara", 1);
+    const refused = await waitFor(() => discord.state.interactionAnswers.find((answer) => answer.token === `choice${STRANGER}`), { what: "a stranger refused" });
+    assert.equal(refused.type, 4, "a stranger cannot answer for the owner");
+    press(OWNER, "Sam", 0);
+    await waitFor(() => posts("Olga").includes("Perfetto, cancello."), { what: "Olga acting on the pressed answer" });
+    const chosen = discord.state.interactionAnswers.find((answer) => answer.token === `choice${OWNER}`);
+    assert.deepEqual([chosen.type, chosen.data.content, chosen.data.components], [7, `<@${OWNER}> Cancello i file vecchi?\n→ **Sì** (Sam)`, []], "the buttons give way to the answer chosen");
     await quiet();
     assert.ok(!posts("Pino").includes("Ci sono anch'io!"), "the answer goes to the agent who asked, not to the chattiest one");
     await call(`/api/routines/${routine.id}`, { method: "DELETE" });
+  });
+
+  test("a question with choices shows in the native app, the answer pressed there reaches the agent, and the Discord question shows it in place of its buttons", async () => {
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    replies.set("Olga", (body) => ({ content: lastChatLine(body).endsWith(": Rimando") ? "Va bene, rimando." : "Ok." }));
+    const pairing = (await call("/api/app/pairings", { method: "POST", body: {} })).data;
+    const exchanged = await fetch(base + "/app/v1/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Cora": "1" }, body: JSON.stringify({ code: new URL(pairing.link).searchParams.get("code"), name: "iPhone", platform: "iOS 26" }) });
+    const { token } = await exchanged.json();
+    const fromApp = async (path, body) => {
+      const response = await fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json", "X-Cora": "1" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      return { status: response.status, data: await response.json() };
+    };
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "Pubblico adesso?", choices: ["Pubblica", "Rimando"] }, { channelId: CHANNEL });
+    const request = (await fromApp("/app/v1/snapshot")).data.requests.find((item) => item.agentId === olga.id);
+    assert.deepEqual([request.question, request.choices, request.channelId, request.agentName], ["Pubblico adesso?", ["Pubblica", "Rimando"], CHANNEL, "Olga"]);
+    assert.equal((await fromApp(`/app/v1/choices/${request.id}`, { index: 7 })).status, 400, "only one of the answers offered");
+    assert.equal((await fromApp("/app/v1/choices/ch_000000000000", { index: 0 })).status, 404);
+    const answered = await fromApp(`/app/v1/choices/${request.id}`, { index: 1 });
+    assert.deepEqual([answered.status, answered.data.answer], [200, "Rimando"]);
+    await waitFor(() => posts("Olga").includes("Va bene, rimando."), { what: "Olga acting on the answer from the app" });
+    const edit = discord.state.messageEdits.at(-1);
+    assert.match(edit.content, new RegExp(`^<@${OWNER}> Pubblico adesso\\?\\n→ \\*\\*Rimando\\*\\* \\(.+\\)$`), "the question in the chat shows the answer chosen");
+    assert.deepEqual([edit.components, edit.webhookId, edit.authorized], [[], "500000000000000001", false], "its buttons go, through the webhook that posted it");
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === request.id), "answered, it leaves the app");
+    const again = await fromApp(`/app/v1/choices/${request.id}`, { index: 0 });
+    assert.deepEqual([again.status, again.data.error], [409, "Già risposta: Rimando"]);
+    await quiet();
+
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "E la newsletter?", choices: ["Sì", "No"] }, { channelId: CHANNEL });
+    const second = app.orchestrator.choices.open().find((item) => item.agentId === olga.id);
+    const asked = discord.state.webhookPosts.findLast((item) => item.username === "Olga");
+    discord.dispatch("INTERACTION_CREATE", { id: String(BigInt(Date.now()) * 1000n + 9n), token: "choice-app", type: 3, channel_id: CHANNEL, guild_id: GUILD, member: { user: { id: OWNER, username: "Sam" } }, message: { id: second.ref.messageId, content: asked.content, components: asked.components }, data: { custom_id: `cora:choice:${olga.id}:1` } });
+    await waitFor(() => app.orchestrator.choices.get(second.id).status === "answered", { what: "the Discord press closing the question" });
+    assert.deepEqual([app.orchestrator.choices.get(second.id).answer, app.orchestrator.choices.get(second.id).via], ["No", "discord"]);
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === second.id), "pressed on Discord, it leaves the app too");
+    await quiet();
   });
 
   test("Cora harness: a task goes past the old 14 steps, an agent that announces work is sent back to it, and the end is confirmed before posting", async () => {
@@ -7288,7 +7338,7 @@ test("thread plans run sequentially and link reasoning to each checklist item", 
   await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === thread.id && post.content === "PLAN_EXECUTED_OK"));
   const firstTurn = observations[0];
   const system = firstTurn.messages.find((message) => message.role === "system")?.content ?? "";
-  assert.match(system, /«fammi un piano»\), crea o aggiorna prima la checklist in Piani di Cora, in questo thread, anche se il progetto usa Linear\./);
+  assert.match(system, /«fammi un piano»\), crea o aggiorna prima la checklist in Piani di Cora, in questa conversazione \(thread o canale\), anche se il progetto usa Linear\./);
   assert.deepEqual(firstTurn.tools.map(({ function: tool }) => tool.name).filter((name) => name.startsWith("thread_plan_")).sort(),
     ["thread_plan_advance", "thread_plan_close", "thread_plan_create", "thread_plan_list", "thread_plan_resume", "thread_plan_update"]);
   assert.ok(!observations[0].tools.some(({ function: tool }) => tool.name === "shell"));
@@ -7307,6 +7357,35 @@ test("thread plans run sequentially and link reasoning to each checklist item", 
     assert.ok(!evidence.includes("REASONING_FOR_STEP_" + (2 - index)));
     assert.equal((await f.request(f.bob, address)).status, 404);
   }
+});
+
+test("plans work in a plain channel too: the turn gets the plan tools and the panel shows the plan", async (t) => {
+  const network = await fakeDiscord();
+  const f = await knowledgeWorld({ discordToken: "fixture-discord-channel-plans", discordApi: network.url });
+  t.after(async () => { await f.close(); await network.close(); });
+  f.app.store.updateSettings({ transport: "discord", transports: ["discord"], guildIds: [GUILD], ownerIds: [OWNER] });
+  const agent = f.app.store.createAgent({ name: "ChannelPlanner", model: "ollama/test-model", tools: false, brainOwnerId: f.alice.user.id, ownerId: "discord:" + OWNER, channelIds: [CHANNEL], chattiness: 0 });
+  await waitFor(() => f.app.discord.state === "ready");
+  const observations = [];
+  f.state.answer = (body) => {
+    if (!body.tools?.length) return { content: JSON.stringify({ leave: [] }) };
+    observations.push(body);
+    const plan = f.app.store.plans.list(CHANNEL, [agent.id])[0];
+    if (!plan) return { tool_calls: [{ function: { name: "thread_plan_create", arguments: { name: "Channel checks", items: ["Verify the channel plan"] } } }] };
+    if (plan.status === "completed") return { content: "CHANNEL_PLAN_OK" };
+    return { tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: plan.id, revision: plan.revision, step: 1 } } }] };
+  };
+  network.say({ content: "@ChannelPlanner, fammi un piano qui nel canale.", channel: CHANNEL });
+  await waitFor(() => network.state.webhookPosts.some((post) => post.channelId === CHANNEL && post.content === "CHANNEL_PLAN_OK"));
+  const system = observations[0].messages.find((message) => message.role === "system")?.content ?? "";
+  assert.match(system, /checklist in Piani di Cora, in questa conversazione \(thread o canale\)/);
+  assert.deepEqual(observations[0].tools.map(({ function: tool }) => tool.name).filter((name) => name.startsWith("thread_plan_")).sort(),
+    ["thread_plan_advance", "thread_plan_close", "thread_plan_create", "thread_plan_list", "thread_plan_resume", "thread_plan_update"]);
+  const view = (await f.request(f.alice, "/api/threads/" + CHANNEL)).data;
+  assert.equal(view.thread.thread, false);
+  assert.equal(view.plans.length, 1);
+  assert.equal(view.plans[0].status, "completed");
+  assert.equal(view.plans[0].name, "Channel checks");
 });
 
 test("thread plans let a panel owner create and close while other agents and threads stay isolated", async (t) => {
@@ -7334,7 +7413,14 @@ test("thread plans let a panel owner create and close while other agents and thr
   const outcomes = await Promise.all([create(f.alice, agent.id), create(f.alice, agent.id)]);
   assert.deepEqual(outcomes.map(({ status }) => status).sort(), [201, 409]);
   const plan = outcomes.find(({ status }) => status === 201).data;
-  assert.deepEqual((await f.request(f.bob, path)).data.plans, []);
+  assert.deepEqual((await f.request(f.alice, path)).data.planAgents, []);
+  const guestView = (await f.request(f.bob, path)).data;
+  assert.deepEqual(guestView.plans, []);
+  assert.deepEqual(guestView.planAgents, [{ id: other.id, name: other.name }]);
+  const second = await create(f.bob, other.id);
+  assert.equal(second.status, 201);
+  assert.deepEqual((await f.request(f.bob, path)).data.plans.map(({ id }) => id), [second.data.id]);
+  assert.deepEqual((await f.request(f.alice, path)).data.plans.map(({ id }) => id), [plan.id]);
   assert.deepEqual((await f.request(f.alice, elsewhere)).data.plans, []);
   const close = (actor, route, revision = plan.revision) => f.request(actor, route + "/plans/" + plan.id + "/close", { method: "POST", body: { revision } });
   assert.equal((await close(f.bob, path)).status, 404);
@@ -7372,6 +7458,34 @@ test("thread plans let a panel owner create and close while other agents and thr
   assert.equal(ended.status, "closed");
   assert.equal(ended.done, 0);
   assert.equal(ended.tasksWithReasoning.length, 1);
+  const secondView = (await f.request(f.bob, path)).data;
+  assert.equal(secondView.plans[0].id, second.data.id);
+  assert.equal(secondView.plans[0].status, "active");
+  assert.equal(secondView.plans[0].revision, second.data.revision);
+});
+
+test("thread plans let agents link shared prerequisites without exposing another owner's plan", async (t) => {
+  const f = await knowledgeWorld();
+  t.after(f.close);
+  const agent = f.app.store.createAgent({ name: "Builder", brainOwnerId: f.alice.user.id });
+  const peer = f.app.store.createAgent({ name: "Tester", brainOwnerId: f.alice.user.id });
+  const foreign = f.app.store.createAgent({ name: "Foreign", brainOwnerId: f.bob.user.id });
+  const channelId = "800000000000000065";
+  const call = (actor, name, args = {}) => executeTool({ name: "thread_plan_" + name, args },
+    { agent: actor, channelId, canManagePlan: true, store: f.app.store });
+  const create = async (actor, args) => JSON.parse((await call(actor, "create", args)).text);
+  const source = await create(agent, { name: "Source", items: ["Publish test data"] });
+  const hidden = await create(foreign, { name: "Private plan", items: ["Private item"] });
+  const shared = JSON.parse((await call(peer, "list", { include_peers: true })).text);
+  assert.deepEqual(shared.map(({ id }) => id), [source.id]);
+  const denied = await call(peer, "create", { name: "Denied", items: ["Try private source"], dependencies: [{ plan_id: hidden.id }] });
+  assert.match(denied.text, /^error: choose an available prerequisite/);
+  const client = await create(peer, { name: "Client", items: ["Use test data"], dependencies: [{ plan_id: source.id }] });
+  assert.equal(client.next, null);
+  assert.deepEqual(JSON.parse((await call(peer, "list")).text).map(({ id }) => id), [client.id]);
+  await call(agent, "advance", { id: source.id, revision: source.revision, step: 1 });
+  const toolOutput = await call(peer, "advance", { id: client.id, revision: client.revision, step: 1 });
+  assert.equal(JSON.parse(toolOutput.text).status, "completed");
 });
 
 test("thread plans resume the saved next step instead of an interrupted trace's stale checklist", async (t) => {
@@ -7398,6 +7512,66 @@ test("thread plans resume the saved next step instead of an interrupted trace's 
   assert.match(resumedPrompt, /"done":1,"next":2/);
   assert.equal(f.app.store.plans.list(channel.id, [agent.id])[0].status, "completed");
   assert.equal(f.app.store.plans.traceTasks([result.traceId])[0].taskId, first.items[1].id);
+});
+
+test("restart recovery restores plan tools from the original request even without transport history", async (t) => {
+  const f = await knowledgeWorld({ ownerIds: [OWNER] }); t.after(f.close);
+  const { app } = f;
+  const agent = app.store.createAgent({ name: "Recovery plans", model: "ollama/test-model", tools: true, brainOwnerId: f.alice.user.id });
+  const scenarios = [
+    { name: "legacy owner", requestKind: "owner", authorId: OWNER, origin: null, marker: true, allowed: true },
+    { name: "legacy owner followed by more owner messages", requestKind: "owner", authorId: OWNER, origin: null, marker: true, followUps: 3, allowed: true },
+    { name: "legacy request repeated by another sender with the same name", requestKind: "human", authorId: STRANGER, origin: null, marker: true, impostor: true, allowed: false },
+    { name: "legacy request repeated by the same owner", requestKind: "owner", authorId: OWNER, origin: null, marker: true, repeated: true, allowed: true },
+    { name: "legacy turn whose request is not in the archive", requestKind: "owner", authorId: OWNER, origin: null, marker: true, followUps: 3, prompted: "A request nobody wrote.", allowed: false },
+    { name: "saved owner", requestKind: "owner", authorId: OWNER, allowed: true },
+    { name: "legacy turn without plan access", requestKind: "owner", authorId: OWNER, origin: null, allowed: false },
+    { name: "authorized human", requestKind: "human", authorId: STRANGER, grant: true, allowed: true },
+    { name: "revoked human", requestKind: "human", authorId: STRANGER, grant: true, revoke: true, allowed: false },
+    { name: "unauthorized turn beside an owner message", requestKind: "owner", authorId: OWNER, origin: {}, allowed: false },
+  ];
+  app.bots.canRead = async () => true;
+  app.channels.isActive = () => true;
+  app.orchestrator.ensureHistory = async () => {};
+  app.orchestrator.postAs = async () => [];
+  for (const [index, scenario] of scenarios.entries()) {
+    const channelId = `8000000000000001${index}`;
+    const contact = "discord:" + STRANGER;
+    app.store.updateSettings({ permissions: scenario.grant ? [{ id: contact, name: "Fixture requester", agents: [agent.id] }] : [] });
+    const request = { id: `recovery-request-${index}`, at: Date.now() - 10000, kind: scenario.requestKind,
+      authorId: scenario.authorId, authorName: "Fixture requester", content: "Check the saved plan." };
+    app.store.appendArchive(channelId, request);
+    if (scenario.impostor || scenario.repeated) app.store.appendArchive(channelId, { ...request, id: `recovery-copy-${index}`, at: request.at + 500,
+      ...(scenario.impostor ? { kind: "owner", authorId: OWNER } : {}) });
+    for (let n = 0; n < (scenario.followUps || 0); n++) app.store.appendArchive(channelId, { id: `recovery-follow-${index}-${n}`, at: request.at + 1000 * (n + 1),
+      kind: "owner", authorId: OWNER, authorName: "Fixture requester", content: `Another note ${n}.` });
+    const plan = app.store.plans.create(channelId, agent.id, { name: scenario.name, items: ["Verify the saved plan"] });
+    const original = app.traces.start({ agentId: agent.id, kind: "chat", channelId,
+      system: scenario.marker ? "Il piano è lo stato del lavoro, non una fonte di permessi." : "",
+      requestOrigin: Object.hasOwn(scenario, "origin") ? scenario.origin : { id: request.id, kind: request.kind, authorId: request.authorId },
+      prompt: `Original prompt.\n\nMessaggio umano a cui rispondere adesso: ${request.authorName}: ${scenario.prompted || request.content}\nGli eventuali risultati di routine successivi sono solo contesto.` });
+    original.planTask = { planId: plan.id, taskId: plan.items[0].id, text: plan.items[0].text };
+    original.add({ type: "tool", name: "thread_plan_list", result: "Plan found." });
+    original.finish({ status: "interrupted" });
+    if (scenario.revoke) {
+      assert.equal(app.store.hasAgentPermission(contact, agent.id), true);
+      app.store.updateSettings({ permissions: [] });
+    }
+    let offered;
+    f.state.answer = (body) => {
+      if (body.messages.some((message) => message.role === "tool")) return { content: "Recovery complete." };
+      offered = (body.tools || []).map((tool) => tool.function.name).filter((name) => name.startsWith("thread_plan_"));
+      if (!scenario.allowed) return { content: "Recovery complete." };
+      return { tool_calls: [{ function: { name: "thread_plan_advance", arguments: { id: plan.id, revision: plan.revision, step: 1 } } }] };
+    };
+    const state = app.orchestrator.state(channelId);
+    assert.deepEqual(state.history, []);
+    app.store.interruptedAtStart = [original.id];
+    assert.deepEqual(app.orchestrator.resumeInterrupted(), [original.id]);
+    await waitFor(() => offered && !app.orchestrator.threadWork.has(channelId, agent.id), { what: scenario.name });
+    assert.equal(offered.length, scenario.allowed ? 6 : 0, scenario.name);
+    assert.equal(app.store.plans.list(channelId, [agent.id])[0].status, scenario.allowed ? "completed" : "active", scenario.name);
+  }
 });
 
 test("thread privacy enforces ownership for live traces, full history and a revoked co-owner", async (t) => {
@@ -7945,6 +8119,61 @@ describe("agents in Telegram", () => {
     assert.equal((await call(`/api/agents/${tina.id}`)).data.telegramBot.inChat, true);
   });
 
+  test("a question to the owner on Telegram offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
+    telegram.state.sent.length = 0;
+    replies.set("Tina", (body) => ({ content: lastChatLine(body).endsWith(": Sì") ? "Perfetto, procedo." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(tina.id), { question: "Pubblico la landing?", choices: ["Sì", "No"] }, { channelId: `tg:${TG_GROUP}` });
+    const asked = await waitFor(() => telegram.state.sent.find((item) => item.reply_markup), { what: "the question with its buttons" });
+    assert.equal(asked.token, TINA_TG, "asked through Tina's own bot, which hears the press");
+    assert.equal(asked.text, "Pubblico la landing?", "the answers are buttons, not a text line");
+    assert.deepEqual(asked.reply_markup.inline_keyboard, [[{ text: "Sì", callback_data: `cora:choice:${tina.id}:0` }], [{ text: "No", callback_data: `cora:choice:${tina.id}:1` }]]);
+    const message = { message_id: 777, chat: { id: Number(TG_GROUP), type: "supergroup", title: "La banda" }, text: "Pubblico la landing?", reply_markup: asked.reply_markup };
+
+    telegram.press({ from: { id: Number(TG_STRANGER), first_name: "Ospite", is_bot: false }, message, data: `cora:choice:${tina.id}:1` }, { to: [TINA_TG] });
+    const refused = await waitFor(() => telegram.state.answers.find((answer) => answer.text), { what: "a stranger refused" });
+    assert.match(refused.text, /Può rispondere solo il proprietario/);
+    assert.equal(telegram.state.edits.length, 0, "a refused press leaves the buttons in place");
+
+    telegram.press({ from: seb, message, data: `cora:choice:${tina.id}:0` }, { to: [TINA_TG] });
+    await waitFor(() => telegram.state.sent.some((item) => item.text === "Perfetto, procedo."), { what: "Tina acting on the pressed answer" });
+    const edit = telegram.state.edits.find((item) => item.method === "editMessageText");
+    assert.deepEqual([edit.token, edit.message_id, edit.text], [TINA_TG, 777, "Pubblico la landing?\n→ Sì (Seb)"], "the buttons give way to the answer chosen");
+    assert.deepEqual(edit.entities, [{ type: "bold", offset: 23, length: 2 }]);
+    assert.equal(edit.reply_markup, undefined);
+    assert.equal(telegram.state.answers.length, 2, "every press is answered, so the button stops spinning");
+    const pressed = app.orchestrator.choices.all().findLast((item) => item.agentId === tina.id && item.question === "Pubblico la landing?");
+    assert.deepEqual([pressed.status, pressed.answer, pressed.via], ["answered", "Sì", "telegram"], "pressed in the chat, it leaves the native app too");
+    await quiet();
+
+    const before = app.store.agent(tina.id);
+    app.store.updateAgent(tina.id, { ...before, ownerIds: [`telegram:${TG_OWNER}`] });
+    assert.deepEqual(app.store.agentOwnerChats(app.store.agent(tina.id)), [`telegram:${TG_OWNER}`]);
+    try {
+      telegram.state.sent.length = 0;
+      app.orchestrator.requestsByAgent.delete(tina.id);
+      replies.set("Tina", () => ({ content: "PASS" }));
+      await app.orchestrator.askOwner(app.store.agent(tina.id), { question: "Pubblico anche il blog?", choices: ["Sì", "No"] }, { channelId: `tg:${TG_GROUP}`, replyTo: { authorId: TG_OWNER, authorName: "Seb" } });
+      const mentioned = await waitFor(() => telegram.state.sent.find((item) => item.reply_markup), { what: "the question to a Telegram owner" });
+      assert.equal(mentioned.text, `<a href="tg://user?id=${TG_OWNER}">Seb</a> Pubblico anche il blog?`, "a group gets a real Telegram mention of the owner");
+      assert.doesNotMatch(mentioned.text, /<@/, "never the Discord mention markup");
+      assert.equal(mentioned.parse_mode, "HTML");
+      await quiet();
+
+      const open = app.orchestrator.choices.open().find((item) => item.agentId === tina.id);
+      assert.equal(open.question, "Pubblico anche il blog?");
+      telegram.state.edits.length = 0;
+      assert.deepEqual(await app.orchestrator.answerChoice(open.id, 1, { authorName: "Seb" }), { id: open.id, answer: "No" });
+      const shown = await waitFor(() => telegram.state.edits.find((item) => item.method === "editMessageText"), { what: "the Telegram question showing the answer from the app" });
+      assert.deepEqual([shown.token, String(shown.message_id)], [TINA_TG, open.ref.messageId], "the question's own message, through the bot that sent it");
+      assert.match(shown.text, /Pubblico anche il blog\?\n→ No \(Seb\)$/);
+      assert.equal(shown.reply_markup, undefined, "its buttons go");
+      assert.equal(app.orchestrator.choices.get(open.id).via, "app");
+      await quiet();
+    } finally {
+      app.store.updateAgent(tina.id, before);
+    }
+  });
+
   test("Telegram group setup checks live privacy, membership and listening, then requires a human probe and its delivered reply", async () => {
     const path = `/api/agents/${tina.id}/telegram-setup`;
     const groupPath = `${path}?chatId=${TG_GROUP}`;
@@ -8177,6 +8406,7 @@ describe("agents in Slack", () => {
     assert.equal(hushVault.CORA_SK_APP_SILVIA, SILVIA_APP);
     assert.equal(linked.data.slackBot.user.username, "silvia");
     assert.ok(linked.data.slackBot.manifest.settings.socket_mode_enabled, "the manifest creates a Socket Mode app");
+    assert.equal(linked.data.slackBot.manifest.settings.interactivity.is_enabled, true, "with interactivity, so answer buttons can be pressed");
     assert.equal(linked.data.slackBot.manifest.features.bot_user.display_name, "Silvia");
 
     replies.set("Silvia", (body) => {
@@ -8269,6 +8499,8 @@ describe("agents in Slack", () => {
     assert.deepEqual([slack.state.manifests.get(silviaApp).display_information.name, slack.state.manifests.get(silviaApp).features.bot_user.display_name], ["Silvia", "Silvia"]);
     assert.equal(slack.state.manifests.get(silviaApp).display_information.description, "Silvia, agente di Cora");
     assert.equal(slack.state.manifests.get(silviaApp).settings.socket_mode_enabled, true, "the rest of the manifest stays as it was");
+    assert.equal(slack.state.manifests.get(silviaApp).settings.interactivity.is_enabled, true, "an app made before the answer buttons gets interactivity");
+    assert.equal(slack.state.manifests.get(mainApp).settings.interactivity.is_enabled, true);
     assert.equal(slack.state.manifests.get(mainApp).display_information.name, "Cora");
     assert.equal(slack.state.manifests.get(mainApp).display_information.description, "creata a mano", "Cora's own description is left alone");
 
@@ -8445,6 +8677,43 @@ describe("agents in Slack", () => {
     const post = await waitFor(() => slack.postsIn(SLACK_DM)[0], { what: "the private answer" });
     assert.equal(post.app, "silvia");
     assert.equal(slack.postsIn(SLACK_CHANNEL).length, 0, "nothing leaks into the channel");
+    await quiet();
+  });
+
+  test("a question to the owner on Slack offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
+    slack.state.posts.length = 0;
+    replies.set("Silvia", (body) => ({ content: lastChatLine(body).endsWith(": Sì") ? "Perfetto, procedo." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(silvia.id), { question: "Pubblico la landing?", choices: ["Sì", "No"] }, { channelId: `sl:${SLACK_CHANNEL}` });
+    const asked = await waitFor(() => slack.postsIn(SLACK_CHANNEL).find((post) => post.blocks), { what: "the question with its buttons" });
+    assert.equal(asked.app, "silvia", "asked through Silvia's own app, which hears the press");
+    const blocks = JSON.parse(asked.blocks);
+    assert.deepEqual(blocks[0], { type: "section", text: { type: "mrkdwn", text: `<@${SLACK_OWNER}> Pubblico la landing?` } }, "the answers are buttons, not a text line");
+    assert.deepEqual(blocks[1].elements.map((element) => [element.text.text, element.action_id, element.style]), [["Sì", `cora:choice:${silvia.id}:0`, "primary"], ["No", `cora:choice:${silvia.id}:1`, undefined]]);
+
+    slack.press(asked, `cora:choice:${silvia.id}:1`, SLACK_STRANGER);
+    const refused = await waitFor(() => slack.state.ephemeral[0], { what: "a stranger refused" });
+    assert.deepEqual([refused.user, refused.channel, refused.app], [SLACK_STRANGER, SLACK_CHANNEL, "silvia"]);
+    assert.match(refused.text, /Può rispondere solo il proprietario/);
+    assert.equal(slack.state.updates.length, 0, "a refused press leaves the buttons in place");
+
+    slack.press(asked, `cora:choice:${silvia.id}:0`);
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Perfetto, procedo."), { what: "Silvia acting on the pressed answer" });
+    const update = slack.state.updates[0];
+    assert.deepEqual([update.app, update.ts], ["silvia", asked.ts]);
+    assert.deepEqual(JSON.parse(update.blocks), [blocks[0], { type: "section", text: { type: "mrkdwn", text: "→ *Sì* (Sam)" } }], "the buttons give way to the answer chosen");
+    assert.equal(slack.state.updates.length, 1);
+    await quiet();
+
+    app.orchestrator.requestsByAgent.delete(silvia.id);
+    replies.set("Silvia", (body) => ({ content: lastChatLine(body).endsWith(": No") ? "Allora aspetto." : "PASS" }));
+    await app.orchestrator.askOwner(app.store.agent(silvia.id), { question: "E la newsletter?", choices: ["Sì", "No"] }, { channelId: `sl:${SLACK_CHANNEL}` });
+    const second = await waitFor(() => slack.postsIn(SLACK_CHANNEL).find((post) => post.blocks && post.text?.includes("newsletter")), { what: "the second question" });
+    const open = app.orchestrator.choices.open().find((item) => item.agentId === silvia.id);
+    assert.equal(open.ref.ts, second.ts);
+    await app.orchestrator.answerChoice(open.id, 1, { authorName: "Sam" });
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Allora aspetto."), { what: "Silvia acting on the answer from the app" });
+    const fromApp = slack.state.updates.at(-1);
+    assert.deepEqual([fromApp.app, fromApp.ts, JSON.parse(fromApp.blocks)[1].text.text], ["silvia", second.ts, "→ *No* (Sam)"], "the question in Slack shows the answer chosen in the app, through the app that posted it");
     await quiet();
   });
 

@@ -121,6 +121,8 @@ export async function fakeDiscord() {
     profilePatches: [],
     // Answers to pressed buttons: POST /interactions/<id>/<token>/callback.
     interactionAnswers: [],
+    // Messages rewritten afterwards: PATCH on a webhook's or a channel's message.
+    messageEdits: [],
     // Threads opened through the API: id -> the thread, and who opened it.
     threads: new Map(),
     nextId: 900000000000000000n,
@@ -172,6 +174,10 @@ export async function fakeDiscord() {
       if (req.method === "GET") return json(res, 200, []);
       return json(res, 200, { id: "500000000000000001", token: "webhook-token", name: "cora", application_id: BOT, channel_id: match[1] });
     }
+    if ((match = /^\/(?:webhooks\/(\d+)\/[^/]+|channels\/(\d+))\/messages\/(\d+)$/.exec(url.pathname)) && req.method === "PATCH") {
+      state.messageEdits.push({ webhookId: match[1] || "", channelId: match[2] || url.searchParams.get("thread_id") || "", messageId: match[3], authorized: Boolean(req.headers.authorization), ...JSON.parse(String(body || "{}")) });
+      return json(res, 200, { id: match[3] });
+    }
     if ((match = /^\/webhooks\/(\d+)\/([^/]+)$/.exec(url.pathname)) && req.method === "POST") {
       const payload = discordForm(req, body);
       const channelId = url.searchParams.get("thread_id") || CHANNEL;
@@ -179,7 +185,7 @@ export async function fakeDiscord() {
         id: id(), channel_id: channelId, guild_id: GUILD, content: payload.content, webhook_id: match[1],
         author: { id: match[1], username: payload.username, bot: true }, timestamp: new Date().toISOString(), attachments: [],
       };
-      state.webhookPosts.push({ ...payload, channelId, authorized: Boolean(req.headers.authorization) });
+      state.webhookPosts.push({ ...payload, channelId, authorized: Boolean(req.headers.authorization), withComponents: url.searchParams.get("with_components") === "true" });
       json(res, 200, message);
       setTimeout(() => dispatch("MESSAGE_CREATE", message), 20);
       return;
@@ -973,6 +979,9 @@ export async function fakeTelegram() {
     waiting: new Set(),
     // Files people sent, by file_id: what getFile and /file/ serve.
     files: new Map(),
+    // Button presses answered, and messages edited after them.
+    answers: [],
+    edits: [],
   };
   const ok = (res, result) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1026,6 +1035,10 @@ export async function fakeTelegram() {
         return ok(res, message({ text: params.text || params.caption || "" }));
       }
       case "sendChatAction": return ok(res, true);
+      case "answerCallbackQuery": state.answers.push({ token, ...params }); return ok(res, true);
+      case "editMessageText":
+      case "editMessageCaption":
+      case "editMessageReplyMarkup": state.edits.push({ token, method, ...params }); return ok(res, method === "editMessageReplyMarkup" ? true : message({ message_id: params.message_id, text: params.text }));
       case "setMyName": state.names.push({ token, name: params.name }); return ok(res, true);
       case "getChatAdministrators": return ok(res, [{ status: "creator", user: { id: Number(TG_OWNER), first_name: "Seb" } }]);
       case "getChatMember": return ok(res, state.memberStates.get(`${params.chat_id}:${params.user_id}`) || { status: state.members.has(`${params.chat_id}:${params.user_id}`) ? "member" : "left" });
@@ -1046,6 +1059,15 @@ export async function fakeTelegram() {
     /** A message in a chat, heard by every bot there is (a group), or only by `to` (a private chat with one bot). */
     push(message, { to = [...state.bots.keys()] } = {}) {
       state.updates.push({ update_id: state.nextUpdate++, to, message: { message_id: state.nextMessage++, date: Math.floor(Date.now() / 1000), ...message } });
+      for (const waiter of state.waiting) {
+        clearTimeout(waiter.timer);
+        state.waiting.delete(waiter);
+        waiter.deliver();
+      }
+    },
+    /** Someone pressing an inline button: only the bot that posted the message (`to`) hears it. */
+    press(query, { to }) {
+      state.updates.push({ update_id: state.nextUpdate++, to, callback_query: { id: String(state.nextUpdate * 7919), chat_instance: "1", ...query } });
       for (const waiter of state.waiting) {
         clearTimeout(waiter.timer);
         state.waiting.delete(waiter);
@@ -1101,6 +1123,9 @@ export async function fakeSlack() {
     iconError: "",
     configCalls: [],
     rotations: 0,
+    // Messages edited after a button press, and the notes only one person sees.
+    updates: [],
+    ephemeral: [],
   };
   const ok = (res, body) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1195,6 +1220,15 @@ export async function fakeSlack() {
         state.posts.push(message);
         return ok(res, { ts: message.ts, channel: params.channel });
       }
+      case "chat.update": {
+        const post = state.posts.find((item) => item.channel === params.channel && item.ts === params.ts);
+        if (!post || post.app !== app.name) return fail(res, "cant_update_message");
+        state.updates.push({ ...params, app: app.name });
+        return ok(res, { channel: params.channel, ts: params.ts });
+      }
+      case "chat.postEphemeral":
+        state.ephemeral.push({ ...params, app: app.name });
+        return ok(res, { message_ts: ts() });
       case "reactions.add":
       case "reactions.remove":
         state.reactions.push({ action: method.split(".")[1], channel: params.channel, ts: params.timestamp, name: params.name, app: app.name });
@@ -1330,6 +1364,24 @@ export async function fakeSlack() {
     },
     postsIn(channel) {
       return state.posts.filter((post) => (post.channel || post.channel_id) === channel);
+    },
+    /** Someone pressing a button on a posted message: Slack tells only the app that posted it. */
+    press(post, actionId, user = SLACK_OWNER) {
+      const blocks = JSON.parse(post.blocks || "[]");
+      const action = blocks.flatMap((block) => block.elements || []).find((element) => element.action_id === actionId);
+      if (!action) throw new Error(`no button ${actionId}`);
+      const app = [...state.apps.values()].find((entry) => entry.name === post.app);
+      const payload = {
+        type: "block_actions", user: { id: user, username: state.users.get(user)?.name || user }, api_app_id: `A${app.id.slice(1)}`,
+        container: { type: "message", message_ts: post.ts, channel_id: post.channel }, channel: { id: post.channel },
+        message: { type: "message", ts: post.ts, text: post.text, blocks, ...(post.thread_ts ? { thread_ts: post.thread_ts } : {}) },
+        actions: [{ ...action, block_id: "b", action_ts: `${Date.now() / 1000}` }], trigger_id: `trigger-${state.nextTs++}`,
+      };
+      for (const [socket, token] of state.sockets) {
+        if (token !== app.appToken) continue;
+        envelope += 1;
+        socket.write(encodeFrame(JSON.stringify({ envelope_id: `env-${envelope}`, type: "interactive", payload })));
+      }
     },
     close() {
       for (const socket of state.sockets.keys()) socket.destroy();

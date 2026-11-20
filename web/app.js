@@ -4506,7 +4506,7 @@ async function skillsTab(agent) {
   }
 
   function foundRow(found) {
-    const adopt = btn("Prendi in Cora", { icon: "download", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
+    const adopt = found.error ? null : btn("Prendi in Cora", { icon: "download", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
       const done = await guard(api(`${url}/${found.name}/adopt`, { method: "POST" }), tr("{name} ora è gestita da Cora", { name: found.name }));
       if (done) await reload();
     }) });
@@ -4519,7 +4519,7 @@ async function skillsTab(agent) {
       h("div", { class: "skill-text" },
         h("div", { class: "skill-title" }, h("b", { class: "skill-name" }, raw(found.name))),
         found.description ? h("p", { class: "skill-desc" }, raw(found.description)) : null,
-        h("div", { class: "skill-meta" }, [...found.where, ...found.linked.map((dir) => `${dir} ↪`)].map((dir) => h("code", {}, raw(`~/${dir}`))))),
+        h("div", { class: "skill-meta" }, [...found.where, ...found.linked.map((dir) => `${dir} ↪`)].map((dir) => h("code", {}, raw(`~/${dir}`))), found.error ? h("span", { class: "tag err" }, raw(found.error)) : null)),
       h("div", { class: "skill-actions row" }, adopt, remove));
   }
 
@@ -4601,6 +4601,7 @@ async function skillsTab(agent) {
 
   function drawCheck() {
     const check = data.check;
+    const checkedAt = Number(check?.checkedAt || check?.scannedAt || 0);
     const run = btn("Verifica ora", { icon: "refresh", cls: "sm", onclick: (event) => busy(event.currentTarget, async () => {
       const done = await guard(api(`${url}/check`, { method: "POST" }), "Verifica completata");
       if (done) await reload();
@@ -4633,7 +4634,7 @@ async function skillsTab(agent) {
           h("td", {}, skill.source ? skillState("upstream", result.upstream) : h("span", { class: "skill-led" }, h("i", { class: "dot" }), h("span", {}, "Dal desktop"))));
       })))) : null;
     checkPane.replaceChildren(
-      panel({ icon: "check", title: "Verifica", hint: check ? tr("Ultima verifica {when}", { when: fmtTime(new Date(check.checkedAt).toISOString(), true) }) : "Controlla la copia sul server, quella sul desktop e i link di ogni harness, la sorgente su GitHub e gli audit di skills.sh.", actions: [repair, run] },
+      panel({ icon: "check", title: "Verifica", hint: check && checkedAt ? tr("Ultima verifica {when}", { when: fmtTime(new Date(checkedAt).toISOString(), true) }) : "Controlla la copia sul server, quella sul desktop e i link di ogni harness, la sorgente su GitHub e gli audit di skills.sh.", actions: [repair, run] },
         data.skills.length ? [desktopLine ? h("div", { class: "badges" }, desktopLine) : null, matrix || empty("check", "Non ancora verificate.", null)]
           : empty("skill", "Nessuna skill da verificare.")),
       panel({ icon: "layers", title: "Come le vede ogni harness" },
@@ -10817,6 +10818,10 @@ const THREAD_PLAN_STATUS = {
   active: ["In corso", "agent"], blocked: ["Bloccato", "agent"], completed: ["Completato", "ok"], closed: ["Chiuso", ""],
 };
 
+function threadPlanStatus(plan) {
+  return plan.waitingOn?.length ? ["In attesa", "agent"] : THREAD_PLAN_STATUS[plan.status];
+}
+
 function threadPlansIndex() {
   const group = (status, title, emptyLabel) => {
     const list = h("div", { class: "thread-plan-list" });
@@ -10847,9 +10852,9 @@ function threadPlansIndex() {
         for (const plan of page.plans) plans.set(plan.id, plan);
         cursor = page.next || "";
         keyedChildren(list, [...plans.values()].map((plan) => ({
-          key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.threadName]),
+          key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.threadName, plan.waitingOn]),
           build: () => {
-            const [label, cls] = THREAD_PLAN_STATUS[plan.status];
+            const [label, cls] = threadPlanStatus(plan);
             return h("a", { class: "thread-plan thread-plan-index-row", href: threadPlanLink(plan.channelId, "piani", plan.id) },
               h("span", { class: "thread-plan-title" }, h("strong", {}, raw(plan.name)),
                 h("small", {}, raw(`${plan.threadName || plan.channelId} · ${plan.agentName}`))),
@@ -10886,8 +10891,64 @@ function threadPlanLink(threadId, section, planId, taskId) {
   return `${threadHref(threadId)}/${section}?${query}`;
 }
 
+function threadDependencyTree(threadId, plans) {
+  const byId = new Map(plans.map((plan) => [plan.id, plan]));
+  const nodes = new Map();
+  const nodeFor = (planId, taskId) => {
+    const key = planId + "/" + (taskId || "");
+    if (!nodes.has(key)) {
+      const plan = byId.get(planId);
+      const index = taskId && plan ? plan.items.findIndex(({ id }) => id === taskId) : -1;
+      const visible = plan && (!taskId || index >= 0);
+      const waiting = visible && taskId && index === plan.done && plan.waitingOn?.length;
+      const status = !visible ? ["Non disponibile", ""]
+        : !taskId ? threadPlanStatus(plan)
+        : index < plan.done ? ["Completato", "ok"]
+        : waiting ? ["In attesa", "agent"]
+        : index === plan.done && plan.status === "blocked" ? THREAD_PLAN_STATUS.blocked
+        : index + 1 === plan.next ? ["Pronto", "agent"]
+        : plan.status === "closed" ? THREAD_PLAN_STATUS.closed : ["Passo da fare", ""];
+      nodes.set(key, { plan, index, status, key, title: visible ? plan.items[index]?.text || plan.name : tr("Prerequisito non disponibile"),
+        href: visible ? threadPlanLink(threadId, "piani", planId, taskId) : "", prerequisites: [], dependents: [] });
+    }
+    return nodes.get(key);
+  };
+  for (const plan of plans) {
+    for (const edge of plan.dependencies || []) {
+      const dependent = nodeFor(plan.id, edge.itemId);
+      const prerequisite = nodeFor(edge.planId, edge.taskId);
+      dependent.prerequisites.push(prerequisite);
+      if (dependent.prerequisites.length === 1) prerequisite.dependents.push(dependent);
+    }
+  }
+  if (!nodes.size) return null;
+
+  const rendered = new Set();
+  const renderBranch = (node, depth = 0) => {
+    if (rendered.has(node.key)) return null;
+    rendered.add(node.key);
+    const [label, cls] = node.status;
+    const caption = node.href && (node.index >= 0 ? node.plan.name + " · " + node.plan.agentName : node.plan.agentName);
+    const title = h("span", { class: "thread-plan-title" }, h("strong", {}, raw(node.title)), caption ? h("small", {}, raw(caption)) : null);
+    const row = h(node.href ? "a" : "span", { href: node.href || null, class: "thread-dependency-node" }, title, tag(label, cls));
+    const alsoNeeds = node.prerequisites.slice(1);
+    return h("li", {}, row,
+      alsoNeeds.length ? h("div", { class: "thread-dependency-extra" }, h("span", {}, "Richiede anche"),
+        alsoNeeds.map((other) => h(other.href ? "a" : "span", { href: other.href || null }, raw(other.title)))) : null,
+      node.dependents.length ? h("ul", { class: depth < 4 ? "thread-dependency-branch" : "thread-dependency-branch shallow" },
+        node.dependents.map((child) => renderBranch(child, depth + 1))) : null);
+  };
+  const roots = [...nodes.values()].filter((node) => !node.prerequisites.length);
+  const branches = roots.map((node) => renderBranch(node));
+  for (const node of nodes.values()) if (!rendered.has(node.key)) branches.push(renderBranch(node));
+  return h("ul", { class: "thread-dependency-roots", "aria-label": "Albero delle dipendenze" }, branches);
+}
+
 function threadPlansPanel(threadId, apiRoot, refresh) {
   const active = h("div", { class: "thread-plan-list" });
+  const dependencyRoots = h("div", {});
+  const dependencyTree = h("section", { class: "thread-dependency-tree", hidden: true },
+    h("h3", { class: "label" }, "Dipendenze"), dependencyRoots);
   const past = h("div", { class: "thread-plan-list" });
   const history = h("div", { class: "thread-plan-history", hidden: true }, h("h3", { class: "label" }, "Storico dei piani"), past);
   const noPlans = empty("list", "Nessun piano in questo thread.");
@@ -10940,8 +11001,8 @@ function threadPlansPanel(threadId, apiRoot, refresh) {
     add.hidden = true;
     name.focus();
   } });
-  const view = panel({ icon: "list", title: "Piani", cls: "thread-plans-panel", actions: add }, form, active, noPlans, history);
-  let agentsSignature = "";
+  const view = panel({ icon: "list", title: "Piani", cls: "thread-plans-panel", actions: add }, form, dependencyTree, active, noPlans, history);
+  let agentsSignature = "", dependencySignature = "";
   const closeButton = (plan) => {
     let armed = false, busy = false;
     return btn("Chiudi piano", { icon: "stop", cls: "sm ghost", onclick: async (event) => {
@@ -10966,15 +11027,18 @@ function threadPlansPanel(threadId, apiRoot, refresh) {
     } });
   };
   const card = (plan, old, isOpen) => {
-    const [status, cls] = THREAD_PLAN_STATUS[plan.status];
+    const [status, cls] = threadPlanStatus(plan);
     const reasoned = new Set(plan.tasksWithReasoning.map((item) => item.id));
     const taskRow = (item, index = -1) => {
       const done = index >= 0 && index < plan.done;
       const next = index + 1 === plan.next;
-      const title = done ? "Passo completato" : next ? "Passo corrente" : index < 0 ? "Passo rimosso" : "Passo da fare";
+      const waiting = index === plan.done && Boolean(plan.waitingOn?.length);
+      const title = done ? "Passo completato" : next ? "Passo corrente" : index < 0 ? "Passo rimosso" : waiting ? "In attesa" : "Passo da fare";
       return h("li", { class: `thread-plan-step${done ? " done" : ""}${next ? " next" : ""}`, "data-task": item.id, "aria-current": next ? "step" : null },
         h("span", { class: "thread-plan-mark", title, "aria-label": title }, done ? icon("check") : index < 0 ? icon("minus") : raw(String(index + 1))),
-        h("span", { class: "thread-plan-text" }, raw(item.text)),
+        h("span", { class: "thread-plan-text" }, raw(item.text),
+          waiting ? h("small", { class: "thread-dependency-note" }, plan.waitingOn.some((edge) => edge.status === "unavailable")
+            ? "Prerequisito non disponibile" : "In attesa di un prerequisito") : null),
         reasoned.has(item.id) ? btn("", { icon: "bulb", cls: "sm ghost", title: tr("Ragionamento del passo: {step}", { step: item.text }), href: threadPlanLink(threadId, "ragionamento", plan.id, item.id) }) : null);
     };
     const removed = plan.tasksWithReasoning.filter((item) => !plan.items.some(({ id }) => id === item.id));
@@ -10995,8 +11059,17 @@ function threadPlansPanel(threadId, apiRoot, refresh) {
     const open = plans.filter((plan) => ["active", "blocked"].includes(plan.status));
     const closed = plans.filter((plan) => !open.includes(plan));
     const renderCards = (slot, records, isOpen) => keyedChildren(slot, records.map((plan) => ({
-      key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.canClose, plan.tasksWithReasoning.map(({ id }) => id)]), build: (old) => card(plan, old, isOpen),
+      key: plan.id, sig: JSON.stringify([plan.revision, plan.agentName, plan.canClose, plan.waitingOn, plan.tasksWithReasoning.map(({ id }) => id)]), build: (old) => card(plan, old, isOpen),
     })), () => false);
+    const dependencies = JSON.stringify(plans.map(({ id, revision, agentName, waitingOn }) => [id, revision, agentName, waitingOn]));
+    if (dependencySignature !== dependencies) {
+      dependencySignature = dependencies;
+      const focused = dependencyRoots.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
+      const tree = threadDependencyTree(threadId, plans);
+      dependencyTree.hidden = !tree;
+      dependencyRoots.replaceChildren(...(tree ? [tree] : []));
+      if (focused) [...dependencyRoots.querySelectorAll("a")].find((link) => link.getAttribute("href") === focused)?.focus({ preventScroll: true });
+    }
     renderCards(active, open, true);
     renderCards(past, closed, false);
     noPlans.hidden = plans.length > 0 || !form.hidden;
@@ -11191,7 +11264,7 @@ async function renderThreadPage(id) {
     reasoning.hidden = task;
     taskPanel.view.hidden = !task;
   };
-  const workspace = thread.thread ? sectionWorkspace({ title: "Thread", base: threadHref(id), current: route()[3] || "ragionamento", phoneSwitch: true,
+  const workspace = sectionWorkspace({ title: thread.thread ? "Thread" : "Canale", base: threadHref(id), current: route()[3] || "ragionamento", phoneSwitch: true,
     entries: [
       ["ragionamento", "Ragionamento", "bulb", "Ogni turno, dal più recente.", [reasoning, taskPanel.view]],
       ["piani", "Piani", "list", "Checklist", [plans.view]],
@@ -11199,7 +11272,7 @@ async function renderThreadPage(id) {
       key = location.hash;
       setReasoningView();
       app.querySelector(".appbar a.icon-btn")?.setAttribute("href", back);
-    } }) : reasoning;
+    } });
   const sigs = { agents: "", flows: "", manage: "", head: "" };
   const draw = (next) => {
     thread = next.thread;
@@ -11258,7 +11331,7 @@ async function renderThreadPage(id) {
     else list.after(listEmpty);
     toggleAll.hidden = traces.length <= 2;
     if (hint) hint.textContent = tr(traces.length >= 60 ? "Gli ultimi 60 turni, dal più recente." : "Ogni turno, dal più recente.");
-    if (thread.thread) plans.draw(next, params());
+    plans.draw(next, params());
   };
   draw(detail);
   shell([
@@ -11268,7 +11341,7 @@ async function renderThreadPage(id) {
     flowsSlot,
     workspace,
   ], { title: thread.name, back });
-  if (thread.thread && !taskPanel.view.hidden) void taskPanel.open(params().get("plan"), params().get("task"));
+  if (!taskPanel.view.hidden) void taskPanel.open(params().get("plan"), params().get("task"));
   let loading = false;
   let again = false;
   const refresh = async () => {

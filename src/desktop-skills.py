@@ -76,9 +76,16 @@ def check(expected):
     for name in sorted(os.listdir(folder)):
       path=os.path.join(folder,name)
       if name.startswith(".") or name in expected or not os.path.isfile(os.path.join(path,"SKILL.md")): continue
-      entry=found.setdefault(name,{"name":name,"where":[],"linked":[]})
+      entry=found.get(name)
+      if entry is None:
+        entry={"name":name,"where":[],"linked":[]}
+        meta=frontmatter(os.path.join(path,"SKILL.md"))
+        if "description" in meta: entry["description"]=meta["description"]
+        if meta.get("name") and meta["name"]!=name: entry["declared"]=meta["name"]
+        sizes=[os.path.getsize(item) for item in files_of(os.path.realpath(path),201).values()]
+        if len(sizes)>200 or sum(sizes)>4*1024*1024 or any(size>2*1024*1024 for size in sizes): entry["problem"]="skill too large to adopt (200 files, 4 MB)"
+        found[name]=entry
       (entry["linked"] if os.path.islink(path) else entry["where"]).append(rel)
-      if "description" not in entry: entry.update({k:v for k,v in frontmatter(os.path.join(path,"SKILL.md")).items() if k=="description"})
   return {"skills":skills,"found":sorted(found.values(),key=lambda e:e["name"])[:100]}
 def remove(names,everywhere):
   for name in names:

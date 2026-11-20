@@ -24,7 +24,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Each Slack app follows the panel, with no trip to Slack's site: the name,
  * the description and the bot's name through the app's manifest, the icon from
- * the agent's image. Slack lets an app configuration token do this. It lives
+ * the agent's image, and interactivity on for the answer buttons. Slack lets an app configuration token do this. It lives
  * twelve hours and is renewed with its refresh token, which changes at every
  * renewal: the newest is written back to hush, so a restart carries on.
  */
@@ -138,7 +138,8 @@ export class SlackApps {
 
   async syncNow({ key, botToken, name, description = "", iconUrl = "" }, force) {
     const previous = this.record(key);
-    const wanted = JSON.stringify({ name, description, iconUrl });
+    // Interactivity is part of what is wanted, so apps made before the answer buttons get it once.
+    const wanted = JSON.stringify({ name, description, iconUrl, interactive: true });
     if (!force && previous?.wanted === wanted && (!previous.error || Date.now() - Date.parse(previous.at) < RETRY_AFTER_ERROR_MS)) return previous;
     const record = { wanted, at: new Date().toISOString(), appId: previous?.appId || "", iconUrl: previous?.iconUrl || "", error: "" };
     try {
@@ -149,6 +150,8 @@ export class SlackApps {
       next.display_information = { ...next.display_information, name: name.slice(0, 35) };
       if (description) next.display_information.description = description.slice(0, 139);
       if (next.features?.bot_user) next.features.bot_user = { ...next.features.bot_user, display_name: name.slice(0, 80) };
+      // The answer buttons of ask_owner are pressed over Socket Mode: Slack delivers the press only with interactivity on.
+      next.settings = { ...next.settings, interactivity: { ...next.settings?.interactivity, is_enabled: true } };
       if (JSON.stringify(next) !== JSON.stringify(manifest)) await this.call("apps.manifest.update", { app_id: record.appId, manifest: next }, token);
       if (iconUrl && (force || iconUrl !== previous?.iconUrl)) {
         await this.call("apps.icon.set", { app_id: record.appId, url: iconUrl }, token);

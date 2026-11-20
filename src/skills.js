@@ -73,12 +73,17 @@ export function parseSource(input) {
 }
 
 const REPOSITORY_TTL = 5 * 60 * 1000;
+/** How long the desktop stays quiet after the agent's last command before Cora looks for skills put there outside it. */
+export const SKILL_SCAN_DELAY_MS = 15000;
+const skillName = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64);
 
 export class Skills {
-  constructor({ store, boxes = null, home, githubApi = "https://api.github.com", githubRaw = "https://raw.githubusercontent.com", skillsApi = "https://skills.sh", auditApi = "https://www.skills.sh/tele/audit", githubToken = "", fetch = globalThis.fetch, log = () => {}, now = Date.now }) {
-    Object.assign(this, { store, boxes, githubApi: githubApi.replace(/\/+$/, ""), githubRaw: githubRaw.replace(/\/+$/, ""), skillsApi: skillsApi.replace(/\/+$/, ""), auditApi, githubToken, fetchImpl: fetch, log, now });
+  constructor({ store, boxes = null, home, githubApi = "https://api.github.com", githubRaw = "https://raw.githubusercontent.com", skillsApi = "https://skills.sh", auditApi = "https://www.skills.sh/tele/audit", githubToken = "", fetch = globalThis.fetch, log = () => {}, now = Date.now, scanDelayMs = SKILL_SCAN_DELAY_MS }) {
+    Object.assign(this, { store, boxes, githubApi: githubApi.replace(/\/+$/, ""), githubRaw: githubRaw.replace(/\/+$/, ""), skillsApi: skillsApi.replace(/\/+$/, ""), auditApi, githubToken, fetchImpl: fetch, log, now, scanDelayMs });
     this.root = join(home, "skills");
     this.repositories = new Map();
+    this.pendingScans = new Map();
+    this.runningScans = new Map();
   }
 
   list(agentId) { return this.store.value(`agentSkills:${agentId}`, []); }
@@ -215,7 +220,7 @@ export class Skills {
     if (!skillFile) throw new SkillError(422, "La cartella non contiene SKILL.md.");
     const meta = parseFrontmatter(skillFile.data.toString("utf8"));
     if (!meta.name || !meta.description) throw new SkillError(422, "SKILL.md senza name o description nel front matter.");
-    const name = meta.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64);
+    const name = skillName(meta.name);
     if (!SKILL_NAME.test(name)) throw new SkillError(422, "Nome della skill non valido.");
     const before = this.find(agent.id, name);
     if (before && origin.origin === "github" && before.source && before.source !== origin.source) throw new SkillError(409, `${agent.name} ha già una skill ${name} da ${before.source}: rimuovila prima.`);
@@ -331,6 +336,69 @@ export class Skills {
   }
 
   /**
+   * The agent ran something on its desktop: once it has been quiet for a moment, look there for
+   * skills it put in place outside Cora (npx skills, a tool's own installer, a copied folder).
+   */
+  watch(agent) {
+    if (!this.boxes || !agent?.tools || !/^[\w-]+$/.test(agent.id || "")) return;
+    clearTimeout(this.pendingScans.get(agent.id));
+    const timer = setTimeout(() => {
+      this.pendingScans.delete(agent.id);
+      this.scan(agent.id).catch((error) => this.log({ type: "skill", agentId: agent.id, text: `controllo skill sul desktop non riuscito: ${error.message}` }));
+    }, this.scanDelayMs);
+    timer.unref?.();
+    this.pendingScans.set(agent.id, timer);
+  }
+
+  /**
+   * Every skill on the desktop shows in the agent's Skill tab: one found there outside Cora is
+   * taken under it (switched on, origin desktop), and one the owner switched off is taken off
+   * again. What cannot be taken (too large, no front matter) stays listed as found on the desktop.
+   */
+  async scan(agentId) {
+    if (this.runningScans.has(agentId)) return this.runningScans.get(agentId);
+    const running = this.scan_(agentId).finally(() => this.runningScans.delete(agentId));
+    this.runningScans.set(agentId, running);
+    return running;
+  }
+
+  async scan_(agentId) {
+    const agent = this.store.agent(agentId);
+    if (!agent?.tools) return { off: true, reason: "senza computer" };
+    const desktop = await this.desktop(agent, "check", { expected: this.expected(agent.id) });
+    if (desktop.off) return desktop;
+    const adopted = [];
+    const failed = [];
+    const off = [];
+    const by = { kind: "agent", id: agent.id, name: agent.name || "" };
+    for (const entry of desktop.found || []) {
+      const record = this.find(agent.id, entry.name) || (entry.declared ? this.find(agent.id, skillName(entry.declared)) : null);
+      if (record?.disabled) { if (!off.includes(record.name)) off.push(record.name); continue; }
+      if (record && record.name !== entry.name) { failed.push({ ...entry, error: `copia di ${record.name}, già gestita da Cora` }); continue; }
+      if (record) continue;
+      try {
+        const done = await this.adopt(agent, entry.name, by);
+        adopted.push(done.skill?.name || entry.name);
+      } catch (error) {
+        failed.push({ ...entry, error: error.message });
+      }
+    }
+    if (off.length) {
+      await this.sync(agent, off);
+      this.log({ type: "skill", agentId: agent.id, text: `skill spenta dal proprietario e rimessa sul desktop, tolta di nuovo: ${off.join(", ")}` });
+    }
+    for (const name of adopted) this.log({ type: "skill", agentId: agent.id, text: `skill trovata sul desktop, installata fuori da Cora: ${name} (ora gestita da Cora)` });
+    const previous = this.store.value(`agentSkillsCheck:${agent.id}`, null);
+    const known = new Set((previous?.found || []).map((entry) => entry.name));
+    for (const entry of failed.filter((item) => !known.has(item.name))) this.log({ type: "skill", agentId: agent.id, text: `skill sul desktop fuori da Cora: ${entry.name} (${entry.error})` });
+    const shown = (previous?.found || []).map((entry) => entry.name).sort().join("\0");
+    const now = failed.map((entry) => entry.name).sort().join("\0");
+    const at = Date.now();
+    if (adopted.length || off.length || shown !== now) this.store.setValue(`agentSkillsCheck:${agent.id}`, { ...(previous || { skills: {}, desktop: { state: "ok" } }), found: failed, checkedAt: at, scannedAt: at });
+    return { adopted, off, found: failed };
+  }
+
+  /**
    * Verify every skill: the server copy against its manifest, the desktop copy and the link of
    * each harness, whether the source has moved on, and the skills.sh audits.
    */
@@ -372,7 +440,12 @@ export class Skills {
         }
       } catch {}
     }));
-    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found: (desktop.found || []).filter((entry) => !this.find(agent.id, entry.name)) };
+    const found = (desktop.found || []).filter((entry) => !this.find(agent.id, entry.name)).map((entry) => {
+      if (entry.problem) return { ...entry, error: `desktop: ${entry.problem}` };
+      const managed = entry.declared ? this.find(agent.id, skillName(entry.declared)) : null;
+      return managed && managed.name !== entry.name ? { ...entry, error: `copia di ${managed.name}, già gestita da Cora` } : entry;
+    });
+    const result = { checkedAt: Date.now(), skills, desktop: desktop.off ? { state: "off", reason: desktop.reason } : desktop.error ? { state: "error", error: desktop.error } : { state: "ok" }, found };
     this.store.setValue(`agentSkillsCheck:${agent.id}`, result);
     return result;
   }
@@ -393,6 +466,8 @@ export class Skills {
 
   forget(agentId) {
     if (!/^[\w-]+$/.test(agentId)) return;
+    clearTimeout(this.pendingScans.get(agentId));
+    this.pendingScans.delete(agentId);
     rmSync(join(this.root, agentId), { recursive: true, force: true });
     this.store.setValue(`agentSkills:${agentId}`, []);
     this.store.setValue(`agentSkillsCheck:${agentId}`, null);

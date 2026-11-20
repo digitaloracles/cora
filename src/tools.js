@@ -10,10 +10,14 @@ const XDOTOOL_BUTTON = { click: "1", double_click: "1", right_click: "3", middle
 
 const planItems = { type: "array", items: { type: "string" }, minItems: 1, maxItems: 24 };
 const planVersion = { id: { type: "string" }, revision: { type: "integer", minimum: 1 } };
+const planDependencies = { type: "array", maxItems: 48, items: {
+  type: "object", properties: { step: { type: "integer", minimum: 1 }, plan_id: { type: "string" }, task_id: { type: "string" } },
+  required: ["plan_id"],
+} };
 const PLAN_TOOLS = [
-  { name: "thread_plan_list", description: "Read your plans in this thread, with the open plan first. Shows its revision, ordered checklist and next step.", parameters: { type: "object", properties: {} } },
-  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this thread. Save it before doing the work. Items are in execution order. Only one plan can be open in the thread.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems }, required: ["name", "items"] } },
-  { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears.", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" } }, required: ["id", "revision"] } },
+  { name: "thread_plan_list", description: "Read your plans in this conversation (thread or channel), with the open plan first. Shows its revision, ordered checklist and next step. Set include_peers to see shared plans and their prerequisite IDs.", parameters: { type: "object", properties: { include_peers: { type: "boolean" } } } },
+  { name: "thread_plan_create", description: "Save a named checklist for your authorized multi-step task in this conversation (thread or channel). Save it before doing the work. Items are in execution order. Each agent can have one open plan in this conversation. Other agents can run their own plans in parallel. For dependencies, step is your 1-based dependent step (omit for the entire plan), plan_id is the prerequisite plan, and task_id optionally selects a step of that plan.", parameters: { type: "object", properties: { name: { type: "string" }, items: planItems, dependencies: planDependencies }, required: ["name", "items"] } },
+  { name: "thread_plan_update", description: "Rename your open plan, replace its unfinished checklist in order, or record a real blocker. Completed items stay intact. Set blocked_reason to an empty string to resume when the blocker clears. Supply dependencies to replace all prerequisites for unfinished work (an empty array removes them).", parameters: { type: "object", properties: { ...planVersion, name: { type: "string" }, remaining: planItems, blocked_reason: { type: "string" }, dependencies: planDependencies }, required: ["id", "revision"] } },
   { name: "thread_plan_resume", description: "Attach this turn's reasoning to the next checklist task when you start or resume working on an existing plan. Use it before doing the work in this turn.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
   { name: "thread_plan_advance", description: "Mark the next 1-based checklist step done after it is verified. Then do the new next step. The final step completes the plan automatically.", parameters: { type: "object", properties: { ...planVersion, step: { type: "integer", minimum: 1 } }, required: ["id", "revision", "step"] } },
   { name: "thread_plan_close", description: "Close your open plan when the person asks to close or abandon it. Keeps the checklist and actual progress visible.", parameters: { type: "object", properties: planVersion, required: ["id", "revision"] } },
@@ -30,7 +34,7 @@ export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "rem
  * changing, pausing or deleting one touches nothing else — so they are not
  * locked behind the computer, which only opens when the owner is the one asking.
  */
-export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
+export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "skill_install", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
 
 export const TOOL_DEFS = [
   ...PLAN_TOOLS,
@@ -45,6 +49,11 @@ export const TOOL_DEFS = [
     name: "skill_read",
     description: "Read one of the skills installed for you (listed in your prompt under «Le tue skill»): its SKILL.md, or another of its files by relative path. Works on every model, with or without your desktop. Read a skill before a task its description matches, then follow it.",
     parameters: { type: "object", properties: { name: { type: "string", description: "the skill's name" }, file: { type: "string", description: "optional file inside the skill, e.g. references/api.md; default SKILL.md" } }, required: ["name"] },
+  },
+  {
+    name: "skill_install",
+    description: "Install or update a skill for yourself through Cora, when the owner asks you to: from GitHub (owner/repo, owner/repo@skill, a github.com/.../tree/... link, a skills.sh page or the whole `npx skills add ...` line). Cora keeps its copy, lists it in your Skill tab, puts it on your desktop in ~/.agents/skills for every harness and in your prompt from the next turn. Never install a skill with npx skills, a tool's own installer or by copying folders: Cora would only find it later on your desktop.",
+    parameters: { type: "object", properties: { source: { type: "string", description: "where the skill comes from, e.g. heygen-com/hyperframes or https://skills.sh/acme/kit/pdf" }, skill: { type: "string", description: "which skill, when the source holds several" } }, required: ["source"] },
   },
   {
     name: "git_commit",
@@ -270,12 +279,12 @@ export const TOOL_DEFS = [
   },
   {
     name: "ask_owner",
-    description: "Ask your owner something that needs their answer or decision: permission, a choice, missing information. Your owner is the person you belong to when you have one, otherwise the owner of the space. The question is posted in this conversation, addressed to them (it reaches the owner's phone), and their answer comes back to you here later: do not wait for it and do not repeat the question, just stop. Write the question so it makes sense on its own, and offer up to 4 short choices when they fit.",
+    description: "Ask your owner something that needs their answer or decision: permission, a choice, missing information. Your owner is the person you belong to when you have one, otherwise the owner of the space. The question is posted in this conversation, addressed to them (it reaches the owner's phone), and their answer comes back to you here later: do not wait for it and do not repeat the question, just stop. Write the question so it makes sense on its own, and offer up to 4 short choices when they fit: whenever you propose alternative solutions or need a yes/no, put them in choices instead of asking to type 1, 2 or 3. On Discord, Telegram and Slack they become buttons and the one pressed comes back to you as the answer.",
     parameters: {
       type: "object",
       properties: {
         question: { type: "string" },
-        choices: { type: "array", items: { type: "string" }, description: "optional quick answers, e.g. [\"Sì\", \"No\"]" },
+        choices: { type: "array", items: { type: "string" }, description: "optional quick answers, up to 4 short labels (at most 40 characters), e.g. [\"Sì\", \"No\"] or [\"Soluzione 1: cache\", \"Soluzione 2: coda\"]" },
       },
       required: ["question"],
     },
@@ -435,6 +444,7 @@ export function summarizeArgs(name, args) {
   if (name === "open_url") return String(args.url || "").slice(0, 300);
   if (name === "remember") return `${args.shared ? "(condiviso) " : ""}${String(args.fact || "").slice(0, 300)}`;
   if (name === "recall") return String(args.query || "").slice(0, 200);
+  if (name === "skill_install") return `${String(args.source || "")}${args.skill ? ` · ${String(args.skill)}` : ""}`.slice(0, 200);
   if (name === "skill_read") return `${String(args.name || "")}${args.file ? `/${String(args.file)}` : ""}`.slice(0, 200);
   if (name === "update_core") return `${String(args.text || "").length} caratteri`;
   if (name === "forget") return String(args.memory_id || "");
@@ -513,9 +523,12 @@ export async function executeTool(call, ctx) {
     const memoryCall = ["remember", "forget", "recall", "update_core", "brain_search", "brain_page", "brain_note"].includes(call.name);
     ctx.knowledge?.assertCurrent(agent);
     if (THREAD_PLAN_TOOLS.has(call.name)) {
-      if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current thread" };
+      if (!ctx.canManagePlan) return { text: "error: plans require an authorized task in the current conversation" };
       const operation = call.name.slice("thread_plan_".length);
-      const plan = operation === "list" ? store.plans.list(channelId, [agent.id], 20)
+      const list = () => args.include_peers ? store.plans.peerPlans(channelId, agent.id, 40).map((plan) => ({
+        ...plan, agentName: store.agent(plan.agentId)?.name || plan.agentId,
+      })) : store.plans.list(channelId, [agent.id], 20);
+      const plan = operation === "list" ? list()
         : operation === "create" ? store.plans.create(channelId, agent.id, args)
         : store.plans.change(channelId, agent.id, operation, args);
       return { text: JSON.stringify(plan) };
@@ -551,6 +564,17 @@ export async function executeTool(call, ctx) {
         if (read.error) return { text: `error: ${read.error}` };
         return { text: `skill ${read.name} · ${read.file}${read.files.length > 1 ? ` (files: ${read.files.join(", ")})` : ""}\n\n${read.text}` };
       }
+      case "skill_install": {
+        if (!ctx.skills) return { text: "error: this Cora has no skills" };
+        if (ctx.requester?.kind !== "owner") return { text: "error: skills are installed only on the owner's request: propose the source to the owner instead" };
+        try {
+          const done = await ctx.skills.install(agent, { source: String(args.source || ""), skill: String(args.skill || "") }, { kind: "agent", id: agent.id, name: agent.name || "", requestedBy: ctx.requester.name || ctx.requester.id || "" });
+          const desktop = done.desktop?.off ? `not on your desktop yet (${done.desktop.reason}): Cora copies it when the desktop is on` : done.desktop?.error ? `desktop: ${done.desktop.error}` : "on your desktop in ~/.agents/skills, linked for every harness";
+          return { text: `${done.updated ? "UPDATED" : "INSTALLED"}: ${done.skill.name} (${done.skill.files} files${done.skill.source ? `, from ${done.skill.source}` : ""}), in your Skill tab${done.skill.enabled ? "" : ", switched off by the owner"}; ${desktop}. Read it with skill_read({name: "${done.skill.name}"}).` };
+        } catch (error) {
+          return { text: `error: ${error.message}` };
+        }
+      }
       case "read_attachment": {
         const image = ctx.attachments?.get(String(args.attachment_id || ""));
         return image ? { text: `Image ${args.attachment_id}: ${image.label}`, image: image.data, mimeType: image.mimeType }
@@ -572,6 +596,7 @@ export async function executeTool(call, ctx) {
         await boxes.ensure(agent);
         const timeoutMs = Math.min(600, Math.max(1, Number(args.timeout_seconds) || 120)) * 1000;
         const result = await boxes.shell(agent.id, String(args.command), { timeoutMs });
+        ctx.skills?.watch?.(agent);
         const status = result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit ${result.code}`;
         return { text: `[${status}]\n${result.output || "(no output)"}` };
       }
