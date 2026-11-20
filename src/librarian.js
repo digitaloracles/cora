@@ -10,6 +10,9 @@ const PEOPLE_BACKFILL = "authorizedPeopleBackfill";
 const BATCH_CHARS = 24000;
 const PAGES_PER_BATCH = 15;
 const NAMED_PAGES = 5;
+const CANONICAL_PAGES = 6;
+const CANONICAL_KINDS = ["client", "project", "person"];
+const plain = (text) => ` ${String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
 const INDEX_PAGES = 200;
 // Grok Build keeps only the first ~96 KB and the last ~4 KB of a longer prompt and
 // drops the middle; smaller models have small windows too. The batch's chats, notes
@@ -255,6 +258,26 @@ export class Librarian {
     return batches;
   }
 
+  /**
+   * The client, project and person pages a batch is about, so the news lands in them
+   * and not in a new dated page (NOT-69): the person page of each human who speaks,
+   * then the pages whose title the chats or notes name, the most named first.
+   */
+  canonical(all, messages, text) {
+    const pages = all.filter((page) => CANONICAL_KINDS.includes(page.kind) && /^[a-z0-9-]+$/.test(page.slug || ""));
+    const picked = [];
+    for (const speaker of new Set(messages.filter((message) => message.kind !== "agent").map((message) => slugify(message.authorName)).filter(Boolean))) {
+      const people = pages.filter((page) => page.kind === "person" && (page.slug === speaker || page.slug.startsWith(`${speaker}-`)));
+      if (people.length === 1 && !picked.includes(people[0].slug)) picked.push(people[0].slug);
+    }
+    const said = plain(text);
+    const counted = pages.filter((page) => !picked.includes(page.slug)).map((page) => {
+      const names = [...new Set([plain(page.title), plain(page.slug)])].filter((name) => name.length >= 6);
+      return { slug: page.slug, hits: names.reduce((sum, name) => sum + (said.split(name).length - 1), 0) };
+    }).filter(({ hits }) => hits).sort((a, b) => b.hits - a.hits);
+    return [...picked, ...counted.map(({ slug }) => slug)].slice(0, CANONICAL_PAGES);
+  }
+
   when(at) {
     return new Date(at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: this.timezone });
   }
@@ -281,8 +304,9 @@ export class Librarian {
     const probe = [...messages.map((message) => message.content), ...notes.map((note) => note.text), ...shared.map((memory) => memory.text)].join(" ").slice(0, 4000);
     const asked = notes.map((note) => note.text).join(" ").toLowerCase();
     const named = all.filter((page) => /^[a-z0-9-]+$/.test(page.slug || "") && new RegExp(`(^|[^a-z0-9-])${page.slug}($|[^a-z0-9-])`).test(asked)).slice(0, NAMED_PAGES).map((page) => page.slug);
-    const found = (await this.brain.search(probe, { limit: 8 })).map((page) => page.slug).filter((slug) => !named.includes(slug));
-    const near = (await Promise.all([...named, ...found].map((slug) => this.brain.page(slug)))).filter(Boolean);
+    const canonical = this.canonical(all, messages, [...messages.map((message) => message.content), ...notes.map((note) => note.text), ...shared.map((memory) => memory.text)].join(" ")).filter((slug) => !named.includes(slug));
+    const found = (await this.brain.search(probe, { limit: 8 })).map((page) => page.slug).filter((slug) => !named.includes(slug) && !canonical.includes(slug));
+    const near = (await Promise.all([...named, ...canonical, ...found].map((slug) => this.brain.page(slug)))).filter(Boolean);
     const head = "Sei il bibliotecario di quest'azienda: tieni il brain aziendale, le pagine che dicono cosa sa l'azienda. Ogni pagina è un cliente (client), un progetto (project), una persona (person), una decisione (decision), una procedura (procedure) o un tema (topic).";
     const notesPart = noteLines.length ? `## Note degli agenti e ricordi condivisi\n${noteLines.join("\n")}` : "";
     const chatsPart = lines.length ? `## Conversazioni nuove\n${lines.join("\n")}` : "";
@@ -293,6 +317,8 @@ export class Librarian {
       "- Solo sapere durevole dell'azienda: clienti, progetti e il loro stato, persone e ruoli, decisioni (con data e chi), procedure, impegni e scadenze. Niente chiacchiere, saluti, prove tecniche o lavoro ormai superato.",
       "- Ogni fatto nuovo viene dalle conversazioni o dalle note qui sopra: in \"sources\" metti i riferimenti [m…], [n…] o [s…] da cui viene. Non inventare nulla.",
       "- Per cambiare una pagina esistente usa il suo slug e riscrivi il testo completo, tenendo tutto ciò che è ancora vero. Cambia solo le pagine che vedi qui sopra per intero: le altre dell'elenco servono a non creare doppioni.",
+      "- Clienti, progetti e persone hanno una pagina ciascuno, quella canonica: una novità su di loro (stato, rilascio, decisione, richiesta, scadenza) aggiorna quella pagina, con la data nel testo. Non creare una pagina tema datata per un singolo evento (es. «Progetto X: rilascio del 19/11») quando la pagina canonica esiste: se è qui sopra per intero, la novità va lì dentro; se manca, creala tu come client, project o person.",
+      "- Chi scrive nelle conversazioni e non è un agente è una persona: la sua pagina person dice chi è, per chi lavora, cosa segue e cosa ha chiesto, dalle sue parole. Non riempirla con le discussioni interne che la riguardano (diagnosi, difetti, permessi).",
       "- Se una cosa nuova contraddice la pagina non scegliere: scrivi entrambe le versioni con le date e spiega la contraddizione in \"conflict\".",
       "- Una pagina nuova solo se l'argomento non ne ha già una. Al massimo 15 pagine per risposta; se non c'è niente di nuovo da sapere, {\"pages\": []}.",
       "- Mai password, token, chiavi o altri segreti nelle pagine, nemmeno se compaiono nelle conversazioni: al più dove sono conservati (es. «in hush come NOME»).",
