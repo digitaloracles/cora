@@ -347,3 +347,28 @@ test("skill_install installs through Cora only on the owner's request", async (t
   assert.equal(beta.origin, "github");
   assert.match(app.brain.systemPrompt(app.store.agent(agent.id), { place: "test", computer: true }), /- beta: Beta helper/);
 });
+
+test("an external MCP client manages an agent's skills with one tool per action, including switching one off", async (t) => {
+  const { app, call } = await world(t);
+  const agent = app.store.createAgent({ name: "Remote skills", model: "hermes/test-model", tools: true });
+  const access = (await call("/api/mcp/tokens", { method: "POST", body: { name: "Skills client" } })).data;
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const tool = async (name, args = {}) => {
+    const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${access.token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
+    return (await response.json()).result.structuredContent;
+  };
+  assert.equal((await tool("cora_skills_search", { q: "alpha" })).data.skills[0].name, "alpha");
+  assert.deepEqual((await tool("cora_skills_discover", { source: "acme/skills" })).data.skills.map((skill) => skill.name).sort(), ["alpha", "beta", "huge"]);
+  const installed = await tool("cora_agent_skill_install", { agent_id: agent.id, source: "acme/skills", skill: "alpha" });
+  assert.equal(installed.status, 201, JSON.stringify(installed.data));
+  assert.ok((await tool("cora_agent_skills_list", { agent_id: agent.id })).data.skills.some((skill) => skill.name === "alpha"));
+  const off = await tool("cora_agent_skill_set_enabled", { agent_id: agent.id, skill: "alpha", enabled: false });
+  assert.equal(off.status, 200, JSON.stringify(off.data));
+  assert.equal(app.skills.view(agent.id).skills.find((skill) => skill.name === "alpha").enabled, false);
+  assert.equal((await tool("cora_agent_skill_set_enabled", { agent_id: agent.id, skill: "alpha", enabled: true })).status, 200);
+  assert.equal(app.skills.view(agent.id).skills.find((skill) => skill.name === "alpha").enabled, true);
+  assert.match((await tool("cora_agent_skill_read", { agent_id: agent.id, skill: "alpha", path: "references/guide.md" })).data.text || "", /ALPHA_GUIDE_CANARY/);
+  assert.equal((await tool("cora_agent_skills_check", { agent_id: agent.id })).data.skills.alpha.server, "ok");
+  assert.equal((await tool("cora_agent_skill_remove", { agent_id: agent.id, skill: "alpha" })).status, 200);
+  assert.ok(!app.skills.view(agent.id).skills.some((skill) => skill.name === "alpha"));
+});

@@ -657,7 +657,7 @@ test("external configuration MCP uses personal hashed credentials and the curren
   assert.match(packageVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(initialize.data.result.serverInfo.version, packageVersion, "the MCP server reports the release in package.json");
   const tools = (await f.rpc(alice, "tools/list")).data.result.tools;
-  assert.deepEqual(tools.map(tool => tool.name), ["cora_state", "cora_configurations", "cora_request"]);
+  for (const name of ["cora_state", "cora_configurations", "cora_request", "cora_agents_list", "cora_agent_overview"]) assert.ok(tools.some(tool => tool.name === name), name);
   const state = (await f.rpc(alice, "tools/call", { name: "cora_state", arguments: { userId: f.bob.user.id, role: "owner" } }, { headers: f.admin.headers })).data.result;
   assert.equal(state.structuredContent.data.currentUser.id, f.alice.user.id);
   assert.equal(state.structuredContent.data.version, packageVersion, "/api/state reports the release in package.json");
@@ -736,7 +736,9 @@ test("external configuration MCP restricts owner operations, read-only keys, exp
   }
   assert.equal(JSON.stringify(f.app.store.settings), before);
   assert.equal((await f.invoke(reader, { method: "PUT", path: "/api/settings", body: { language: "en" } })).data.result.structuredContent.status, 403);
-  assert.deepEqual((await f.rpc(reader, "tools/list")).data.result.tools.find(tool => tool.name === "cora_request").inputSchema.properties.method.enum, ["GET"]);
+  const readerTools = (await f.rpc(reader, "tools/list")).data.result.tools;
+  assert.deepEqual(readerTools.find(tool => tool.name === "cora_request").inputSchema.properties.method.enum, ["GET"]);
+  assert.ok(!readerTools.some(tool => tool.name === "cora_settings_update"), "a read-only access lists no write tool");
   assert.equal((await f.invoke(admin, { method: "PUT", path: "/api/settings", body: { language: "en" } })).data.result.structuredContent.status, 200);
   assert.equal(f.app.store.settings.language, "en");
   f.app.store.updateAccessPolicy({ domains: [], emails: ["bob@owner.test"] });

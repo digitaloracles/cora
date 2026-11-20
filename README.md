@@ -229,9 +229,19 @@ Open **Settings → External agents (MCP)** to connect another agent to the pane
 
 The endpoint is `https://<instance>/mcp`. It accepts JSON-RPC POST requests, supports MCP versions `2025-11-25`, `2025-06-18` and `2025-03-26`, and requires no server session or SSE connection. Start with `initialize`, then `tools/list`:
 
-- `cora_state` reads the caller's current panel identity and visible configuration.
-- `cora_configurations` lists configuration areas and API paths, optionally filtered by `area`.
-- `cora_request` invokes a JSON panel API with `method`, a relative `/api/…` path and optional object `body`. For example, read `{"path":"/api/agents/<id>"}` before updating `{"method":"PUT","path":"/api/agents/<id>","body":{"personality":"…"}}`. Native HTTP status and response data are returned together; a refused operation is a tool error.
+The server exposes **one specific tool per panel action**, each with its own JSON input schema, grouped in areas:
+
+| Area | Examples |
+| --- | --- |
+| agents | `cora_agents_list`, `cora_agent_overview` (everything about one agent in one call), `cora_agent_create`, `cora_agent_update`, owners, chat permissions, avatar, duplicate, export/import, desktop start/stop/screenshot, panel chat |
+| skills | `cora_skills_search`, `cora_skills_discover`, `cora_agent_skill_install`, `cora_agent_skill_set_enabled`, update, adopt, remove, read files, check, sync |
+| connectors | `cora_connectors_list`, `cora_connector_connect`, `cora_connector_set_agents`, OAuth start, Google accounts |
+| providers | `cora_models_list`, `cora_provider_key_set`, subscriptions and their logins, personal API keys, harness updates, hardware, voices |
+| settings | `cora_state`, `cora_settings_get`, `cora_settings_update`, chat permissions, panel access, context files, Telegram and Slack, push, doc checks |
+| logs | `cora_activity`, `cora_traces_recent`, `cora_trace_get`, `cora_usage`, routine history and archive |
+| memory, threads, routines, email, transports, artifacts, secrets | memories and core card, Brain pages and review, threads and plans, routines and reminders, email rules and domains, agent bots and GitHub apps, artifact folders, uploads, reviews and links, vault names and links |
+
+`cora_configurations` returns this map with every tool's description, method and route, optionally for one `area`. `cora_request` stays as a fallback for a JSON panel route no specific tool covers. A read-only access lists only the read tools. A client that wants fewer tools connects to `/mcp?areas=agents,skills` (any comma-separated areas). Binary answers come back as MCP image or audio content (desktop screenshots, signatures, voice samples). Native HTTP status and response data are returned together; a refused operation is a tool error.
 
 These are panel configuration tools, separate from the internal per-turn MCP server used by Cora's agents. Requests resolve the token creator's current identity and admission every time. Space administration remains owner-only, and private agents, Brains, accounts and files retain their existing ownership and sharing rules; an administrator's cookie cannot override the token identity. Read-only tokens reject every write. Expiry, admission removal and revocation take effect immediately. Authentication/bootstrap routes, event streams and MCP-token issuance are excluded from the tools. Browser requests must have the instance's own Origin when an Origin header is present.
 
