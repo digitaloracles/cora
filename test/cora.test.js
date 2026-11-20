@@ -758,6 +758,12 @@ test("external configuration MCP validates its transport and cannot proxy extern
   assert.equal((await f.rpc(access, "ping", {}, { headers: { "Content-Type": "text/plain" } })).status, 415);
   assert.equal((await f.rpc(access, "ping", {}, { headers: { Accept: "text/event-stream" } })).status, 406);
   assert.equal((await fetch(f.base + "/mcp", { headers: { Authorization: `Bearer ${access.token}`, Accept: "text/event-stream" } })).status, 405);
+  for (const name of ["x-api-key", "api-key", "apikey", "x-apikey", "x-api-token", "api-token", "x-auth-token", "x-access-token", "x-token"]) {
+    for (const value of [access.token, `Bearer ${access.token}`]) assert.equal((await f.rpc(null, "ping", {}, { headers: { [name]: value } })).status, 200, `${name}: ${value.slice(0, 6)}`);
+  }
+  assert.equal((await f.rpc(null, "ping", {}, { headers: { Authorization: access.token } })).status, 200, "a bare token in Authorization");
+  assert.equal((await f.rpc(null, "ping", {}, { headers: { "x-api-key": `${access.token}x` } })).status, 401, "a malformed token in any header is refused");
+  assert.equal((await f.rpc(null, "ping", {}, { headers: { "x-unknown-key": access.token } })).status, 401, "unlisted headers carry no credential");
   for (const path of ["/api/mcp/tokens", "/api/login", "/api/events", "/api/cloud/access", "/api/agents/../mcp/tokens"]) assert.equal((await f.invoke(access, { path })).data.result.structuredContent.status, 403, path);
   for (const path of ["https://external.test/api/settings", "//external.test/api/settings", "/api/../../outside", "/api/agents\\../settings"]) assert.equal((await f.invoke(access, { path })).data.error.code, -32602, path);
   const notification = await fetch(f.base + "/mcp", { method: "POST", headers: { Authorization: `Bearer ${access.token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
