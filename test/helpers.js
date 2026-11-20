@@ -121,6 +121,8 @@ export async function fakeDiscord() {
     profilePatches: [],
     // Answers to pressed buttons: POST /interactions/<id>/<token>/callback.
     interactionAnswers: [],
+    // Messages rewritten afterwards: PATCH on a webhook's or a channel's message.
+    messageEdits: [],
     // Threads opened through the API: id -> the thread, and who opened it.
     threads: new Map(),
     nextId: 900000000000000000n,
@@ -171,6 +173,10 @@ export async function fakeDiscord() {
       if (!state.webhookAllowed) return json(res, 403, { message: "Missing Permissions" });
       if (req.method === "GET") return json(res, 200, []);
       return json(res, 200, { id: "500000000000000001", token: "webhook-token", name: "cora", application_id: BOT, channel_id: match[1] });
+    }
+    if ((match = /^\/(?:webhooks\/(\d+)\/[^/]+|channels\/(\d+))\/messages\/(\d+)$/.exec(url.pathname)) && req.method === "PATCH") {
+      state.messageEdits.push({ webhookId: match[1] || "", channelId: match[2] || url.searchParams.get("thread_id") || "", messageId: match[3], authorized: Boolean(req.headers.authorization), ...JSON.parse(String(body || "{}")) });
+      return json(res, 200, { id: match[3] });
     }
     if ((match = /^\/webhooks\/(\d+)\/([^/]+)$/.exec(url.pathname)) && req.method === "POST") {
       const payload = discordForm(req, body);
