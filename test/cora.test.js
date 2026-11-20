@@ -3847,6 +3847,8 @@ describe("agents in Discord", () => {
     assert.equal(run.geminiSettings.useG1Credits, false);
     assert.equal(run.geminiSettings.modelProvider, "");
     assert.deepEqual(Object.keys(run.geminiMcp.mcpServers), ["cora"]);
+    assert.equal(run.geminiMcp.mcpServers.cora.env.CORA_TOOLS_BUDGET, "60000", "Antigravity drops tools past its schema cap: Cora fits them under it");
+    assert.ok(run.geminiMcp.mcpServers.cora.env.CORA_TOOLS_CORE.split(",").includes("remember"));
     assert.ok(run.tools.includes("remember") && !run.tools.includes("shell"));
     assert.deepEqual(run.secretEnv, []);
     assert.ok(!existsSync(run.cwd), "the per-turn MCP configuration is removed");

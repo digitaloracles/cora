@@ -9,6 +9,7 @@ const RUN_MESSAGES = 1500;
 const PEOPLE_BACKFILL = "authorizedPeopleBackfill";
 const BATCH_CHARS = 24000;
 const PAGES_PER_BATCH = 15;
+const NAMED_PAGES = 5;
 const INDEX_PAGES = 200;
 // Grok Build keeps only the first ~96 KB and the last ~4 KB of a longer prompt and
 // drops the middle; smaller models have small windows too. The batch's chats, notes
@@ -278,7 +279,10 @@ export class Librarian {
     ];
     const all = await this.brain.pages();
     const probe = [...messages.map((message) => message.content), ...notes.map((note) => note.text), ...shared.map((memory) => memory.text)].join(" ").slice(0, 4000);
-    const near = (await Promise.all((await this.brain.search(probe, { limit: 8 })).map((page) => this.brain.page(page.slug)))).filter(Boolean);
+    const asked = notes.map((note) => note.text).join(" ").toLowerCase();
+    const named = all.filter((page) => /^[a-z0-9-]+$/.test(page.slug || "") && new RegExp(`(^|[^a-z0-9-])${page.slug}($|[^a-z0-9-])`).test(asked)).slice(0, NAMED_PAGES).map((page) => page.slug);
+    const found = (await this.brain.search(probe, { limit: 8 })).map((page) => page.slug).filter((slug) => !named.includes(slug));
+    const near = (await Promise.all([...named, ...found].map((slug) => this.brain.page(slug)))).filter(Boolean);
     const head = "Sei il bibliotecario di quest'azienda: tieni il brain aziendale, le pagine che dicono cosa sa l'azienda. Ogni pagina è un cliente (client), un progetto (project), una persona (person), una decisione (decision), una procedura (procedure) o un tema (topic).";
     const notesPart = noteLines.length ? `## Note degli agenti e ricordi condivisi\n${noteLines.join("\n")}` : "";
     const chatsPart = lines.length ? `## Conversazioni nuove\n${lines.join("\n")}` : "";
