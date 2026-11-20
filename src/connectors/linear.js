@@ -443,6 +443,8 @@ export const linear = {
   secret: "CORA_LINEAR_KEY",
   appSecrets: ["CORA_LINEAR_CLIENT_ID", "CORA_LINEAR_CLIENT_SECRET"],
   label: "workspace",
+  // Several workspaces, each its own connection: agents name one with `workspace`.
+  multi: { param: "workspace", noun: "workspace", identity: ["workspaceId", "workspace"], keyMode: "key", describe: (record) => `${record.workspace}: ${record.mode === "oauth" ? "your name and avatar via the OAuth app" : `acting as ${record.account || "the key owner"}`}` },
   oauth: {
     authorize: "https://linear.app/oauth/authorize",
     token: "https://api.linear.app/oauth/token",

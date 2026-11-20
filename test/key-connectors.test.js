@@ -10,6 +10,7 @@ import { LOVABLE_LOOPBACK } from "../src/connectors/lovable.js";
 
 const LINEAR_KEY = "lin_api_fixture_turinglabs";
 const ASANA_TOKEN = "asana_fixture_pat";
+const ASANA_OTHER_TOKEN = "asana_fixture_other_pat";
 const LINEAR_APP_TOKEN = "lin_oauth_fixture_app";
 const OTHER_APP_TOKEN = "lin_oauth_fixture_other_app";
 
@@ -50,14 +51,16 @@ async function fakeServices(t) {
       }
       return send(400, { error: "invalid_grant" });
     }
+    const asanaOther = req.headers.authorization === `Bearer ${ASANA_OTHER_TOKEN}`;
+    const asanaKnown = asanaOther || req.headers.authorization === `Bearer ${ASANA_TOKEN}`;
     if (req.url === "/asana/users/me") {
-      if (req.headers.authorization !== `Bearer ${ASANA_TOKEN}`) return send(401, {});
-      return send(200, { data: { gid: "1", name: "Sebastiano" } });
+      if (!asanaKnown) return send(401, {});
+      return send(200, { data: asanaOther ? { gid: "9", name: "Marta", email: "marta@zonzolab.test" } : { gid: "1", name: "Sebastiano" } });
     }
     if (req.url.startsWith("/asana/projects?")) {
       asanaQueries.push(req.url.split("?")[1]);
-      if (req.headers.authorization !== `Bearer ${ASANA_TOKEN}`) return send(401, {});
-      return send(200, { data: [{ gid: "31", name: "Dopamina", query: req.url.split("?")[1] }] });
+      if (!asanaKnown) return send(401, {});
+      return send(200, { data: [{ gid: asanaOther ? "81" : "31", name: asanaOther ? "Guide" : "Dopamina", query: req.url.split("?")[1] }] });
     }
     if (req.url === "/asana/tasks" && req.method === "POST") {
       asana.push({ method: req.method, body });
@@ -67,8 +70,8 @@ async function fakeServices(t) {
     if (req.url === "/asana/tasks/404") return send(404, { errors: [{ message: "task: Unknown object: 404" }] });
     if (req.url === "/asana/echo") return send(200, { data: { header: req.headers.authorization } });
     if (req.url === "/asana/workspaces") {
-      if (req.headers.authorization !== `Bearer ${ASANA_TOKEN}`) return send(401, {});
-      return send(200, { data: [{ gid: "2", name: "Turing Labs" }] });
+      if (!asanaKnown) return send(401, {});
+      return send(200, { data: [asanaOther ? { gid: "8", name: "ZonzoLab" } : { gid: "2", name: "Turing Labs" }] });
     }
     return send(404, {});
   });
@@ -266,6 +269,94 @@ test("authorised agents work on Linear and Asana through their Cora tools, and n
 
   await f.call("/api/connectors/keys/linear", { method: "DELETE" });
   assert.ok(connectors.toolsFor(f.agent).every((tool) => tool.name.startsWith("asana_")), "a disconnected service takes its tools away");
+});
+
+test("Asana holds several accounts, each with its own token, agents, routing and disconnect", async (t) => {
+  const f = await connectorWorld(t);
+  const connectors = f.app.keyConnectors;
+  const panel = panelHarness({ hash: "#/settings/connettori/asana", fetch: async (path, options = {}) => {
+    const response = await f.call(path, { method: options.method || "GET", body: options.body ? JSON.parse(options.body) : undefined });
+    return { ok: response.status < 400, status: response.status, json: async () => response.data };
+  } });
+  const node = panel.run("(() => {const node = connectorsPane(); app.append(node); return node;})()");
+  await node.readyConnectors;
+  const password = () => node.querySelector(".connector-detail").querySelectorAll("input").find((input) => input.getAttribute("type") === "password");
+  password().value = ASANA_TOKEN;
+  node.querySelectorAll("button").find((button) => /Verifica e collega/.test(button.textContent)).click();
+  await waitFor(() => connectors.connections("asana").length === 1 && !/Verifica e collega/.test(node.textContent));
+  const first = connectors.connections("asana")[0];
+  assert.equal(first.secretName, "CORA_ASANA_TOKEN");
+  assert.equal(first.accountId, "1");
+
+  const another = () => node.querySelectorAll("button").find((button) => button.textContent === "Collega un altro account");
+  assert.ok(another(), "a connected Asana offers another account");
+  another().click();
+  password().value = ASANA_TOKEN;
+  node.querySelectorAll("button").find((button) => /Verifica e collega/.test(button.textContent)).click();
+  await waitFor(() => /già collegato/.test(node.textContent));
+  assert.equal(connectors.connections("asana").length, 1, "the same Asana account is not connected twice");
+  password().value = ASANA_OTHER_TOKEN;
+  node.querySelectorAll("button").find((button) => /Verifica e collega/.test(button.textContent)).click();
+  await waitFor(() => connectors.connections("asana").length === 2 && !/Verifica e collega/.test(node.textContent));
+  const second = connectors.connections("asana").find((item) => item.id !== first.id);
+  assert.equal(second.account, "marta@zonzolab.test");
+  assert.equal(second.workspace, "ZonzoLab");
+  assert.match(second.secretName, /^CORA_ASANA_TOKEN_[0-9A-F]{12}$/);
+  assert.equal(f.app.store.vaultSecret("CORA_ASANA_TOKEN") && f.app.store.vaultSecret(second.secretName) ? 2 : 0, 2);
+  const cards = node.querySelector(".connector-detail").querySelectorAll(".connector-connected");
+  assert.equal(cards.length, 2);
+  assert.match(cards[0].querySelector("summary").textContent, /Sebastiano/);
+  assert.match(cards[1].querySelector("summary").textContent, /marta@zonzolab\.test/);
+  assert.match(cards[1].querySelector("summary").textContent, /Asana · ZonzoLab/);
+  node.querySelector(".connector-back").click();
+  assert.match(node.querySelector(".connector-catalog").textContent, /2 account collegati/);
+
+  assert.equal((await f.call(`/api/connectors/keys/asana?connection=${first.id}`, { method: "PUT", body: { agents: [f.agent.id] } })).status, 200);
+  let tools = connectors.toolsFor(f.agent).filter((tool) => tool.name.startsWith("asana_"));
+  assert.ok(tools.length > 10);
+  assert.ok(tools.every((tool) => !tool.parameters.properties.account), "with one authorised account nothing changes");
+  assert.match(tools.find((tool) => tool.name === "asana_workspaces").description, /Turing Labs \(gid 2\)/);
+  assert.deepEqual(JSON.parse((await connectors.runTool(f.agent, "asana_list_projects", {})).text).map((item) => item.name), ["Dopamina"]);
+  assert.match((await connectors.runTool(f.agent, "asana_list_projects", { account: "marta@zonzolab.test" })).text, /^error: you are not authorised for that Asana account/);
+
+  assert.equal((await f.call(`/api/connectors/keys/asana?connection=${second.id}`, { method: "PUT", body: { agents: [f.agent.id] } })).status, 200);
+  assert.deepEqual(f.app.store.vaultSecret(second.secretName).agents, [f.agent.id]);
+  tools = connectors.toolsFor(f.agent).filter((tool) => tool.name.startsWith("asana_"));
+  for (const tool of tools) {
+    assert.deepEqual(tool.parameters.properties.account.enum, ["Sebastiano", "marta@zonzolab.test"], tool.name);
+    assert.ok(tool.parameters.required.includes("account"), tool.name);
+    assert.match(tool.description, /Available accounts: Sebastiano \(workspace Turing Labs\); marta@zonzolab\.test \(workspace ZonzoLab\)/);
+  }
+  assert.doesNotMatch(tools.find((tool) => tool.name === "asana_workspaces").description, /gid 2/, "the description names no single account");
+  assert.match((await connectors.runTool(f.agent, "asana_list_projects", {})).text, /^error: choose account explicitly: Sebastiano, marta@zonzolab\.test/);
+  assert.deepEqual(JSON.parse((await connectors.runTool(f.agent, "asana_list_projects", { account: "marta@zonzolab.test" })).text).map((item) => item.name), ["Guide"]);
+  assert.match(f.services.asanaQueries.at(-1), /workspace=8/, "the second account works in its own workspace");
+  assert.deepEqual(JSON.parse((await connectors.runTool(f.agent, "asana_list_projects", { account: "sebastiano" })).text).map((item) => item.name), ["Dopamina"]);
+  assert.match(f.services.asanaQueries.at(-1), /workspace=2/);
+
+  assert.equal((await f.call("/api/connectors/keys/asana", { method: "PUT", body: { agents: [] } })).status, 400, "with two accounts the panel names the connection");
+  assert.equal((await f.call(`/api/connectors/keys/asana?connection=${second.id}`, { method: "DELETE" })).status, 200);
+  assert.equal(f.app.store.vaultSecret(second.secretName), null);
+  assert.ok(f.app.store.vaultSecret("CORA_ASANA_TOKEN"), "the other account keeps its token");
+  tools = connectors.toolsFor(f.agent).filter((tool) => tool.name.startsWith("asana_"));
+  assert.ok(tools.every((tool) => !tool.parameters.properties.account));
+  assert.deepEqual(JSON.parse((await connectors.runTool(f.agent, "asana_list_projects", {})).text).map((item) => item.name), ["Dopamina"]);
+});
+
+test("an Asana connection saved before connection ids keeps working when a second account joins", async (t) => {
+  const f = await connectorWorld(t);
+  const connectors = f.app.keyConnectors;
+  await f.call("/api/connectors/keys/asana", { method: "POST", body: { mode: "pat", token: ASANA_TOKEN } });
+  const { id, accountId, ...legacy } = connectors.connections("asana")[0];
+  connectors.save([{ ...legacy, agents: [f.agent.id], account: "Sebastiano" }]);
+  await f.app.vault.update("CORA_ASANA_TOKEN", { agents: [f.agent.id] }, null);
+  assert.equal((await f.call("/api/connectors/keys/asana", { method: "POST", body: { mode: "pat", token: ASANA_TOKEN } })).status, 409, "the old account is recognised by its name");
+  assert.equal((await f.call("/api/connectors/keys/asana", { method: "POST", body: { mode: "pat", token: ASANA_OTHER_TOKEN } })).status, 200);
+  const records = connectors.connections("asana");
+  assert.equal(records.length, 2);
+  assert.ok(records.every((item) => /^kc_/.test(item.id)), "the old connection got an id the panel can address");
+  assert.equal(records.find((item) => item.account === "Sebastiano").secretName || "CORA_ASANA_TOKEN", "CORA_ASANA_TOKEN");
+  assert.deepEqual(JSON.parse((await connectors.runTool(f.agent, "asana_list_projects", {})).text).map((item) => item.name), ["Dopamina"], "the agent keeps its only account without naming it");
 });
 
 test("a connector tool runs inside an agent turn only for an authorised request", async (t) => {

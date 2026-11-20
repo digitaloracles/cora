@@ -3550,7 +3550,7 @@ function connectorsPane() {
   const filterButtons = new Map();
   let data = null, filter = "all", current = route()[2] || "";
   const modeChoice = new Map(), optionalOpen = new Set(), expandedConnectors = new Set();
-  let linearSetupOpen = false, linearEditingId = "";
+  let multiSetupOpen = false, multiEditingId = "";
   const services = () => data?.catalog || [];
   const serviceOf = (id) => services().find((service) => service.id === id) || null;
   const show = (id, update = true) => {
@@ -3559,11 +3559,17 @@ function connectorsPane() {
     if (update) history.replaceState(null, "", current ? `#/settings/connettori/${current}` : "#/settings/connettori");
   };
   const keyRecord = (id) => (data?.keyConnectors || []).find((item) => item.service === id) || null;
-  const connectorPath = (service, record = null, action = "") => `/api/connectors/keys/${service}${action}${service === "linear" && record?.id ? `?connection=${encodeURIComponent(record.id)}` : ""}`;
+  const connectorPath = (service, record = null, action = "") => `/api/connectors/keys/${service}${action}${serviceOf(service)?.multi && record?.id ? `?connection=${encodeURIComponent(record.id)}` : ""}`;
+  // Linear workspaces and Asana accounts: several connections, each with its own card.
+  const multiLabel = (service, record) => record?.[service.multi.param] || record?.workspace || record?.account || "";
+  const multiTexts = (service) => service.multi.noun === "account"
+    ? { count: "{count} account collegati", another: "Collega un altro account", pending: "Account da autorizzare" }
+    : { count: "{count} workspace collegati", another: "Collega un altro workspace", pending: "Workspace da autorizzare" };
   const serviceState = (id) => {
-    if (id === "linear") {
+    const multiService = serviceOf(id)?.multi ? serviceOf(id) : null;
+    if (multiService) {
       const connected = (data?.keyConnectors || []).filter((item) => item.service === id && item.status === "connected");
-      if (connected.length) return { connected: true, status: connected.length > 1 ? "{count} workspace collegati" : connected[0].workspace, count: connected.length };
+      if (connected.length) return { connected: true, status: connected.length > 1 ? multiTexts(multiService).count : multiLabel(multiService, connected[0]), count: connected.length };
     }
     if (serviceOf(id)?.kind === "google") {
       const count = data ? data.connections.length : 0;
@@ -3651,7 +3657,7 @@ function connectorsPane() {
       try { const result = await api(connectorPath(service.id, record), { method: "DELETE" }); await load(); toast(result.revocationPending ? "Accesso rimosso, revoca da completare" : "Connettore scollegato"); }
       catch (error) { toast(error.message, true); disconnect.disabled = false; }
     } });
-    return connectedCard(`${service.id}:${record.id || record.workspace || "default"}`, { icon: service.icon, title: service.id === "linear" ? raw(record.workspace) : service.name, hint: tr(service.meta), actions: tag("Collegato", "ok") },
+    return connectedCard(`${service.id}:${record.id || record.workspace || "default"}`, { icon: service.icon, title: service.multi ? raw(multiLabel(service, record)) : service.name, hint: service.multi && record.workspace && record.workspace !== multiLabel(service, record) ? raw(`${service.name} · ${record.workspace}`) : tr(service.meta), actions: tag("Collegato", "ok") },
       h("p", {}, tr(service.intro)),
       setRows(
         setRow("Workspace", h("span", {}, raw(record.workspace || record.account || "—"), record.account && record.workspace ? h("small", {}, raw(record.account)) : null), tag("Collegato", "ok")),
@@ -3694,12 +3700,12 @@ function connectorsPane() {
   // One form for every key connector, drawn from the modes its module declares.
   const keyForm = (service, selected = undefined) => {
     const record = selected === undefined ? keyRecord(service.id) : selected;
-    const editing = service.id === "linear" && record?.id === linearEditingId;
+    const editing = Boolean(service.multi) && record?.id === multiEditingId;
     const feedback = h("p", { class: "connector-feedback", role: "status" });
     const submit = (label, run) => {
       const button = btn(label, { icon: "check", cls: "primary", disabled: !data.canManage, onclick: async () => {
         button.disabled = true; feedback.textContent = ""; feedback.classList.remove("err-text");
-        try { await run(); linearSetupOpen = false; linearEditingId = ""; await load(); } catch (error) { feedback.textContent = tr(error.message); feedback.classList.add("err-text"); button.disabled = false; }
+        try { await run(); multiSetupOpen = false; multiEditingId = ""; await load(); } catch (error) { feedback.textContent = tr(error.message); feedback.classList.add("err-text"); button.disabled = false; }
       } });
       return button;
     };
@@ -3746,7 +3752,7 @@ function connectorsPane() {
     if (service.oauth && mode.ready) {
       if (appReady && !editing) rows.push(setRow("Autorizzazione", tr("App salvata: autorizzala con il tuo account {name}. Cora salva i token nella cassaforte come {secret}.", { name: service.name, secret: service.secret }), authorizeButton(service, tr("Autorizza {name}", { name: service.name }), record)));
     }
-    return panel({ icon: service.icon, title: editing ? "Modifica app" : service.name, hint: tr(service.meta), cls: editing ? "connector-edit" : "", actions: editing ? btn("Annulla", { cls: "ghost sm", onclick: () => { linearSetupOpen = false; linearEditingId = ""; draw(); } }) : appReady ? tag("App pronta", "warn") : tag("Da collegare", "agent") },
+    return panel({ icon: service.icon, title: editing ? "Modifica app" : service.name, hint: tr(service.meta), cls: editing ? "connector-edit" : "", actions: editing ? btn("Annulla", { cls: "ghost sm", onclick: () => { multiSetupOpen = false; multiEditingId = ""; draw(); } }) : appReady ? tag("App pronta", "warn") : tag("Da collegare", "agent") },
       editing ? redirectValue(service) : h("p", {}, mode.intro || service.intro),
       toggle,
       mode.notice && !editing ? h("p", { role: "status", class: "notice warn" }, mode.notice) : null,
@@ -3772,24 +3778,26 @@ function connectorsPane() {
   const keyDetail = (id) => {
     const service = serviceOf(id);
     const record = keyRecord(id);
-    if (id === "linear") {
-      const records = (data.keyConnectors || []).filter((item) => item.service === id && item.id && ["connected", "app"].includes(item.status));
+    if (service.multi) {
+      const records = (data.keyConnectors || []).filter((item) => item.service === id && (item.id || item.status === "connected") && ["connected", "app", "revocation_pending"].includes(item.status));
+      const texts = multiTexts(service);
       if (!records.length) return [back(), keyForm(service, null)];
       const nodes = records.map((item) => {
-        if (item.id === linearEditingId) return keyForm(service, item);
+        if (item.id === multiEditingId) return keyForm(service, item);
         if (item.status === "connected") return connectedPanel(service, item);
+        if (item.status === "revocation_pending") return revocationPanel(service, item);
         const remove = armedButton("Rimuovi collegamento", "Conferma rimozione", { icon: "power", cls: "ghost danger", disabled: !data.canManage, onconfirm: async () => {
           remove.disabled = true;
-          try { await api(connectorPath(id, item), { method: "DELETE" }); if (linearEditingId === item.id) { linearSetupOpen = false; linearEditingId = ""; } await load(); }
+          try { await api(connectorPath(id, item), { method: "DELETE" }); if (multiEditingId === item.id) { multiSetupOpen = false; multiEditingId = ""; } await load(); }
           catch (error) { toast(error.message, true); remove.disabled = !data.canManage; }
         } });
-        return panel({ icon: service.icon, title: raw(item.workspaceHint || tr("Workspace da autorizzare")), hint: "App OAuth Linear", cls: "connector-pending", actions: tag("App pronta", "warn") },
+        return panel({ icon: service.icon, title: raw(item.workspaceHint || tr(texts.pending)), hint: tr("App OAuth {name}", { name: service.name }), cls: "connector-pending", actions: tag("App pronta", "warn") },
           redirectRow(service),
-          h("div", { class: "row connector-actions" }, authorizeButton(service, "Autorizza Linear", item), btn("Modifica app", { cls: "ghost", disabled: !data.canManage, onclick: () => { linearEditingId = item.id; linearSetupOpen = false; modeChoice.set(id, "oauth"); draw(); const editor = detail.querySelector(".connector-edit"); editor?.scrollIntoView({ block: "nearest" }); editor?.querySelector("input")?.focus({ preventScroll: true }); } }), remove));
+          h("div", { class: "row connector-actions" }, authorizeButton(service, tr("Autorizza {name}", { name: service.name }), item), btn("Modifica app", { cls: "ghost", disabled: !data.canManage, onclick: () => { multiEditingId = item.id; multiSetupOpen = false; modeChoice.set(id, "oauth"); draw(); const editor = detail.querySelector(".connector-edit"); editor?.scrollIntoView({ block: "nearest" }); editor?.querySelector("input")?.focus({ preventScroll: true }); } }), remove));
       });
-      return [back(), ...nodes, linearSetupOpen
-        ? h("div", { class: "stack" }, h("div", { class: "row end" }, btn("Annulla", { cls: "ghost", onclick: () => { linearSetupOpen = false; linearEditingId = ""; draw(); } })), keyForm(service, null))
-        : h("div", { class: "row end" }, btn("Collega un altro workspace", { icon: "plus", cls: "primary", disabled: !data.canManage, onclick: () => { linearSetupOpen = true; linearEditingId = ""; draw(); } }))];
+      return [back(), ...nodes, multiSetupOpen
+        ? h("div", { class: "stack" }, h("div", { class: "row end" }, btn("Annulla", { cls: "ghost", onclick: () => { multiSetupOpen = false; multiEditingId = ""; draw(); } })), keyForm(service, null))
+        : h("div", { class: "row end" }, btn(texts.another, { icon: "plus", cls: "primary", disabled: !data.canManage, onclick: () => { multiSetupOpen = true; multiEditingId = ""; draw(); } }))];
     }
     return [back(), record?.status === "revocation_pending" ? revocationPanel(service, record) : record?.status === "connected" ? connectedPanel(service, record) : keyForm(service)];
   };

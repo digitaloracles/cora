@@ -15,6 +15,14 @@ export class KeyConnectorError extends Error {
 
 const clean = (value, max = 400) => String(value ?? "").trim().slice(0, max);
 
+/** The module's `multi` settings when a service holds several connections (Linear workspaces, Asana accounts), else null. */
+const multiOf = (service) => CONNECTORS.find((item) => item.id === service)?.multi || null;
+/** Whether two connections of a multi service reach the same workspace or account: the stable id when both have it, else the name. */
+const sameIdentity = (multi, a, b) => {
+  const [id, name] = multi.identity;
+  return a[id] && b[id] ? a[id] === b[id] : String(a[name] || "").toLowerCase() === String(b[name] || "").toLowerCase();
+};
+
 export class KeyConnectors {
   constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", higgsfieldApi = "https://mcp.higgsfield.ai/mcp", oauthUrls = {}, fetch: fetchImpl = fetch }) {
     Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, higgsfieldApi, oauthUrls, fetch: fetchImpl });
@@ -23,7 +31,7 @@ export class KeyConnectors {
     // Access tokens renewed from a stored refresh token, until they expire.
     this.access = new Map();
     this.refreshing = new Map();
-    this.linearQueue = Promise.resolve();
+    this.writeQueue = Promise.resolve();
   }
 
   api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi, higgsfield: this.higgsfieldApi }; }
@@ -38,15 +46,18 @@ export class KeyConnectors {
   save(records) { this.store.setValue("keyConnectors", records); }
   record(service) { return this.records().find((item) => item.service === service && !item.disconnected) || null; }
 
-  linearWrite(run) {
-    const next = this.linearQueue.then(run);
-    this.linearQueue = next.catch(() => {});
+  serialWrite(run) {
+    const next = this.writeQueue.then(run);
+    this.writeQueue = next.catch(() => {});
     return next;
   }
 
-  linearConnections() { return this.records().filter((item) => item.service === "linear" && !item.disconnected && item.status === "connected"); }
+  connections(service) { return this.records().filter((item) => item.service === service && !item.disconnected && item.status === "connected"); }
 
-  linearAppReady(record) { return record?.mode === "oauth" && (record.appSecrets || KEY_SERVICES.linear.appSecrets).every((name) => Boolean(this.store.vaultSecret(name))); }
+  appReady(service, record) { return record?.mode === "oauth" && (record.appSecrets || KEY_SERVICES[service].appSecrets).every((name) => Boolean(this.store.vaultSecret(name))); }
+
+  /** What one connection of a multi service is called for agents: the workspace or the account. */
+  connectionLabel(service, record) { return String(record?.[multiOf(service).param] || record?.workspace || record?.account || record?.id || ""); }
 
   tokenName(connector, record) { return record?.secretName || connector.secret; }
 
@@ -57,60 +68,72 @@ export class KeyConnectors {
       if (!record) throw new KeyConnectorError("Collegamento non trovato.", 404);
       return record;
     }
-    if (service === "linear" && records.length > 1) throw new KeyConnectorError("Scegli il collegamento del workspace Linear.");
+    if (multiOf(service) && records.length > 1) throw new KeyConnectorError(`Scegli il collegamento ${KEY_SERVICES[service].name}.`);
     return records.find((item) => item.status === "connected") || records[0] || null;
   }
 
-  async connectLinear(input, user, connectionId = "") {
-    const previous = connectionId ? this.selectedRecord("linear", connectionId) : null;
+  async connectMulti(service, input, user, connectionId = "") {
+    const meta = KEY_SERVICES[service], multi = multiOf(service);
+    // A connection saved before ids existed gets one now, so the panel can address it beside the new one.
+    if (this.records().some((item) => item.service === service && !item.id)) this.save(this.records().map((item) => item.service === service && !item.id ? { ...item, id: `kc_${randomBytes(6).toString("hex")}` } : item));
+    const previous = connectionId ? this.selectedRecord(service, connectionId) : null;
+    if (previous?.status === "revocation_pending") throw new KeyConnectorError("Completa la revoca prima di collegare di nuovo il servizio.", 409);
     const id = previous?.id || `kc_${randomBytes(6).toString("hex")}`;
-    const existing = this.records().filter((item) => item.service === "linear" && !item.disconnected);
-    const secretName = previous ? this.tokenName(KEY_SERVICES.linear, previous) : existing.some((item) => this.tokenName(KEY_SERVICES.linear, item) === KEY_SERVICES.linear.secret) ? `${KEY_SERVICES.linear.secret}_${id.slice(3).toUpperCase()}` : KEY_SERVICES.linear.secret;
+    const existing = this.records().filter((item) => item.service === service && !item.disconnected);
+    const secretName = previous ? this.tokenName(meta, previous) : existing.some((item) => this.tokenName(meta, item) === meta.secret) ? `${meta.secret}_${id.slice(3).toUpperCase()}` : meta.secret;
     if (input.mode === "oauth") {
-      const app = this.appInput(input, "linear");
+      const app = this.appInput(input, service);
       this.vaultReady();
-      if (previous?.status === "connected" && previous.mode !== "oauth") throw new KeyConnectorError("Scollega questo workspace prima di cambiare il tipo di accesso.", 409);
-      if (previous?.status === "connected" && this.appCredentials("linear", previous).clientId !== app.clientId) throw new KeyConnectorError("Scollega questo workspace prima di cambiare app Linear.", 409);
-      const appSecrets = previous?.appSecrets || (!existing.some((item) => (item.appSecrets || (item.mode === "oauth" ? KEY_SERVICES.linear.appSecrets : [])).includes(KEY_SERVICES.linear.appSecrets[0])) ? KEY_SERVICES.linear.appSecrets : KEY_SERVICES.linear.appSecrets.map((name) => `${name}_${id.slice(3).toUpperCase()}`));
-      for (const [index, value] of [app.clientId, app.clientSecret].entries()) await this.vault.put({ name: appSecrets[index], value, description: "Connettore Linear · app OAuth del collegamento", agents: [], by: this.by(user) });
-      const next = { ...previous, id, service: "linear", secretName, appSecrets, appVersion: randomBytes(8).toString("hex"), agents: previous?.agents || [], status: previous?.status === "connected" ? "connected" : "app", mode: "oauth", workspace: previous?.workspace || "", workspaceHint: clean(input.workspace, 80) || previous?.workspaceHint || "", account: previous?.account || "", connectedBy: user.id, connectedAt: previous?.connectedAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+      if (previous?.status === "connected" && previous.mode !== "oauth") throw new KeyConnectorError(`Scollega questo ${multi.noun} prima di cambiare il tipo di accesso.`, 409);
+      if (previous?.status === "connected" && this.appCredentials(service, previous).clientId !== app.clientId) throw new KeyConnectorError(`Scollega questo ${multi.noun} prima di cambiare app ${meta.name}.`, 409);
+      const appSecrets = previous?.appSecrets || (!existing.some((item) => (item.appSecrets || (item.mode === "oauth" ? meta.appSecrets : [])).includes(meta.appSecrets[0])) ? meta.appSecrets : meta.appSecrets.map((name) => `${name}_${id.slice(3).toUpperCase()}`));
+      for (const [index, value] of [app.clientId, app.clientSecret].entries()) await this.vault.put({ name: appSecrets[index], value, description: `Connettore ${meta.name} · app OAuth del collegamento`, agents: [], by: this.by(user) });
+      const next = { ...previous, id, service, secretName, appSecrets, appVersion: randomBytes(8).toString("hex"), agents: previous?.agents || [], status: previous?.status === "connected" ? "connected" : "app", mode: "oauth", workspace: previous?.workspace || "", workspaceHint: clean(input.workspace, 80) || previous?.workspaceHint || "", account: previous?.account || "", connectedBy: user.id, connectedAt: previous?.connectedAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
       this.save([...this.records().filter((item) => item.id !== id), next]);
       return next;
     }
-    const workspace = clean(input.workspace, 80), token = clean(input.token, 4000);
-    if (!workspace) throw new KeyConnectorError("Scrivi il workspace di Linear, quello che compare nell'indirizzo linear.app/<workspace>.");
-    if (!token) throw new KeyConnectorError("Incolla la chiave API personale di Linear.");
-    if (previous?.mode === "oauth") throw new KeyConnectorError("Scollega questo workspace prima di cambiare il tipo di accesso.", 409);
-    const checked = await this.checkLinear(workspace, token);
-    return this.saveLinearConnection(checked, "key", token, user, connectionId, { id, secretName });
+    const token = clean(input.token, 4000);
+    if (previous?.mode === "oauth") throw new KeyConnectorError(`Scollega questo ${multi.noun} prima di cambiare il tipo di accesso.`, 409);
+    let checked;
+    if (service === "linear") {
+      const workspace = clean(input.workspace, 80);
+      if (!workspace) throw new KeyConnectorError("Scrivi il workspace di Linear, quello che compare nell'indirizzo linear.app/<workspace>.");
+      if (!token) throw new KeyConnectorError("Incolla la chiave API personale di Linear.");
+      checked = await this.checkLinear(workspace, token);
+    } else {
+      if (!token) throw new KeyConnectorError("Incolla il token personale di Asana, oppure scegli di collegarla con un'app.");
+      checked = await this.checkAsana(token);
+    }
+    return this.saveMultiConnection(service, checked, multi.keyMode, token, user, connectionId, { id, secretName });
   }
 
-  async saveLinearConnection(checked, mode, value, user, expectedId = "", prepared = {}) {
-    const all = this.records().filter((item) => item.service === "linear" && !item.disconnected);
-    const sameWorkspace = (item) => checked.workspaceId && item.workspaceId ? checked.workspaceId === item.workspaceId : item.workspace?.toLowerCase() === checked.workspace.toLowerCase();
+  async saveMultiConnection(service, checked, mode, value, user, expectedId = "", prepared = {}) {
+    const meta = KEY_SERVICES[service], multi = multiOf(service);
+    const all = this.records().filter((item) => item.service === service && !item.disconnected);
     const previous = expectedId ? all.find((item) => item.id === expectedId) : null;
     if (expectedId && !previous) throw new KeyConnectorError("Il collegamento è stato rimosso. Riparti da Connettori.", 409);
-    if (previous?.status === "connected" && !sameWorkspace(previous)) throw new KeyConnectorError("Hai autorizzato un workspace diverso da quello da ricollegare. Crea un nuovo collegamento.", 409);
+    if (previous?.status === "connected" && !sameIdentity(multi, previous, checked)) throw new KeyConnectorError(`Hai autorizzato un ${multi.noun} diverso da quello da ricollegare. Crea un nuovo collegamento.`, 409);
     if (previous?.workspaceHint && previous.workspaceHint.toLowerCase() !== checked.workspace.toLowerCase()) throw new KeyConnectorError("Il workspace autorizzato non corrisponde a quello indicato nel collegamento.", 409);
-    if (all.some((item) => item.status === "connected" && item.id !== previous?.id && sameWorkspace(item))) throw new KeyConnectorError("Questo workspace Linear è già collegato. Usa la sua scheda per gestirlo.", 409);
+    if (all.some((item) => item.status === "connected" && item.id !== previous?.id && sameIdentity(multi, item, checked))) throw new KeyConnectorError(`Questo ${multi.noun} ${meta.name} è già collegato. Usa la sua scheda per gestirlo.`, 409);
     const id = previous?.id || prepared.id || `kc_${randomBytes(6).toString("hex")}`;
-    const secretName = previous ? this.tokenName(KEY_SERVICES.linear, previous) : prepared.secretName;
-    if (!secretName) throw new KeyConnectorError("Collegamento Linear non valido.", 409);
+    const secretName = previous ? this.tokenName(meta, previous) : prepared.secretName;
+    if (!secretName) throw new KeyConnectorError(`Collegamento ${meta.name} non valido.`, 409);
     const agents = previous?.agents || [];
-    await this.vaultReady().put({ name: secretName, value, description: `Connettore Linear · workspace ${checked.workspace}`, agents, by: this.by(user) });
+    const label = this.connectionLabel(service, checked);
+    await this.vaultReady().put({ name: secretName, value, description: `Connettore ${meta.name} · ${multi.noun} ${label}`, agents, by: this.by(user) });
     this.access.delete(secretName);
-    const next = { ...previous, ...checked, id, service: "linear", secretName, agents, status: "connected", mode, connectedBy: user.id, connectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const next = { ...previous, ...checked, id, service, secretName, agents, status: "connected", mode, connectedBy: user.id, connectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     this.save([...this.records().filter((item) => item.id !== id), next]);
-    this.log({ type: "connector", text: `connettore Linear: workspace ${checked.workspace} collegato (${user.name})` });
+    this.log({ type: "connector", text: `connettore ${meta.name}: ${multi.noun} ${label} collegato (${user.name})` });
     return next;
   }
 
   view() {
     const records = this.records();
     return Object.keys(KEY_SERVICES).flatMap((service) => {
-      if (service === "linear") {
+      if (multiOf(service)) {
         const active = records.filter((item) => item.service === service && !item.disconnected);
-        return (active.length ? active : [{ service, status: "new", mode: "key", agents: [] }]).map((item) => ({ ...item, name: KEY_SERVICES.linear.name, appConfigured: this.linearAppReady(item) }));
+        return (active.length ? active : [{ service, status: "new", mode: multiOf(service).keyMode, agents: [] }]).map((item) => ({ ...item, name: KEY_SERVICES[service].name, appConfigured: this.appReady(service, item) }));
       }
       const record = records.find((item) => item.service === service && !item.disconnected);
       const { remoteTools, ...visible } = record || {};
@@ -165,7 +188,7 @@ export class KeyConnectors {
     const workspaces = await this.request(`${this.asanaApi}/workspaces`, { headers: { Authorization: `Bearer ${token}` } });
     const workspace = Array.isArray(workspaces?.data) ? workspaces.data[0] : null;
     if (!me?.data?.name) throw new KeyConnectorError("Asana non ha riconosciuto il token: creane uno nuovo e incollalo di nuovo.");
-    return { workspace: clean(workspace?.name || "", 120), workspaceId: clean(workspace?.gid || "", 40), account: clean(me.data.name, 120) };
+    return { workspace: clean(workspace?.name || "", 120), workspaceId: clean(workspace?.gid || "", 40), account: clean(me.data.email || me.data.name, 120), ...(me.data.gid ? { accountId: clean(me.data.gid, 40) } : {}) };
   }
 
   async checkLovable(token) {
@@ -191,7 +214,7 @@ export class KeyConnectors {
   async connect(service, input = {}, user, connectionId = "") {
     const meta = KEY_SERVICES[service];
     if (!meta) throw new KeyConnectorError("Connettore sconosciuto.", 404);
-    if (service === "linear") return this.linearWrite(() => this.connectLinear(input, user, connectionId));
+    if (multiOf(service)) return this.serialWrite(() => this.connectMulti(service, input, user, connectionId));
     const previous = this.record(service);
     if (previous?.status === "revocation_pending") throw new KeyConnectorError("Completa la revoca prima di collegare di nuovo il servizio.", 409);
     const agents = previous?.agents || [];
@@ -225,7 +248,7 @@ export class KeyConnectors {
       await this.vault.put({ name: meta.secret, value: token, description: `Connettore Lovable · chiave API${checked.workspace ? ` del workspace ${checked.workspace}` : ""}`, agents, by: this.by(user) });
       this.access.delete(meta.secret);
       next = { ...base, ...checked, status: "connected", mode: "key" };
-    } else if (input.mode === "oauth" && ["linear", "asana", "lovable"].includes(service)) {
+    } else if (input.mode === "oauth" && service === "lovable") {
       const app = this.appInput(input, service);
       this.vaultReady();
       await this.vault.put({ name: meta.appSecrets[0], value: app.clientId, description: `Connettore ${meta.name} · client ID dell'app`, agents: [], by: this.by(user) });
@@ -233,13 +256,6 @@ export class KeyConnectors {
       next = { ...base, status: "app", mode: "oauth", workspace: "", account: "" };
     } else if (service === "lovable") {
       throw new KeyConnectorError("Scegli come collegare Lovable: accesso rapido, chiave API o app OAuth.");
-    } else if (service === "asana") {
-      const token = clean(input.token, 4000);
-      if (!token) throw new KeyConnectorError("Incolla il token personale di Asana, oppure scegli di collegarla con un'app.");
-      const checked = await this.checkAsana(token);
-      this.vaultReady();
-      this.vault.put({ name: meta.secret, value: token, description: `Connettore Asana · token personale di ${checked.account}`, agents, by: this.by(user) });
-      next = { ...base, ...checked, status: "connected", mode: "pat" };
     } else {
       if (input.decision === "later") {
         next = { ...base, status: "later", mode: "later", workspace: "", account: "" };
@@ -296,7 +312,7 @@ export class KeyConnectors {
       if (!stored) throw new KeyConnectorError("Accesso rapido non registrato: riparti da «Apri Lovable».", 409);
       return { clientId: this.vault.value(stored).toString("utf8"), clientSecret: "" };
     }
-    if (service === "linear" && !record) record = this.selectedRecord(service);
+    if (multiOf(service) && !record) record = this.selectedRecord(service);
     const [idName, secretName] = record?.appSecrets || KEY_SERVICES[service].appSecrets || [];
     const id = idName && this.store.vaultSecret(idName), secret = secretName && this.store.vaultSecret(secretName);
     if (!id || !secret) throw new KeyConnectorError(`Salva prima client ID e client secret dell'app ${KEY_SERVICES[service].name}.`, 409);
@@ -320,9 +336,9 @@ export class KeyConnectors {
         this.save([...this.records(), record]);
       }
     }
-    if (service === "linear") {
-      if (!this.linearAppReady(record)) throw new KeyConnectorError("Salva prima l'app Linear.", 409);
-      if (connectionId && record.mode !== "oauth") throw new KeyConnectorError("Questo workspace usa una chiave personale.", 409);
+    if (multiOf(service)) {
+      if (!this.appReady(service, record)) throw new KeyConnectorError(`Salva prima l'app ${KEY_SERVICES[service].name}.`, 409);
+      if (connectionId && record.mode !== "oauth") throw new KeyConnectorError(`Questo ${multiOf(service).noun} usa una chiave personale.`, 409);
     } else if (!record || !["app", "connected"].includes(record.status) || (record.status === "connected" && record.mode !== "oauth")) throw new KeyConnectorError(`Salva prima l'app ${KEY_SERVICES[service].name}.`, 409);
     if (!redirectUri) throw new KeyConnectorError("Cora non conosce il suo indirizzo pubblico: l'autorizzazione OAuth non può tornare qui.", 409);
     this.vaultReady();
@@ -418,7 +434,7 @@ export class KeyConnectors {
     if (!user || user.blocked) throw new KeyConnectorError("Accesso non autorizzato.", 403);
     if (error || !code) throw new KeyConnectorError("Autorizzazione annullata.");
     this.vaultReady();
-    const source = service === "linear" || this.oauthOf(service)?.dynamicRegistration ? this.selectedRecord(service, pending.connectionId) : pending.mode === "quick" ? { mode: "quick" } : null;
+    const source = multiOf(service) || this.oauthOf(service)?.dynamicRegistration ? this.selectedRecord(service, pending.connectionId) : pending.mode === "quick" ? { mode: "quick" } : null;
     if (this.oauthOf(service)?.dynamicRegistration && (!source || source.id !== pending.connectionId)) throw new KeyConnectorError("Collegamento annullato. Riparti da Connettori.", 409);
     if (source && source.appVersion !== pending.appVersion) throw new KeyConnectorError("L'app è cambiata durante l'autorizzazione. Riparti dal collegamento.", 409);
     const data = await this.tokenCall(service, { grant_type: "authorization_code", code: String(code), redirect_uri: pending.redirectUri, code_verifier: pending.verifier }, source);
@@ -429,10 +445,10 @@ export class KeyConnectors {
       return answer;
     };
     const checked = await this.oauthOf(service).identify({ access: bundle.access_token, request, api: this.api(), tokenData: data });
-    if (service === "linear") return this.linearWrite(() => {
+    if (multiOf(service)) return this.serialWrite(() => {
       const current = this.selectedRecord(service, pending.connectionId);
       if (current.appVersion !== pending.appVersion) throw new KeyConnectorError("L'app è cambiata durante l'autorizzazione. Riparti dal collegamento.", 409);
-      return this.saveLinearConnection(checked, "oauth", JSON.stringify(bundle), user, pending.connectionId);
+      return this.saveMultiConnection(service, checked, "oauth", JSON.stringify(bundle), user, pending.connectionId);
     });
     const previous = this.record(service);
     if (this.oauthOf(service)?.dynamicRegistration && (!previous || previous.id !== source.id || previous.appVersion !== source.appVersion)) throw new KeyConnectorError("Collegamento annullato. Riparti da Connettori.", 409);
@@ -491,7 +507,7 @@ export class KeyConnectors {
     if (oauth?.revoke && record.mode === "oauth" && ["connected", "revocation_pending"].includes(record.status)) {
       this.save(this.records().map((item) => item.id === record.id ? { ...item, status: "revocation_pending", agents: [], updatedAt: new Date().toISOString() } : item));
       this.vaultReady().update(this.tokenName(KEY_SERVICES[service], record), { agents: [] }, user ? this.by(user) : null);
-      for (const [nonce, pending] of this.pending) if (pending.service === service) this.pending.delete(nonce);
+      for (const [nonce, pending] of this.pending) if (pending.service === service && (!multiOf(service) || pending.connectionId === record.id)) this.pending.delete(nonce);
       const name = this.tokenName(KEY_SERVICES[service], record);
       const renewal = this.refreshing.get(name);
       if (renewal) { try { await renewal; } catch { /* revocation still uses the latest stored token */ } }
@@ -503,13 +519,14 @@ export class KeyConnectors {
       } catch { /* handled below without provider bodies */ }
       if (!response?.ok) return { revocationPending: true };
     }
-    for (const [nonce, pending] of this.pending) if (pending.service === service) this.pending.delete(nonce);
+    for (const [nonce, pending] of this.pending) if (pending.service === service && (!multiOf(service) || pending.connectionId === record.id)) this.pending.delete(nonce);
     const remaining = this.records().filter((item) => item.id !== record.id);
     this.save(remaining);
     const secretName = this.tokenName(KEY_SERVICES[service], record);
     this.access.delete(secretName);
     this.access.delete(service);
-    const names = [["connected", "revocation_pending"].includes(record.status) ? secretName : null, ...(service === "linear" && record.mode !== "oauth" ? [] : record.appSecrets || KEY_SERVICES[service].appSecrets || [])].filter(Boolean);
+    const inUse = new Set(remaining.filter((item) => item.service === service).flatMap((item) => [this.tokenName(KEY_SERVICES[service], item), ...(item.appSecrets || (item.mode === "oauth" ? KEY_SERVICES[service].appSecrets || [] : []))]));
+    const names = [["connected", "revocation_pending"].includes(record.status) ? secretName : null, ...(multiOf(service) && record.mode !== "oauth" ? [] : record.appSecrets || KEY_SERVICES[service].appSecrets || [])].filter((name) => name && !inUse.has(name));
     for (const name of names) { try { this.vault?.remove(name, user ? this.by(user) : null); } catch { /* the value is already gone */ } }
     this.log({ type: "connector", text: `connettore ${KEY_SERVICES[service].name}: scollegato` });
   }
@@ -523,11 +540,13 @@ export class KeyConnectors {
       const records = connected.filter((record) => record.service === connector.id && this.allowed(record, connector, agent));
       if (!records.length) return [];
       return (connector.toolsFor ? connector.toolsFor(records[0]) : connector.tools || []).map((tool) => {
-        const definition = toolDefinition(tool, records[0]);
-        if (connector.id !== "linear") return definition;
-        const workspaces = records.map((record) => record.workspace);
-        const identity = records.map((record) => `${record.workspace}: ${record.mode === "oauth" ? "your name and avatar via the OAuth app" : `acting as ${record.account || "the key owner"}`}`).join("; ");
-        return { ...definition, description: `${definition.description} Available workspaces: ${identity}. ${records.length > 1 ? "Choose workspace explicitly for every call." : "Workspace is optional when only one is authorised."}`, parameters: { ...definition.parameters, properties: { ...definition.parameters.properties, workspace: { type: "string", enum: workspaces, description: "The authorised Linear workspace for this call" } }, required: [...(definition.parameters.required || []), ...(records.length > 1 ? ["workspace"] : [])] } };
+        const multi = connector.multi;
+        if (!multi) return toolDefinition(tool, records[0]);
+        if (connector.id !== "linear" && records.length === 1) return toolDefinition(tool, records[0]);
+        const definition = toolDefinition(tool, connector.id === "linear" ? records[0] : { mode: records[0].mode });
+        const labels = records.map((record) => this.connectionLabel(connector.id, record));
+        const identity = records.map((record) => multi.describe(record)).join("; ");
+        return { ...definition, description: `${definition.description} Available ${multi.noun}s: ${identity}. ${records.length > 1 ? `Choose ${multi.param} explicitly for every call.` : `${multi.param[0].toUpperCase()}${multi.param.slice(1)} is optional when only one is authorised.`}`, parameters: { ...definition.parameters, properties: { ...definition.parameters.properties, [multi.param]: { type: "string", enum: labels, description: `The authorised ${connector.name} ${multi.noun} for this call` } }, required: [...(definition.parameters.required || []), ...(records.length > 1 ? [multi.param] : [])] } };
       });
     }));
   }
@@ -560,16 +579,20 @@ export class KeyConnectors {
     const connector = connectorForTool(name), tool = toolFor(name);
     if (connector?.kind === "google") return this.google ? this.google.runTool(agent, name, args || {}, { readFile, writeFile }) : { text: "error: Google is not available on this Cora" };
     let record = connector && this.record(connector.id);
-    if (connector?.id === "linear") {
-      const records = this.linearConnections();
+    if (connector?.multi) {
+      const { param, noun } = connector.multi;
+      const records = this.connections(connector.id);
       const allowed = this.vault?.enabled ? records.filter((item) => this.allowed(item, connector, agent)) : [];
-      const selected = clean(args?.workspace, 200).toLowerCase();
-      if (selected) record = allowed.find((item) => item.workspace.toLowerCase() === selected || item.id.toLowerCase() === selected);
+      const selected = clean(args?.[param], 200).toLowerCase();
+      if (selected) record = allowed.find((item) => this.connectionLabel(connector.id, item).toLowerCase() === selected || item.id.toLowerCase() === selected);
       else {
-        if (allowed.length > 1) return { text: `error: choose workspace explicitly: ${allowed.map((item) => item.workspace).join(", ")}` };
+        if (allowed.length > 1) return { text: `error: choose ${param} explicitly: ${allowed.map((item) => this.connectionLabel(connector.id, item)).join(", ")}` };
         record = allowed[0] || record;
       }
-      if (selected && !record) return { text: "error: you are not authorised for that Linear workspace: the owner picks the agents in its card in Connettori" };
+      if (selected && !record) return { text: `error: you are not authorised for that ${connector.name} ${noun}: the owner picks the agents in its card in Connettori` };
+      if (!(tool?.parameters?.properties || {})[param]) { args = { ...args }; delete args[param]; }
+    }
+    if (connector?.id === "linear") {
       for (const key of ["issue", "project"]) {
         const target = typeof args?.[key] === "string" && args[key].match(/^https:\/\/linear\.app\/([^/]+)\//i);
         if (target && record && target[1].toLowerCase() !== record.workspace.toLowerCase()) return { text: "error: the Linear URL belongs to a different workspace; choose its authorised workspace explicitly" };
