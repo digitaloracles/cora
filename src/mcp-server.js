@@ -4,10 +4,13 @@
 // cora's loopback tool bridge with the run's token.
 import readline from "node:readline";
 import { imageMime } from "./images.js";
+import { fitToolList } from "./tool-budget.js";
 import { VERSION } from "./version.js";
 
 const BRIDGE_URL = process.env.CORA_BRIDGE_URL;
 const BRIDGE_TOKEN = process.env.CORA_BRIDGE_TOKEN;
+const TOOLS_BUDGET = Number(process.env.CORA_TOOLS_BUDGET) || 0;
+const CORE_TOOLS = String(process.env.CORA_TOOLS_CORE || "").split(",").filter(Boolean);
 
 async function bridge(path, body) {
   const response = await fetch(`${BRIDGE_URL}${path}`, {
@@ -35,7 +38,7 @@ async function handle(message) {
       return {};
     case "tools/list": {
       const { tools } = await bridge("/tools/list", {});
-      return { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) };
+      return { tools: fitToolList(tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })), TOOLS_BUDGET, CORE_TOOLS) };
     }
     case "tools/call": {
       const out = await bridge("/tools/call", { name: message.params?.name, arguments: message.params?.arguments || {} });

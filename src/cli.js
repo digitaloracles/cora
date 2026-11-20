@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { connectorForTool } from "./connectors/index.js";
 import { geminiSettings } from "./gemini-profile.js";
 import { codexCredentialStore } from "./harnesses.js";
 import { deepSeekUsage, emptyMeter, mergeMeter } from "./usage.js";
@@ -125,6 +126,9 @@ function textSteps(onStep) {
   };
 }
 
+/** Antigravity drops the largest MCP tools past about 63 KB of schemas: stay under it. */
+const GEMINI_TOOLS_BUDGET = 60000;
+
 const GEMINI_THOUGHT_LEVELS = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
 
 /**
@@ -140,7 +144,8 @@ export async function runGemini({ bin, model, system, prompt, mcp, toolNames, wo
   const tools = mcp && toolNames.length ? toolNames : [];
   writeFileSync(join(agents, "cora.md"), `---\nname: cora\ndescription: Cora agent with Cora MCP tools only\nmainAgent: true\nsubagent: false\ntools: []\ncommandExecutionPolicy: off\n---\n${system}\n`, { mode: 0o600 });
   writeFileSync(join(geminiDir, "config", "mcp_config.json"), JSON.stringify({ mcpServers: tools.length ? {
-    cora: { command: process.execPath, args: [MCP_SCRIPT], env: { CORA_BRIDGE_URL: mcp.url, CORA_BRIDGE_TOKEN: mcp.token }, enabledTools: tools,
+    cora: { command: process.execPath, args: [MCP_SCRIPT], env: { CORA_BRIDGE_URL: mcp.url, CORA_BRIDGE_TOKEN: mcp.token, CORA_TOOLS_BUDGET: String(GEMINI_TOOLS_BUDGET),
+      CORA_TOOLS_CORE: tools.filter((name) => !connectorForTool(name)).join(",") }, enabledTools: tools,
       tools: Object.fromEntries(tools.map((name) => [name, { eager: true }])) },
   } : {} }), { mode: 0o600 });
   writeFileSync(join(geminiDir, "antigravity-cli", "settings.json"), JSON.stringify(geminiSettings(tools)), { mode: 0o600 });
