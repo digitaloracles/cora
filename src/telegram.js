@@ -176,8 +176,9 @@ export class Telegram extends EventEmitter {
   }
 
   /** Post text (and optionally a file); `name` puts the agent's name in bold on top, for agents without their own bot. */
-  async say(chatId, { content = "", file = null, name = "", markdown = false, keyboard = null }) {
-    const header = name ? `<b>${escapeHtml(name)}</b>\n` : "";
+  async say(chatId, { content = "", file = null, name = "", markdown = false, keyboard = null, mention = null }) {
+    const tag = mention?.id ? `<a href="tg://user?id=${encodeURIComponent(String(mention.id))}">${escapeHtml(mention.name || String(mention.id))}</a> ` : "";
+    const header = (name ? `<b>${escapeHtml(name)}</b>\n` : "") + tag;
     const html = markdown ? markdownHtml : escapeHtml;
     const sent = [];
     let text = String(content || "").trim();
