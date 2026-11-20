@@ -5,6 +5,7 @@ import { VERSION } from "./version.js";
 import { AREAS, TOOLS, nativeRequest, readOnlyTool, toolDefinition } from "./panel-mcp-tools.js";
 import { CONNECTORS } from "./connectors/index.js";
 
+const TOKEN_HEADERS = ["authorization", "x-api-key", "api-key", "apikey", "x-apikey", "x-api-token", "api-token", "x-auth-token", "x-access-token", "x-token", "token", "access-token", "x-cora-token"];
 const VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const RECORDS = "panelMcpTokens";
 const MAX_RESPONSE = 4 * 1024 * 1024;
@@ -70,7 +71,7 @@ export class PanelMcp {
     this.store.setValue(RECORDS, records.filter(record => record.id !== id || record.userId !== user.id));
   }
   authenticate(req) {
-    const token = /^Bearer (cora_mcp_[a-f0-9]{16}\.[A-Za-z0-9_-]{43})$/i.exec(String(req.headers.authorization || ""))?.[1];
+    const token = TOKEN_HEADERS.map(name => /^(?:Bearer\s+)?(cora_mcp_[a-f0-9]{16}\.[A-Za-z0-9_-]{43})$/i.exec(String(req.headers[name] || "").trim())?.[1]).find(Boolean);
     if (!token) return null;
     const id = token.slice(9, 25), records = this.records(), record = records.find(item => item.id === id);
     if (!record || !/^[a-f0-9]{64}$/.test(record.hash) || !timingSafeEqual(Buffer.from(record.hash, "hex"), Buffer.from(hash(token), "hex")) || !(Date.parse(record.expiresAt) > Date.now())) return null;
