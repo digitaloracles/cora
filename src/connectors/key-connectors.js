@@ -16,8 +16,8 @@ export class KeyConnectorError extends Error {
 const clean = (value, max = 400) => String(value ?? "").trim().slice(0, max);
 
 export class KeyConnectors {
-  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", oauthUrls = {}, fetch: fetchImpl = fetch }) {
-    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, oauthUrls, fetch: fetchImpl });
+  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", higgsfieldApi = "https://mcp.higgsfield.ai/mcp", oauthUrls = {}, fetch: fetchImpl = fetch }) {
+    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, higgsfieldApi, oauthUrls, fetch: fetchImpl });
     // OAuth authorisations under way: nonce → who started it, the PKCE verifier and where Google-style callbacks return.
     this.pending = new Map();
     // Access tokens renewed from a stored refresh token, until they expire.
@@ -26,7 +26,7 @@ export class KeyConnectors {
     this.linearQueue = Promise.resolve();
   }
 
-  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi }; }
+  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi, higgsfield: this.higgsfieldApi }; }
 
   /** A module's OAuth endpoints, which a test may point elsewhere. */
   oauthOf(service) {
@@ -203,6 +203,7 @@ export class KeyConnectors {
       return this.finishPasted(service, returned, user);
     }
     const module = CONNECTORS.find((item) => item.id === service);
+    if (!module.checkKey && module.oauth?.dynamicRegistration) throw new KeyConnectorError(`Collega ${meta.name} con il tuo account.`);
     if (module.checkKey) {
       if (input.mode !== "key") throw new KeyConnectorError("Scegli il collegamento con account o chiave API.");
       const token = clean(input.token, 4000);
@@ -375,15 +376,22 @@ export class KeyConnectors {
     return this.finishOAuth(service, Object.fromEntries(url.searchParams), state);
   }
 
-  /** Calls a token endpoint with a form body, the way OAuth wants it. */
-  async tokenCall(service, params, record = null) {
+  /** A form body carrying the client's own authentication, as the token and revocation endpoints want it. */
+  clientForm(service, params, record = null) {
     const oauth = this.oauthOf(service);
     const { clientId, clientSecret } = this.appCredentials(service, record);
     const headers = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
-    const form = new URLSearchParams({ ...params, ...(oauth.tokenParams || {}) });
+    const form = new URLSearchParams(params);
     if (!clientSecret) form.set("client_id", clientId);
     else if (oauth.clientAuth === "basic") headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
     else { form.set("client_id", clientId); form.set("client_secret", clientSecret); }
+    return { headers, form };
+  }
+
+  /** Calls a token endpoint with a form body, the way OAuth wants it. */
+  async tokenCall(service, params, record = null) {
+    const oauth = this.oauthOf(service);
+    const { headers, form } = this.clientForm(service, { ...params, ...(oauth.tokenParams || {}) }, record);
     let response;
     try { response = await this.fetch(oauth.token, { method: "POST", headers, body: form.toString(), signal: AbortSignal.timeout(20000) }); }
     catch { throw new KeyConnectorError(`${KEY_SERVICES[service].name} non risponde. Riprova tra poco.`, 502); }
@@ -489,7 +497,10 @@ export class KeyConnectors {
       if (renewal) { try { await renewal; } catch { /* revocation still uses the latest stored token */ } }
       const bundle = this.access.get(name) || JSON.parse(this.vault.value(this.store.vaultSecret(name)).toString("utf8"));
       let response;
-      try { response = await this.fetch(oauth.revoke, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: bundle.refresh_token || bundle.access_token, token_type_hint: bundle.refresh_token ? "refresh_token" : "access_token" }).toString(), signal: AbortSignal.timeout(20000) }); } catch { /* handled below without provider bodies */ }
+      try {
+        const { headers, form } = this.clientForm(service, { token: bundle.refresh_token || bundle.access_token, token_type_hint: bundle.refresh_token ? "refresh_token" : "access_token" }, record);
+        response = await this.fetch(oauth.revoke, { method: "POST", headers, body: form.toString(), signal: AbortSignal.timeout(20000) });
+      } catch { /* handled below without provider bodies */ }
       if (!response?.ok) return { revocationPending: true };
     }
     for (const [nonce, pending] of this.pending) if (pending.service === service) this.pending.delete(nonce);
