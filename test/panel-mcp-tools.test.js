@@ -179,7 +179,11 @@ test("an external orchestrator delegates to a Cora agent as its subagent and get
 
   const asked = (await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "Which report should I prepare? Ask me first.", wait_seconds: 60 })).structuredContent.data;
   assert.equal(asked.status, "waiting_for_you", JSON.stringify(asked));
-  assert.deepEqual(asked.replies.at(-1).question.choices, ["Q3", "Q4"]);
+  assert.deepEqual(asked.replies.find((reply) => reply.question).question.choices, ["Q3", "Q4"]);
+  f.app.orchestrator.postWeb(f.app.store.agent(agent.id), f.app.orchestrator.state("web-" + agent.id), "I asked which quarter: I start as soon as you answer.", undefined, undefined, { silent: true });
+  const still = (await f.call(alice, "cora_delegation_wait", { agent_id: agent.id, after: asked.message_id, wait_seconds: 0 })).structuredContent.data;
+  assert.equal(still.replies.at(-1).text, "I asked which quarter: I start as soon as you answer.");
+  assert.equal(still.status, "waiting_for_you", "a word added after the question keeps it open");
   assert.match(asked.next, /cora_delegate/);
 
   const queued = (await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "Nothing to answer here.", wait_seconds: 0 })).structuredContent.data;
