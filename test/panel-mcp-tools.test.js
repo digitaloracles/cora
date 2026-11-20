@@ -194,3 +194,46 @@ test("an external orchestrator delegates to a Cora agent as its subagent and get
   assert.equal((await f.call(alice, "cora_delegate", { agent_id: agent.id, task: "", wait_seconds: 0 })).rpcError.code, -32602);
   assert.equal((await f.call(alice, "cora_delegation_wait", { agent_id: agent.id, after: "web_missing", wait_seconds: 0 })).structuredContent.status, 404);
 });
+
+test("an external client talks with a Cora agent by name, in the agent-communication area that comes first", async (t) => {
+  const f = await mcpWorld(t), alice = await f.issue(f.alice), bob = await f.issue(f.bob), reader = await f.issue(f.alice, { readOnly: true });
+  const init = await f.rpc(alice, "initialize", { protocolVersion: "2025-06-18" });
+  assert.match(init.data.result.instructions, /^TALK TO THE AGENTS[\s\S]*talk_to_agent[\s\S]*word for word[\s\S]*Never say you cannot reach an agent/);
+  const all = (await f.rpc(alice, "tools/list")).data.result.tools.map((tool) => tool.name);
+  assert.deepEqual(all.slice(0, 4), ["talk_to_agent", "wait_for_agent_reply", "cora_delegate", "cora_delegation_wait"]);
+  const area = (await f.rpc(alice, "tools/list", {}, "/mcp?areas=agent-communication")).data.result.tools.map((tool) => tool.name);
+  const legacy = (await f.rpc(alice, "tools/list", {}, "/mcp?areas=subagents")).data.result.tools.map((tool) => tool.name);
+  assert.deepEqual(legacy, area, "the old subagents area id still selects the same tools");
+  const readTools = (await f.rpc(reader, "tools/list")).data.result.tools.map((tool) => tool.name);
+  assert.ok(!readTools.includes("talk_to_agent") && readTools.includes("wait_for_agent_reply"), "a read-only access never writes to an agent");
+  const map = JSON.parse((await f.call(alice, "cora_configurations", { area: "agent-communication" })).content[0].text);
+  assert.equal(map.areas[0].id, "agent-communication");
+
+  const clara = (await f.call(alice, "cora_agent_create", { name: "Clara", tools: false })).structuredContent.data;
+  await f.call(alice, "cora_agent_create", { name: "Clarissa", tools: false });
+  f.state.answer = (body) => {
+    const text = JSON.stringify(body.messages.at(-1)?.content || "");
+    if (/Ciao Clara, sei libera/.test(text)) return { content: "Ciao! Sì, sono libera: dimmi pure." };
+    return { content: "PASS" };
+  };
+  const talked = (await f.call(alice, "talk_to_agent", { agent: "clara", message: "Ciao Clara, sei libera oggi?", wait_seconds: 60 })).structuredContent;
+  assert.equal(talked.status, 200, JSON.stringify(talked));
+  assert.equal(talked.data.status, "done", JSON.stringify(talked.data));
+  assert.deepEqual(talked.data.agent, { id: clara.id, name: "Clara" });
+  assert.equal(talked.data.reply, "Ciao! Sì, sono libera: dimmi pure.");
+  assert.match(talked.data.next, /word for word[\s\S]*talk_to_agent/);
+  const room = f.app.store.recentMessages("web-" + clara.id, 20);
+  assert.ok(room.some((message) => message.id === talked.data.message_id && message.kind === "owner" && message.content === "Ciao Clara, sei libera oggi?"), "the person's words reach the agent's private chat as written");
+  const again = (await f.call(alice, "wait_for_agent_reply", { agent: "@Clara", after: talked.data.message_id, wait_seconds: 0 })).structuredContent.data;
+  assert.equal(again.status, "done");
+  assert.equal(again.reply, talked.data.reply);
+
+  const ambiguous = (await f.call(alice, "talk_to_agent", { agent: "Clar", message: "Hi", wait_seconds: 0 })).structuredContent;
+  assert.equal(ambiguous.status, 404);
+  assert.match(ambiguous.data.error, /More than one agent/);
+  const missing = (await f.call(alice, "talk_to_agent", { agent: "Zorro", message: "Hi", wait_seconds: 0 })).structuredContent;
+  assert.equal(missing.status, 404);
+  assert.ok(missing.data.agents.includes("Clara") && /talk_to_agent/.test(missing.data.next), "an unknown name lists who you can talk to");
+  assert.equal((await f.call(bob, "talk_to_agent", { agent: clara.id, message: "Hi", wait_seconds: 0 })).structuredContent.status, 404, "another person's private agent is not among the agents to talk to");
+  assert.equal((await f.call(alice, "talk_to_agent", { agent: "Clara", message: " ", wait_seconds: 0 })).rpcError.code, -32602);
+});
