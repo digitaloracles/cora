@@ -473,6 +473,8 @@ export const asana = {
   secret: "CORA_ASANA_TOKEN",
   appSecrets: ["CORA_ASANA_CLIENT_ID", "CORA_ASANA_CLIENT_SECRET"],
   label: "workspace",
+  // Several Asana accounts, each its own connection: agents name one with `account` (its `workspace` is a gid inside it).
+  multi: { param: "account", noun: "account", identity: ["accountId", "account"], keyMode: "pat", describe: (record) => `${record.account}${record.workspace ? ` (workspace ${record.workspace})` : ""}` },
   oauth: {
     authorize: "https://app.asana.com/-/oauth_authorize",
     token: "https://app.asana.com/-/oauth_token",
@@ -482,12 +484,12 @@ export const asana = {
       const headers = { Authorization: `Bearer ${access}` };
       const me = await request(`${api.asana}/users/me`, { headers });
       const workspace = Array.isArray(me.data?.data?.workspaces) ? me.data.data.workspaces[0] : null;
-      return { workspace: String(workspace?.name || "").slice(0, 120), workspaceId: String(workspace?.gid || "").slice(0, 40), account: String(me.data?.data?.email || me.data?.data?.name || "").slice(0, 120) };
+      return { workspace: String(workspace?.name || "").slice(0, 120), workspaceId: String(workspace?.gid || "").slice(0, 40), account: String(me.data?.data?.email || me.data?.data?.name || "").slice(0, 120), ...(me.data?.data?.gid ? { accountId: String(me.data.data.gid).slice(0, 40) } : {}) };
     },
   },
   card: {
     icon: "check",
-    description: "Gli agenti lavorano sui progetti e sulle attività del tuo Asana.",
+    description: "Collega uno o più account Asana e scegli gli agenti autorizzati per ciascuno.",
     meta: "Asana · Progetti e attività",
     intro: "Gli agenti lavorano sui progetti del tuo Asana. Il token resta nella cassaforte, mai nel pannello.",
     modes: [{

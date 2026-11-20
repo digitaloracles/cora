@@ -21,7 +21,7 @@ that is not authorised for a connector does not even see its tool.
 | `key-connectors.js` | `KeyConnectors`: connect, verify, authorise agents, disconnect, and run the agents' tools. |
 | `tooling.js` | Helpers shared by the actions: `fail` (a refusal the agent reads), `count`, `list`, `pick` (by id or name), `localFile` (a file from the agent's computer). |
 | `linear.js` | Linear: a personal API key; 15 `linear_` actions (issues, comments, projects, cycles, labels, states) and `linear_graphql`. |
-| `asana.js` | Asana: a personal access token or an OAuth app; 17 `asana_` actions (tasks, subtasks, sections, comments, attachments, projects) and `asana_api`. |
+| `asana.js` | Asana: one or more accounts, each with a personal access token or an OAuth app; 17 `asana_` actions (tasks, subtasks, sections, comments, attachments, projects) and `asana_api`. |
 | `canva.js` | Canva: an OAuth integration authorised by the owner; 20 `canva_` actions (designs, exports, uploads, folders, brand templates, comments) and `canva_api`. |
 | `firecrawl/index.js` | Firecrawl: the official remote MCP server, with API key or dynamically registered OAuth; exact tools and schemas discovered on connection, scoped to the selected team. |
 | `earendil.js` | Eärendil studio: the studio's own MCP server (`earendil.studio/api/mcp`, stateless Streamable HTTP) with an agent key `earendil_…`; its tools discovered on connection and offered as `earendil_<name>`, audio and pictures saved on the agent's computer. |
@@ -30,6 +30,14 @@ that is not authorised for a connector does not even see its tool.
 | `lovable.js` | Lovable: the official MCP server (`mcp.lovable.dev`), reached by Cora as an MCP client with the owner's OAuth token; 31 `lovable_` actions (projects, the project agent's messages, diffs and files, knowledge, skills, database, deploy, analytics, uploads) and `lovable_mcp`. |
 | `google.js` | Google: accounts connected through Cora's OAuth broker (`GoogleConnector`); 14 `gmail_` actions (send, reply, search, read, attachments, labels, archive, drafts) and `gmail_api`. |
 | `google-drive.js` | Google Drive on the same accounts: 16 `drive_` actions (search, file details, read as text, download and export, upload, create Docs/Sheets/Slides/text, rename/move/new version, folders, copy, trash, share/unshare, permissions, comments, shared drives) and `drive_api`. |
+
+A connector that declares `multi` holds several connections (Linear workspaces, Asana accounts):
+each has its own vault secret (the first takes the module's `secret`, the next ones a suffixed
+name), its own OAuth app and its own authorised agents, and the panel addresses it with
+`?connection=<id>`. `multi.identity` names the field that tells two connections apart (an id,
+then a name), so the same workspace or account is never connected twice. An agent authorised
+on two or more connections gets a required `multi.param` (`workspace` for Linear, `account` for
+Asana) on every tool; with one, nothing changes.
 
 Google is `kind: "google"`: its card has its own flow in the panel (one card, several
 accounts, agents chosen per account), and `GoogleConnector` serves its tools, which

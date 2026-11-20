@@ -46,8 +46,9 @@ export function summarizeTool(name, args = {}) {
 
 /** What the panel needs to draw the catalogue: names, cards, forms and tool names, never a value. */
 export function connectorCatalog({ origin = "" } = {}) {
-  return CONNECTORS.map(({ id, name, kind = "key", secret = "", appSecrets = [], tools = [], oauth = null, card }) => ({
+  return CONNECTORS.map(({ id, name, kind = "key", secret = "", appSecrets = [], tools = [], oauth = null, multi = null, card }) => ({
     id, name, kind, secret, appSecrets, tools: tools.map((tool) => tool.name), ...card,
+    ...(multi ? { multi: { param: multi.param, noun: multi.noun } } : {}),
     ...(oauth ? { oauth: true, redirect: origin ? `${origin}/connectors/oauth/${id}/callback` : "" } : {}),
   }));
 }

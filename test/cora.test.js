@@ -1916,12 +1916,12 @@ test("Linear workspace panel manages independent grants and keeps legacy connect
 
   const check = (card, agentName) => card.querySelectorAll("input").find(input => input.getAttribute("aria-label") === `Autorizza ${agentName}`);
   check(cards()[0], firstAgent.name).checked = true; check(cards()[0], firstAgent.name).dispatch("change");
-  await waitFor(() => fixture.app.keyConnectors.linearConnections().find(item => item.id === legacy.id).agents.includes(firstAgent.id));
+  await waitFor(() => fixture.app.keyConnectors.connections("linear").find(item => item.id === legacy.id).agents.includes(firstAgent.id));
   await sleep(50);
   assert.equal(cards()[0].getAttribute("open"), "");
   assert.equal(cards()[1].getAttribute("open"), null);
   check(cards()[1], secondAgent.name).checked = true; check(cards()[1], secondAgent.name).dispatch("change");
-  await waitFor(() => fixture.app.keyConnectors.linearConnections().find(item => item.id === second.data.record.id).agents.includes(secondAgent.id));
+  await waitFor(() => fixture.app.keyConnectors.connections("linear").find(item => item.id === second.data.record.id).agents.includes(secondAgent.id));
   await sleep(50);
   assert.deepEqual(fixture.app.store.vaultSecret("CORA_LINEAR_KEY").agents, [firstAgent.id]);
   assert.deepEqual(fixture.app.store.vaultSecret(second.data.record.secretName).agents, [secondAgent.id]);
@@ -1934,10 +1934,10 @@ test("Linear workspace panel manages independent grants and keeps legacy connect
   assert.equal(draft.isConnected, true); assert.equal(draft.value, "thirdspace");
   pane.querySelectorAll("button").find(button => button.textContent === "Annulla").click();
   const remove = cards()[1].querySelectorAll("button").find(button => button.textContent === "Scollega");
-  remove.click(); assert.equal(fixture.app.keyConnectors.linearConnections().length, 2);
-  remove.click(); await waitFor(() => fixture.app.keyConnectors.linearConnections().length === 1);
+  remove.click(); assert.equal(fixture.app.keyConnectors.connections("linear").length, 2);
+  remove.click(); await waitFor(() => fixture.app.keyConnectors.connections("linear").length === 1);
   assert.ok(fixture.app.store.vaultSecret("CORA_LINEAR_KEY"));
-  assert.deepEqual(fixture.app.keyConnectors.linearConnections()[0].agents, [firstAgent.id]);
+  assert.deepEqual(fixture.app.keyConnectors.connections("linear")[0].agents, [firstAgent.id]);
 });
 
 test("Linear app editing replaces only the selected card and cancels without writes", async (t) => {
