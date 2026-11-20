@@ -17,6 +17,8 @@ import { TelegramBots } from "./telegram-bots.js";
 import { hushStore } from "./secrets.js";
 import { Traces } from "./traces.js";
 import { Push } from "./push.js";
+import { Apns } from "./apns.js";
+import { QuotaAlerts } from "./quota-alerts.js";
 import { Brain } from "./brain.js";
 import { ToolBridge } from "./bridge.js";
 import { Boxes, plainKeys } from "./box.js";
@@ -49,6 +51,7 @@ export function startCora(overrides = {}) {
   const store = new Store(cfg.home);
   if (cfg.useResidentSubscriptions !== undefined) store.updateSettings({ useResidentSubscriptions: cfg.useResidentSubscriptions });
   let web = null;
+  let quotaAlerts = null;
   const activity = (entry) => {
     const record = { at: new Date().toISOString(), ...entry };
     if (record.agentId && !record.agentName) record.agentName = store.agent(record.agentId)?.name;
@@ -107,7 +110,7 @@ export function startCora(overrides = {}) {
   llm.credentials = credentials;
   subscriptions.usage = new SubscriptionUsage({ store, subscriptions, providerRecords: () => providerUsageRecords(llm),
     read: overrides.subscriptionUsageReader || ((record, signal) => record.server ? providerUsageData(record, { llm, config: cfg }, signal) : subscriptions.usageData(record.id, signal)),
-    emit: () => web?.broadcast({ type: "subscription-usage" }) });
+    emit: () => { web?.broadcast({ type: "subscription-usage" }); try { quotaAlerts?.check(); } catch (error) { activity({ type: "warning", text: `avvisi quote: ${error.message}` }); } } });
   // SSH into a desktop: the keys that already open this machine, plus the ones added in the panel.
   const sshKeys = () => {
     let host = [];
@@ -129,7 +132,7 @@ export function startCora(overrides = {}) {
   });
   const live = (event) => web?.broadcast(event);
   const traces = new Traces({ store, emit: live });
-  const push = new Push({ store, secret: cfg.vapidKey, subject: cfg.publicUrl, log: activity });
+  const push = new Push({ store, secret: cfg.vapidKey, subject: cfg.publicUrl, log: activity, apns: cfg.apns || null });
   const tokenFor = cfg.botTokenFor || ((name) => process.env[name] || process.env[name.replace(/^CORA_/, "CORO_")] || "");
   const bots = new AgentBots({ store, apiBase: cfg.discordApi, gatewayUrl: cfg.discordGateway, tokenFor, log: activity });
   const tgBots = new TelegramBots({ store, apiBase: cfg.telegramApi, pollTimeout: cfg.telegramPollTimeout, tokenFor, log: activity });
@@ -177,6 +180,8 @@ export function startCora(overrides = {}) {
   knowledge.agentChannels = (agent) => brain.channelIdsFor(agent);
   channels.sealedChannel = (channelId, parentId) => knowledge.sealedChannel(channelId, parentId);
   knowledge.channelParent = (channelId) => channels.info(channelId)?.parentId || null;
+  quotaAlerts = new QuotaAlerts({ store, subscriptions, timezone: cfg.timezone, notify: (notice) => (push.enabled ? push.notify(notice) : Promise.resolve()),
+    ownerOf: (record) => (knowledge.ownerMemory ? record.connectedBy?.id || "unavailable" : "") });
   if (knowledge.ownerMemory) {
     push.ownerForAgent = (agent) => knowledge.ownerId(agent);
     orchestrator.memoryOwner = (agent) => knowledge.ownerId(agent);
@@ -240,6 +245,26 @@ export function startCora(overrides = {}) {
     try { fish.setKey(secret ? vault.value(secret) : ""); } catch { fish.setKey(""); }
   };
   fishFromVault();
+  // Notifications to the iOS app: the APNs key, its id and the team from the environment, or from the vault (CORA_APNS_KEY_P8, CORA_APNS_KEY_ID, CORA_APNS_TEAM_ID).
+  let apnsLoaded = "";
+  push.loadApns = () => {
+    if (cfg.apns) return;
+    const read = (name, fallback) => {
+      if (fallback) return fallback;
+      const secret = store.vaultSecret(name);
+      try { return secret ? vault.value(secret).toString("utf8").trim() : ""; } catch { return ""; }
+    };
+    const key = read("CORA_APNS_KEY_P8", cfg.apnsKey), keyId = read("CORA_APNS_KEY_ID", cfg.apnsKeyId), teamId = read("CORA_APNS_TEAM_ID", cfg.apnsTeamId);
+    const signature = key && keyId && teamId ? `${keyId}.${teamId}.${key.length}` : "";
+    if (signature === apnsLoaded) return;
+    apnsLoaded = signature;
+    push.apns?.close?.();
+    push.apns = null;
+    if (!signature) return;
+    try { push.apns = new Apns({ key, keyId, teamId, topic: cfg.apnsTopic }); activity({ type: "settings", text: `notifiche iOS attive (APNs ${keyId})` }); }
+    catch (error) { activity({ type: "error", text: `notifiche iOS: chiave APNs non valida (${error.message})` }); }
+  };
+  push.loadApns();
   const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
   voiceCalls.refreshKey = fishFromVault;
   orchestrator.callVoice = voiceCalls;

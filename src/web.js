@@ -489,6 +489,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
   });
 
   const appAccess = new AppAccess({ store });
+  if (push) { push.appTargets = () => appAccess.pushTargets(); push.dropAppToken = (token) => appAccess.dropPush(token); }
   const threadScopeFor = (user) => {
     const privateThreads = Boolean(knowledge?.ownerMemory || store.agents().some((agent) => agent.sealed));
     if (!privateThreads) return {};
@@ -609,6 +610,11 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       appAccess.revoke(user, device.id);
       for (const stream of appStreams) if (stream.deviceId === device.id) stream.close();
       return send(res, 200, { ok: true });
+    }
+    if (path === "/app/v1/push" && method === "POST") {
+      const body = await readJson(req, 4096);
+      try { return send(res, 200, { ...appAccess.setPush(device.id, body), enabled: Boolean(push?.enabled && push.apns) }); }
+      catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
     const choice = /^\/app\/v1\/choices\/(ch_[a-f0-9]{12})$/.exec(path);
     if (choice && method === "POST") {
@@ -2543,7 +2549,18 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     }
   };
 
-  store.plans.onChange = (plan) => broadcast({ type: "plan", agentId: plan.agentId, channelId: plan.channelId, planId: plan.id, status: plan.status, done: plan.done, total: plan.items.length, at: plan.updatedAt });
+  const blockedPlans = new Set(store.plans.recent({ open: true, limit: 500 }).filter((plan) => plan.status === "blocked").map((plan) => plan.id));
+  store.plans.onChange = (plan) => {
+    broadcast({ type: "plan", agentId: plan.agentId, channelId: plan.channelId, planId: plan.id, status: plan.status, done: plan.done, total: plan.items.length, at: plan.updatedAt });
+    if (plan.status !== "blocked") { blockedPlans.delete(plan.id); return; }
+    if (blockedPlans.has(plan.id)) return;
+    blockedPlans.add(plan.id);
+    const agent = store.agent(plan.agentId);
+    const english = store.settings.language === "en";
+    push?.notify({ userId: knowledge?.ownerMemory ? knowledge.ownerId(agent) || "unavailable" : "", title: english ? `${agent?.name || "An agent"} is blocked` : `${agent?.name || "Un agente"} è bloccato`,
+      body: `${plan.name}${plan.blockedReason ? ` · ${plan.blockedReason}` : ""}`, url: `/#/thread/${encodeURIComponent(plan.channelId)}`, tag: `plan-${plan.id}`,
+      data: { planId: plan.id, channelId: plan.channelId, kind: "plan-blocked" } })?.catch?.(() => {});
+  };
 
   function events(req, res) {
     if (!authed(req)) return send(res, 401, { error: "login richiesto" });

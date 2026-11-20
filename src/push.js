@@ -1,4 +1,5 @@
 import { createECDH, createHash, createCipheriv, createPrivateKey, hkdfSync, randomBytes, sign } from "node:crypto";
+import { goneToken } from "./apns.js";
 
 const RECORD_SIZE = 4096;
 const AGENT_GAP_MS = 60 * 1000;
@@ -57,25 +58,38 @@ function vapidHeader(endpoint, keys, subject) {
 
 /** Notifications to the owner's devices that installed the panel and allowed them. */
 export class Push {
-  constructor({ store, secret = "", subject = "https://github.com/digitaloracles/cora", log }) {
+  constructor({ store, secret = "", subject = "https://github.com/digitaloracles/cora", log, apns = null }) {
     this.store = store;
     this.keys = secret ? vapidKeys(secret) : null;
+    /** The iOS app's devices, through APNs: set when a key is configured; the web wires the paired devices. */
+    this.apns = apns;
+    this.appTargets = () => [];
+    this.dropAppToken = () => {};
+    /** Reads the APNs key again (from the vault, when it changes there); at most once a minute. */
+    this.loadApns = null;
+    this.apnsCheckedAt = 0;
     this.subject = subject;
     this.log = log;
     this.sentByAgent = new Map();
   }
 
   get enabled() {
-    return Boolean(this.keys);
+    if (this.loadApns && Date.now() - this.apnsCheckedAt > 60000) { this.apnsCheckedAt = Date.now(); try { this.loadApns(); } catch {} }
+    return Boolean(this.keys || this.apns);
+  }
+
+  targets(userId = "") {
+    return (this.apns ? this.appTargets() : []).filter((target) => !userId || target.userId === userId);
   }
 
   status(userId = "") {
-    return { enabled: this.enabled, publicKey: this.keys?.publicKey || "", devices: this.store.pushSubscriptions().filter((subscription) => !userId || subscription.userId === userId).length };
+    return { enabled: Boolean(this.keys), publicKey: this.keys?.publicKey || "", devices: this.store.pushSubscriptions().filter((subscription) => !userId || subscription.userId === userId).length, apps: this.targets(userId).length };
   }
 
   /** Send to every device; subscriptions the push service has dropped are removed. */
-  async notify({ title, body = "", url = "/", tag = "", userId = "" }) {
-    if (!this.keys) return { sent: 0 };
+  async notify({ title, body = "", url = "/", tag = "", userId = "", data = {} }) {
+    const apps = this.sendApps({ title, body, url, tag, userId, data });
+    if (!this.keys) return { sent: await apps };
     const payload = JSON.stringify({ title: String(title).slice(0, 80), body: String(body).slice(0, 400), url, tag });
     let sent = 0;
     await Promise.all(this.store.pushSubscriptions().filter((subscription) => !userId || subscription.userId === userId).map(async (subscription) => {
@@ -99,13 +113,27 @@ export class Push {
         this.log?.({ type: "warning", text: `notifica: ${error.message}` });
       }
     }));
-    return { sent };
+    return { sent: sent + await apps };
+  }
+
+  /** The same notice to the iOS app's devices; a token APNs drops is forgotten, the device stays paired. */
+  async sendApps({ title, body, url, tag, userId, data }) {
+    if (!this.enabled) return 0;
+    const targets = this.targets(userId);
+    if (!targets.length) return 0;
+    const results = await Promise.all(targets.map(async (target) => {
+      const result = await this.apns.send(target.token, { title, body, tag, data: { url, ...data } }, { environment: target.environment }).catch((error) => ({ status: 0, reason: error.message }));
+      if (goneToken(result)) this.dropAppToken(target.token);
+      else if (result.status !== 200) this.log?.({ type: "warning", text: `notifica iOS: APNs risponde ${result.status || "senza risposta"}${result.reason ? ` (${result.reason})` : ""}` });
+      return result.status === 200 ? 1 : 0;
+    }));
+    return results.reduce((sum, value) => sum + value, 0);
   }
 
   /** An agent asking to notify the owner: at most one a minute and twenty a day each. */
   async fromAgent(agent, { title, message, url }) {
-    if (!this.keys) return { error: "notifications are not set up" };
-    if (!this.store.pushSubscriptions().length) return { error: "the owner has not turned notifications on in the panel" };
+    if (!this.enabled) return { error: "notifications are not set up" };
+    if (!this.store.pushSubscriptions().length && !this.targets().length) return { error: "the owner has not turned notifications on in the panel" };
     const now = Date.now();
     const recent = (this.sentByAgent.get(agent.id) || []).filter((at) => now - at < 24 * 3600 * 1000);
     if (recent.length && now - recent[recent.length - 1] < AGENT_GAP_MS) return { error: "you sent a notification less than a minute ago" };
