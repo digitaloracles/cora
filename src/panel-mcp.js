@@ -162,7 +162,8 @@ export class PanelMcp {
       const replies = messages.filter(message => message.at >= start && message.id !== args.after && message.kind === "agent" && message.agentId === agentId && !message.passive)
         .map(message => ({ id: message.id, at: new Date(message.at).toISOString(), text: message.content, ...(message.file ? { file: message.file } : {}), ...(message.request ? { question: { choices: message.request.choices || [] } } : {}) }));
       const running = (read.data.running || []).filter(trace => trace.agentId === agentId).map(trace => ({ trace_id: trace.id, started_at: trace.startedAt, steps: trace.stepCount, tools: trace.tools, goal: trace.goal || "", latest: trace.output || "" }));
-      const asked = replies.at(-1)?.question;
+      // A question it asked stays open after any word it added: nothing the person wrote came after it here.
+      const asked = replies.some(reply => reply.question);
       const lastAt = replies.length ? Date.parse(replies.at(-1).at) : 0;
       // Finished: it answered, no turn of it runs in this DM, and its last word has had a moment to be the last.
       const status = running.length ? "working" : asked ? "waiting_for_you" : replies.length && Date.now() - lastAt >= DELEGATION_SETTLE_MS ? "done" : "working";
