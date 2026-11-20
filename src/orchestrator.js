@@ -2148,7 +2148,7 @@ export class Orchestrator {
     }
   }
 
-  async deliver(agent, state, text, file, traceId, { ping = "", request, components, keyboard, slackButtons, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
+  async deliver(agent, state, text, file, traceId, { ping = "", tgMention = null, request, components, keyboard, slackButtons, passive = false, delegationAuthorized = false, returnToAgentId = "" } = {}) {
     if (isWebRoom(state.id)) return this.postWeb(agent, state, text, file, traceId, { request, passive, delegationAuthorized, returnToAgentId });
     const chatId = telegramChatId(state.id);
     const slack = slackIds(state.id);
@@ -2166,7 +2166,7 @@ export class Orchestrator {
     const body = chatId ? text || "" : slack ? await this.slackMentions(agent, state, text) : await this.discordMentions(agent, state, text);
     const content = ping && body ? `${ping} ${body}` : body;
     let sent;
-    if (chatId) sent = await this.postTelegram(agent, chatId, content, file, state.id, keyboard);
+    if (chatId) sent = await this.postTelegram(agent, chatId, content, file, state.id, keyboard, tgMention);
     else if (slack) sent = await this.postSlack(agent, state, content, file, slackButtons);
     else {
       const own = this.bots?.client(agent.id);
@@ -2307,25 +2307,25 @@ export class Orchestrator {
     return privateBot ? this.tgBots?.client(privateBot) || null : null;
   }
 
-  async postTelegram(agent, chatId, text, file, channelId = "", keyboard = null) {
+  async postTelegram(agent, chatId, text, file, channelId = "", keyboard = null, mention = null) {
     if (telegramBotAgent(channelId)) {
       const bot = this.telegramClientFor(channelId);
       if (!bot) throw new Error("il bot Telegram di questo agente non è collegato");
-      return bot.say(chatId, { content: text || "", file, keyboard });
+      return bot.say(chatId, { content: text || "", file, keyboard, mention });
     }
     const own = this.tgBots?.client(agent.id);
     // Without a main bot, an agent's own bot is the only voice there is.
     const main = Boolean(this.telegram.token);
     if (own && (!main || await this.tgBots.inChat(agent.id, chatId))) {
       try {
-        return await own.say(chatId, { content: text || "", file, keyboard });
+        return await own.say(chatId, { content: text || "", file, keyboard, mention });
       } catch (error) {
         if (!main) throw error;
         this.tgBots.forgetMembership(agent.id);
         this.log({ type: "warning", agentId: agent.id, channelId: telegramChannel(chatId), text: `bot Telegram suo: ${error.message}; scrivo col bot principale` });
       }
     }
-    return this.telegram.say(chatId, { content: text || "", file, name: agent.name, keyboard });
+    return this.telegram.say(chatId, { content: text || "", file, name: agent.name, keyboard, mention });
   }
 
   /** A message in a panel room: archived like a Discord one and pushed live to the panel. */
@@ -2405,7 +2405,10 @@ export class Orchestrator {
       const pressable = clean.length && delivery.replyMode !== "voice";
       const markup = !pressable ? {} : slack ? { slackButtons: choiceSlackButtons(agent, clean) } : telegramChatId(state.id) ? { keyboard: choiceKeyboard(agent, clean) } : { components: choiceButtons(agent, clean) };
       const body = clean.length && !pressable ? `${text}\n${english ? "Answers" : "Risposte"}: ${clean.join(" · ")}` : text;
-      await this.postAs(agent, state, body, undefined, traceId, { ping: owner ? `<@${owner}>` : "", request, ...markup, ...delivery });
+      // Telegram has no <@id> markup: a group gets a real mention of the owner, a private chat is already theirs.
+      const tgChat = telegramChatId(state.id);
+      const tgMention = tgChat && owner && Number(tgChat) < 0 ? { id: owner, name: (replyTo?.authorId === owner && replyTo?.authorName) || this.store.ownerName() || (english ? "Owner" : "Proprietario") } : null;
+      await this.postAs(agent, state, body, undefined, traceId, { ping: owner && !tgChat ? `<@${owner}>` : "", tgMention, request, ...markup, ...delivery });
       item = state.history.findLast((entry) => entry.agentId === agent.id && entry.request === request);
     }
     state.request = { agentId: agent.id, at: Date.now() };

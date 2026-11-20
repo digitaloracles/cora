@@ -8101,6 +8101,23 @@ describe("agents in Telegram", () => {
     assert.equal(edit.reply_markup, undefined);
     assert.equal(telegram.state.answers.length, 2, "every press is answered, so the button stops spinning");
     await quiet();
+
+    const before = app.store.agent(tina.id);
+    app.store.updateAgent(tina.id, { ...before, ownerIds: [`telegram:${TG_OWNER}`] });
+    assert.deepEqual(app.store.agentOwnerChats(app.store.agent(tina.id)), [`telegram:${TG_OWNER}`]);
+    try {
+      telegram.state.sent.length = 0;
+      app.orchestrator.requestsByAgent.delete(tina.id);
+      replies.set("Tina", () => ({ content: "PASS" }));
+      await app.orchestrator.askOwner(app.store.agent(tina.id), { question: "Pubblico anche il blog?", choices: ["Sì", "No"] }, { channelId: `tg:${TG_GROUP}`, replyTo: { authorId: TG_OWNER, authorName: "Seb" } });
+      const mentioned = await waitFor(() => telegram.state.sent.find((item) => item.reply_markup), { what: "the question to a Telegram owner" });
+      assert.equal(mentioned.text, `<a href="tg://user?id=${TG_OWNER}">Seb</a> Pubblico anche il blog?`, "a group gets a real Telegram mention of the owner");
+      assert.doesNotMatch(mentioned.text, /<@/, "never the Discord mention markup");
+      assert.equal(mentioned.parse_mode, "HTML");
+      await quiet();
+    } finally {
+      app.store.updateAgent(tina.id, before);
+    }
   });
 
   test("Telegram group setup checks live privacy, membership and listening, then requires a human probe and its delivered reply", async () => {
