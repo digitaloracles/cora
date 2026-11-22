@@ -5,7 +5,7 @@ import { bm25 } from "./memory.js";
 import { SHARED } from "./store.js";
 import { coauthorTrailer } from "./git-attribution.js";
 import { summarizeTool, toolFor } from "./connectors/index.js";
-import { L } from "./prompt-lang.js";
+import { L, promptLanguageOf, textLanguage } from "./prompt-lang.js";
 
 const XDOTOOL_BUTTON = { click: "1", double_click: "1", right_click: "3", middle_click: "2" };
 
@@ -419,9 +419,9 @@ export const TOOL_DEFS = [
     parameters: {
       type: "object",
       properties: {
+        caption: { type: "string", description: "optional one line shown with the file, written in the language of the message you are answering, even when the file is in another language" },
         name: { type: "string", description: "file name with its extension, e.g. linkedin-posts-week-48.md" },
         content: { type: "string", description: "the complete text of the file" },
-        caption: { type: "string", description: "optional one line shown with the file, in the language of the person you are answering" },
       },
       required: ["name", "content"],
     },
@@ -995,7 +995,10 @@ export async function executeTool(call, ctx) {
         const extension = raw.includes(".") ? raw.split(".").pop().toLowerCase() : "";
         if (!CREATED_FILE_TYPES[extension]) return { text: `error: use one of these extensions: ${Object.keys(CREATED_FILE_TYPES).map((ext) => `.${ext}`).join(", ")}` };
         const data = Buffer.from(content, "utf8");
-        await postFile({ name: raw, data, type: CREATED_FILE_TYPES[extension] }, String(args.caption || "").slice(0, 300));
+        const caption = String(args.caption || "").slice(0, 300);
+        const language = promptLanguageOf(agent?.language);
+        const written = textLanguage(caption);
+        await postFile({ name: raw, data, type: CREATED_FILE_TYPES[extension] }, language && written && written !== language ? "" : caption);
         return { text: `posted ${raw} (${Math.max(1, Math.round(data.length / 1024))} KB) in the chat` };
       }
       case "send_file": {
