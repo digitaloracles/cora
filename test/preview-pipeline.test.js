@@ -222,3 +222,13 @@ test("a colleague who joins with another role gets the mail of that agent, with 
   assert.doesNotMatch(mail.text, /Researches markets/, "no English role line when the card says it in Italian");
   assert.deepEqual(w.groups()[0].agents[1].starters, ["Cosa è cambiato?"]);
 });
+
+test("the preview email ends a long agent pitch on a whole word", async () => {
+  const { previewEmail } = await import("../src/preview-email.js");
+  const focus = "You want more subscribers for your weekly Catania Buzz newsletter, so I'll draft in-language promo posts and sign-up copy that turn readers across Catania and provincia into subscribers. I'll start with a few newsletter promo variants and sign-up page copy you can test this week across your channels and site, then a short weekly report on which version brought more sign-ups.";
+  const mail = previewEmail({ company: "Catania Buzz", lang: "en", link: "https://demo.example/auth/preview?token=t", role: "Marketer", agent: { name: "Nina", role: "Marketer", focus }, site: "catania.buzz" });
+  const shown = (/Where it starts:<\/b>\s*([^<]*)</.exec(mail.html)?.[1] || "").replace(/&#39;/g, "'");
+  assert.ok(shown.endsWith("…"), shown);
+  assert.ok(focus.includes(shown.slice(0, -1)), "a prefix of the pitch");
+  assert.ok(focus[shown.length - 1] === " " || /[,.;]/.test(focus[shown.length - 1]), "cut at a word boundary");
+});

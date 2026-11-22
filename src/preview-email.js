@@ -97,6 +97,13 @@ const COPY = {
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
 const line = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+/** Longer text ends on a whole word with an ellipsis, never in the middle of one. */
+const words = (value, max) => {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), Math.floor(max / 2))).replace(/[\s,;:.\u2014-]+$/, "")}…`;
+};
 const hostOf = (site) => { try { return new URL(site).hostname.replace(/^www\./, ""); } catch { return ""; } };
 const firstName = (name) => line(String(name || "").split("·")[0], 40) || "Cora";
 
@@ -115,7 +122,7 @@ export function previewEmail({ company, lang, link, role = "", agent = null, sit
   const title = roleTitle(agent?.role || role, key);
   const tint = TINT[agent?.archetype] || "#264cd6";
   const host = hostOf(site) || (key === "it" ? "il vostro sito" : key === "es" ? "vuestra web" : key === "de" ? "Ihre Website" : "your website");
-  const focus = line(agent?.focus, 240);
+  const focus = words(agent?.focus, 320);
   const does = line(agent?.does, 200);
   const facts = copy.facts.map(([head, body]) => [head, typeof body === "function" ? body(who) : body]);
   const subject = copy.subject(who, name);
