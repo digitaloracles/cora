@@ -49,7 +49,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   const ginaState = (await call(gina.cookie, "/api/state")).data;
   assert.deepEqual(annaState.agents.map((agent) => [agent.name, agent.sealed]), [["Mara · Acme", true]], "the agent of the archetype Acme chose");
   assert.deepEqual(ginaState.agents.map((agent) => agent.name), ["Mia · Globex"]);
-  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6" }] });
+  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6", starters: [] }] });
 
   // The company only ever sees the demo chat: the panel sends it there, and the chat page is served.
   const home = await fetch(`${f.base}/`, { redirect: "manual", headers: { cookie: anna.cookie } });

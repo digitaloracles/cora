@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentName, agentSpecs, briefing, previewEmail, publicAddress, readPage, readSite, runOnce, slugFor, tokenHash } from "../src/preview-pipeline.js";
+import { agentName, agentSpecs, briefing, cleanCard, draftCard, previewEmail, publicAddress, readPage, readSite, runOnce, slugFor, tokenHash } from "../src/preview-pipeline.js";
+import { startDraftDoor } from "../src/preview-demo.js";
 
 function world({ chat = async () => JSON.stringify({ summary: "Acme makes rockets.", products: ["Rockets"], audience: "Space fans", tone: "Bold", archetype: "support", focus: "answers" }), siteFails = false } = {}) {
   let clock = Date.parse("2026-11-22T08:00:00Z");
@@ -166,4 +167,43 @@ test("names, briefing fallback, page reading and public addresses", async () => 
   assert.match(it.html, /#e5533d/);
   assert.doesNotMatch(it.html, /<script>/);
   assert.match(it.text, /Da dove parte: Write to <script>x<\/script> clinics/);
+});
+
+test("the onboarding's card becomes the sealed agent: its name, its pitch, the company's wish and its first messages", async () => {
+  const seen = [];
+  const chat = async (messages) => { seen.push(messages); return '{"name":"Iris 2","pitch":"I watch Rival   prices for you.","starters":["What changed?","b","c","d"]}'; };
+  const card = await draftCard({ company: "Acme", site: "https://acme.com", archetype: "researcher", lang: "it", wish: "Watch competitors" }, { chat, read: async () => [{ url: "https://acme.com/", title: "Acme", description: "Rockets", headings: ["Rockets"], text: "Acme rockets" }] });
+  assert.deepEqual(card, { name: "Iris", pitch: "I watch Rival prices for you.", starters: ["What changed?", "b", "c"] });
+  assert.match(seen[0][0].content, /Researcher/);
+  assert.match(seen[0][0].content, /in Italian/);
+  assert.match(seen[0][1].content, /Watch competitors/);
+  await draftCard({ company: "Acme", site: "https://acme.com", archetype: "marketer" }, { chat, read: async () => { throw new Error("down"); } });
+  assert.match(seen[1][1].content, /could not be read/, "an unreadable site still gets a card, told to say nothing specific");
+  await assert.rejects(draftCard({ company: "Acme", site: "https://acme.com", archetype: "boss" }, { chat }), /archetype/);
+  await assert.rejects(draftCard({ company: "Acme", site: "https://acme.com", archetype: "marketer" }, { chat: async () => "nope", read: async () => [] }), /empty draft/);
+  assert.equal(cleanCard({ name: "", pitch: "x" }), null);
+
+  const brief = await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: [{ url: "https://acme.com", title: "Acme", description: "", headings: [], text: "" }], archetype: "researcher", wish: "Watch competitors", card: { name: "Iris", pitch: "I watch Rival prices.", starters: ["What changed?"] }, chat: async (messages) => { seen.push(messages); return JSON.stringify({ summary: "Acme.", focus: "something else" }); } });
+  assert.match(seen.at(-1)[1].content, /What the company wants from this agent: Watch competitors/);
+  assert.deepEqual([brief.agents[0].name, brief.agents[0].focus, brief.agents[0].starters], ["Iris", "I watch Rival prices.", ["What changed?"]], "the agent is the one the company saw");
+  const [spec] = agentSpecs(brief);
+  assert.match(spec.personality, /The company asked you for this: Watch competitors/);
+  assert.match(spec.personality, /Start from this: I watch Rival prices\./);
+  assert.deepEqual(spec.starters, ["What changed?"]);
+  const plain = await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: [], archetype: "researcher", card: { name: "<b>", pitch: "" }, chat: async () => "{}" });
+  assert.equal(plain.agents[0].name, "Iris", "a broken card falls back to the archetype");
+});
+
+test("the draft door answers only usecora.space with the pipeline token", async (t) => {
+  const token = "t".repeat(40);
+  const server = startDraftDoor({ token, port: 0, chat: async () => '{"name":"Leo","pitch":"I find buyers.","starters":["Who?"]}', read: async () => [] });
+  await new Promise((resolve) => server.once("listening", resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/_draft`;
+  const ask = (body, auth = `Bearer ${token}`) => fetch(url, { method: "POST", headers: { Authorization: auth, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const ok = await ask({ company: "Acme", site: "acme.com", archetype: "lead-generator", lang: "en", wish: "Buyers" });
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await ok.json()).draft, { name: "Leo", pitch: "I find buyers.", starters: ["Who?"] });
+  assert.equal((await ask({ archetype: "lead-generator" }, "Bearer wrong")).status, 404);
+  assert.equal((await ask({ site: "acme.com", archetype: "boss" })).status, 400);
 });

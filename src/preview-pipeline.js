@@ -109,7 +109,38 @@ const clip = (value, size) => String(value || "").replace(/\s+/g, " ").trim().sl
 
 /** The model's briefing, or one made from the page itself when the model does not answer. */
 /** The company from its website, and the agent it chose (or, when it did not, the one that fits it best). */
-export async function briefing({ company, site, lang, pages, chat, archetype = "" }) {
+/** The card the onboarding drafted, as the company saw it: a first name, a pitch and up to three first messages. */
+export function cleanCard(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const name = clip(value.name, 24).replace(/[^\p{L}\p{M}' -]/gu, "").trim();
+  const pitch = clip(value.pitch, 280);
+  const starters = (Array.isArray(value.starters) ? value.starters : []).map((item) => clip(item, 120)).filter(Boolean).slice(0, 3);
+  return name && pitch ? { name, pitch, starters } : null;
+}
+
+const LANGUAGE_NAMES = { en: "English", it: "Italian", es: "Spanish", de: "German" };
+
+/**
+ * The onboarding's small agent (usecora.space/try asks it through the demo host): the role a company picked,
+ * made theirs from its website and what it wrote it wants. The pipeline later builds the sealed agent from this card.
+ */
+export async function draftCard({ company, site, archetype, lang = "en", wish = "" }, { chat, read = readSite }) {
+  const id = archetypeOf(archetype);
+  if (!id) throw new Error("archetype");
+  let source = "";
+  try { source = (await read(site)).map((page) => `URL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\nHeadings: ${page.headings.join(" | ")}\nText: ${page.text}`).join("\n\n").slice(0, 8000); }
+  catch { source = "(the website could not be read: use only the company name and website address, and say nothing specific about the offer)"; }
+  const answer = await chat([
+    { role: "system", content: `You set up one AI teammate for a company trying Cora for one hour. The company chose this role: ${ARCHETYPES[id].role}, who ${ARCHETYPES[id].does}. From the company's public website and what the company wrote it wants, make that role theirs. Answer with JSON only: {"name": a short, friendly first name for the agent, "pitch": one or two sentences, at most 240 characters, addressed to the company ("you"), saying what this agent will do for them first (start from what they asked for, within the role), naming their real products, customers or market when the website shows them, "starters": three short first messages (at most 90 characters each) the company could send this agent to see it work}. Write "pitch" and "starters" in ${LANGUAGE_NAMES[lang] || "English"}. Never invent facts that are not on the website. No markdown.` },
+    { role: "user", content: `Company: ${clip(company, 80)}\nWebsite: ${site}\nWhat the company wants from this agent: ${clip(wish, 500) || "(not said)"}\n\n${source}` },
+  ]);
+  let card = null;
+  try { card = cleanCard(JSON.parse(String(answer).replace(/^```(?:json)?|```$/g, "").trim())); } catch {}
+  if (!card) throw new Error("empty draft");
+  return card;
+}
+
+export async function briefing({ company, site, lang, pages, chat, archetype = "", wish = "", card = null }) {
   const source = pages.map((page) => `URL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\nHeadings: ${page.headings.join(" | ")}\nText: ${page.text}`).join("\n\n").slice(0, 14000);
   const chosen = archetypeOf(archetype);
   const catalog = Object.entries(ARCHETYPES).map(([id, item]) => `${id}: ${item.role}, ${item.does}`).join("\n");
@@ -120,26 +151,27 @@ export async function briefing({ company, site, lang, pages, chat, archetype = "
   try {
     const answer = await chat([
       { role: "system", content: `You prepare the briefing for a short Cora agent preview for one company, only from its public website. ${task}\nAnswer with JSON only: {"summary": string (2-3 sentences), "products": [string], "audience": string, "tone": string, "archetype": the archetype id, "focus": string (one sentence: what this agent would do for this company first)}. Do not invent facts that are not on the website.` },
-      { role: "user", content: `Company: ${company}\nWebsite: ${site}\nPreferred language of the visitor: ${lang}\n\n${source}` },
+      { role: "user", content: `Company: ${company}\nWebsite: ${site}\nPreferred language of the visitor: ${lang}${wish ? `\nWhat the company wants from this agent: ${clip(wish, 500)}` : ""}\n\n${source}` },
     ]);
     parsed = JSON.parse(String(answer).replace(/^```(?:json)?|```$/g, "").trim());
   } catch {}
   const page = pages[0] || {};
   const id = chosen || archetypeOf(parsed?.archetype) || DEFAULT_ARCHETYPES[0];
+  const drafted = cleanCard(card);
   return {
     company: clip(company, 80), site,
     summary: clip(parsed?.summary, 600) || clip(page.description || page.title, 600) || `${clip(company, 80)} (${siteHost(site)}).`,
     products: (Array.isArray(parsed?.products) ? parsed.products : page.headings || []).map((item) => clip(item, 120)).filter(Boolean).slice(0, 8),
     audience: clip(parsed?.audience, 200), tone: clip(parsed?.tone, 200),
-    agents: [{ archetype: id, name: ARCHETYPES[id].name, role: ARCHETYPES[id].role, does: ARCHETYPES[id].does, focus: clip(parsed?.focus, 240) }],
+    agents: [{ archetype: id, name: drafted?.name || ARCHETYPES[id].name, role: ARCHETYPES[id].role, does: ARCHETYPES[id].does, focus: drafted?.pitch || clip(parsed?.focus, 240), wish: clip(wish, 500), starters: drafted?.starters || [] }],
   };
 }
 
 export function agentSpecs(brief, offset = 0) {
   const facts = [`Company: ${brief.company} (${brief.site}).`, `What it does: ${brief.summary}`, brief.products.length ? `Products and services: ${brief.products.join("; ")}.` : "", brief.audience ? `Customers: ${brief.audience}.` : "", brief.tone ? `Tone of voice: ${brief.tone}.` : ""].filter(Boolean).join("\n");
   return brief.agents.map((agent, i) => ({
-    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length],
-    personality: `You are ${agent.name}, the ${agent.role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. As ${agent.role.toLowerCase()} you ${agent.does}.\n${agent.focus ? `Start from this: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
+    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length], starters: agent.starters || [],
+    personality: `You are ${agent.name}, the ${agent.role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. As ${agent.role.toLowerCase()} you ${agent.does}.\n${agent.wish ? `The company asked you for this: ${agent.wish}\n` : ""}${agent.focus ? `Start from this: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
   }));
 }
 
@@ -195,7 +227,7 @@ export async function runOnce(deps) {
         let added = null;
         if (wanted && !same.agents.some((agent) => agent.archetype === wanted) && same.agents.length < MAX_AGENTS) {
           const pages = await deps.site(request.site);
-          const brief = await briefing({ company: same.company, site: same.site, lang: request.lang, pages, chat: deps.chat, archetype: wanted });
+          const brief = await briefing({ company: same.company, site: same.site, lang: request.lang, pages, chat: deps.chat, archetype: wanted, wish: request.wish, card: request.draft });
           added = agentSpecs(brief, same.agents.length);
           same.agentIds.push(...deps.groups.addAgents(same, added));
           same.agents.push(...added);
@@ -211,7 +243,7 @@ export async function runOnce(deps) {
       }
       await deps.cloud.update(request.id, { status: "building" });
       const pages = await deps.site(request.site);
-      const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat, archetype: request.archetype });
+      const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat, archetype: request.archetype, wish: request.wish, card: request.draft });
       const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
       const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
