@@ -67,6 +67,29 @@ export function storeGroups(app, { model, minutes }) {
   };
 }
 
+/**
+ * After a restart: a guest's last message that the restart left without an answer is answered now, while that
+ * company's hour is open. Preview agents have no tools, so the general resume of interrupted work skips them.
+ */
+export function answerLeftovers(app, { minutes, withinMs = 15 * 60000, now = () => Date.now() } = {}) {
+  const { store, orchestrator } = app;
+  const window = new PreviewWindow({ store, minutes });
+  const rooms = [];
+  for (const entry of store.value(PREVIEW_GROUPS_KEY, []) || []) {
+    if (entry.removedAt || window.groupState(entry.id).ended) continue;
+    for (const agentId of entry.agentIds || []) {
+      if (!store.agent(agentId)?.enabled) continue;
+      const room = `web-${agentId}`;
+      const last = store.recentMessages(room, 1).at(-1);
+      if (!last || last.agentId || !["owner", "human"].includes(last.kind) || now() - last.at > withinMs) continue;
+      const state = orchestrator.state(room);
+      rooms.push(room);
+      orchestrator.ensureHistory(state).then(() => orchestrator.schedule(state, 400)).catch(() => {});
+    }
+  }
+  return rooms;
+}
+
 /** Runs the pipeline every minute inside the demo space, one pass at a time. */
 export function startPreviewPipeline(app, { cloudUrl, token, space, base, model, minutes, chat, mail, intervalMs = 60000, log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })) }) {
   const cloudCall = async (path, { method = "GET", body } = {}) => {

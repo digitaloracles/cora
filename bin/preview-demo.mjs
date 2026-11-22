@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCora } from "../src/main.js";
-import { startDraftDoor, startPreviewPipeline } from "../src/preview-demo.js";
+import { answerLeftovers, startDraftDoor, startPreviewPipeline } from "../src/preview-demo.js";
 import { Store } from "../src/store.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,6 +54,8 @@ async function main() {
   });
   await app.ready;
   console.log(`demo space on 127.0.0.1:${PORT} as ${HOST}`);
+  const leftovers = answerLeftovers(app, { minutes: MINUTES });
+  if (leftovers.length) console.log(JSON.stringify({ at: new Date().toISOString(), type: "preview-resumed", rooms: leftovers.length }));
   let pipeline = null;
   const door = env.CORA_PREVIEW_PIPELINE_TOKEN ? startDraftDoor({ token: env.CORA_PREVIEW_PIPELINE_TOKEN, chat, port: Number(env.CORA_PREVIEW_DRAFT_PORT || 4371), log: (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })) }) : null;
   if (env.CORA_PREVIEW_PIPELINE_TOKEN && env.RESEND_API_KEY) {
