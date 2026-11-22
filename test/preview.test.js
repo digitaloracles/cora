@@ -23,6 +23,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
     cloud: { list: async (status) => [...previews.values()].filter((item) => item.status === status), update: async (id, body) => { Object.assign(previews.get(id), body); }, firstMessage: async (id) => { first.push(id); } },
   };
   const linkOf = (to) => new URL(/https?:\/\/\S+\/auth\/preview\?token=[\w-]+/.exec(mails.find((mail) => mail.to === to).text)[0]);
+  const linkOf2 = (to) => new URL(/https?:\/\/\S+\/auth\/preview\?token=[\w-]+/.exec(mails.findLast((mail) => mail.to === to).text)[0]);
   const signIn = async (path) => {
     const res = await fetch(`${f.base}${path}`, { redirect: "manual", headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" } });
     return { status: res.status, cookie: (res.headers.get("set-cookie") || "").split(";")[0], body: await res.text() };
@@ -48,9 +49,10 @@ test("the demo space: each company sees only its sealed agents, may only write t
 
   const annaState = (await call(anna.cookie, "/api/state")).data;
   const ginaState = (await call(gina.cookie, "/api/state")).data;
-  assert.deepEqual(annaState.agents.map((agent) => [agent.name, agent.sealed]), [["Mara · Acme", true]], "the agent of the archetype Acme chose");
-  assert.deepEqual(ginaState.agents.map((agent) => agent.name), ["Mia · Globex"]);
-  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6", starters: [] }] });
+  assert.deepEqual(annaState.preview.agents.map((agent) => [f.app.store.agent(agent.id).name, Boolean(f.app.store.agent(agent.id).sealed)]), [["Mara · Acme", true]], "the agent of the archetype Acme chose");
+  assert.deepEqual(ginaState.preview.agents.map((agent) => agent.name), ["Mia"]);
+  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.preview.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6", starters: [] }] });
+  assert.deepEqual(Object.keys(annaState).sort(), ["currentUser", "preview"], "a guest's state carries its clock and agents, not the space's models, providers or agents");
 
   // The company only ever sees the demo chat: the panel sends it there, and the chat page is served.
   const home = await fetch(`${f.base}/`, { redirect: "manual", headers: { cookie: anna.cookie } });
@@ -61,8 +63,8 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal((await fetch(`${f.base}${/\/assets\/v\/[0-9a-f]{16}\/preview\.css/.exec(chat)[0]}`)).status, 200);
   assert.equal((await call(f.admin.headers.Cookie, "/api/state")).data.preview, null, "the space's own people have no clock");
 
-  const acmeAgent = annaState.agents[0].id;
-  const globexAgent = ginaState.agents[0].id;
+  const acmeAgent = annaState.preview.agents[0].id;
+  const globexAgent = ginaState.preview.agents[0].id;
   // Another company's agents and chats stay closed; a guest writes only to its own agents.
   assert.notEqual((await call(anna.cookie, `/api/rooms/web-${globexAgent}/messages`)).status, 200);
   assert.notEqual((await call(anna.cookie, `/api/rooms/web-${globexAgent}/messages`, { method: "POST", body: { text: "hi" } })).status, 201);
@@ -107,7 +109,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal(previews.get("pv_b").space, "demo");
   assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 3, "the same archetype is not made twice");
   const bo = await signIn(linkOf("bo@acme.com").pathname + linkOf("bo@acme.com").search);
-  assert.deepEqual((await call(bo.cookie, "/api/state")).data.agents.map((agent) => agent.id), (await call(anna.cookie, "/api/state")).data.agents.map((agent) => agent.id));
+  assert.deepEqual((await call(bo.cookie, "/api/state")).data.preview.agents.map((agent) => agent.id), (await call(anna.cookie, "/api/state")).data.preview.agents.map((agent) => agent.id));
 
   // Minute 59 still writes; minute 61 is refused for Acme, while Globex and the owner carry on.
   const setStart = (at) => f.app.store.setValue(PREVIEW_WINDOWS_KEY, { ...f.app.store.value(PREVIEW_WINDOWS_KEY, {}), acme: at });
@@ -128,7 +130,20 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal((await call(anna.cookie, "/api/state")).status, 401);
   assert.equal((await call(bo.cookie, "/api/state")).status, 401);
   assert.ok(!f.app.store.accessPolicy().emails.includes("anna@acme.com"));
-  assert.equal((await call(gina.cookie, "/api/state")).data.agents.length, 1, "Globex keeps its agent");
+  assert.equal((await call(gina.cookie, "/api/state")).data.preview.agents.length, 1, "Globex keeps its agent");
+
+  // The same address asks for a second company: its new link opens that company only, never the first one's chats.
+  request("pv_gi", "gina@globex.com", "Initech", "https://initech.com", "programmer");
+  await runOnce(deps);
+  const ginaInitech = await signIn(linkOf2("gina@globex.com").pathname + linkOf2("gina@globex.com").search);
+  const initechState = (await call(ginaInitech.cookie, "/api/state")).data.preview;
+  assert.equal(initechState.company, "Initech");
+  for (const [method, body] of [["GET"], ["POST", { text: "hi" }]]) {
+    const other = await call(ginaInitech.cookie, `/api/rooms/web-${globexAgent}/messages`, { method, body });
+    assert.equal(other.status, 403, `${method} on another company's chat`);
+    assert.doesNotMatch(JSON.stringify(other.data), /Still here/);
+  }
+  assert.equal((await call(ginaInitech.cookie, `/api/rooms/web-${initechState.agents[0].id}/messages`)).status, 200);
 });
 
 test("a restart never leaves a guest's message unanswered: the demo answers it on start, while the hour is open", async (t) => {
@@ -199,7 +214,9 @@ test("a person who asks for a second company gets that company's chat, not the f
   const state = await call(beta.cookie, "/api/state");
   assert.equal(state.preview.company, "Beta", "the demo shows the company of the link she opened");
   assert.deepEqual(state.preview.agents.map((agent) => agent.name), ["Mara"], "and only its own agent");
-  assert.ok(state.agents.map((agent) => agent.name).includes("Mara · Beta"), "and her own agent is reachable");
+  const room = async (name) => (await fetch(`${f.base}/api/rooms/web-${f.app.store.agents().find((agent) => agent.name === name).id}/messages`, { headers: { cookie: beta.cookie, "x-cora": "1" } })).status;
+  assert.equal(await room("Mara · Beta"), 200, "and her own agent is reachable");
+  assert.equal(await room("Mara · Acme"), 403, "the first company's chat stays closed to the second link");
 
   request("pv_3", "anna@acme.com", "Beta", "https://beta.com", "researcher");
   await runOnce(deps);

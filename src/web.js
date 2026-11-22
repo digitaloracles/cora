@@ -1213,6 +1213,9 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       try { return send(res, 200, await orchestrator.closePlatformThread(String(body.id || ""))); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
+    if (path === "/api/state" && method === "GET" && previewWindow.guestOf(user)) {
+      return send(res, 200, { preview: previewWindow.state(user), currentUser: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    }
     if (path === "/api/state" && method === "GET") {
       const [agents, models, imageReady] = await Promise.all([
         Promise.all((knowledge?.agentsFor(user) || store.agents()).map(publicAgent)),
