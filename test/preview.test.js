@@ -167,13 +167,25 @@ test("a restart never leaves a guest's message unanswered: the demo answers it o
   await first.close();
 
   const again = await knowledgeWorld({ previewMinutes: 60, home }); t.after(again.close);
-  again.state.answer = () => ({ content: "Here is the launch plan." });
+  again.app.brain.previewTools = PREVIEW_TOOLS; // as startPreviewPipeline sets it in the demo
+  const turns = [];
+  again.state.answer = (body) => {
+    const system = String(body.messages[0]?.content || "");
+    if (/^Sei /.test(system)) turns.push({ system, user: String(body.messages.filter((message) => message.role === "user").at(-1)?.content || "") });
+    return { content: "Here is the launch plan." };
+  };
   assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [rest], "only the recent unanswered message, not the one from twenty minutes ago");
   const until = Date.now() + 15000;
   while (Date.now() < until && !again.app.store.recentMessages(rest, 5).some((message) => message.agentId)) await new Promise((resolve) => setTimeout(resolve, 100));
   const answered = again.app.store.recentMessages(rest, 5);
   assert.equal(answered.at(-1).content, "Here is the launch plan.");
   assert.deepEqual(answered.map((message) => message.content), ["Plan our launch", "Here is the launch plan."], "the guest's message is kept, answered once");
+  // The demo's instructions are Italian, the visitor may not be: the agent is told, at the end of both, to answer in the visitor's language.
+  const turn = turns.find((item) => /Plan our launch/.test(item.user));
+  assert.ok(turn, "the agent's turn reached the model");
+  assert.match(turn.system, /## Language\nVisitors write to you in any language\. Always answer in the language of the visitor's latest message/);
+  assert.ok(turn.system.trimEnd().endsWith("neither do your own earlier answers."), "the language rule closes the instructions");
+  assert.match(turn.user, /Language: write your answer, every say and every file caption for rita@rest\.com in the language of their latest message above/);
   assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [], "an answered room is left alone");
 
   again.app.store.appendArchive(rest, { id: "web_late", at: Date.now(), authorId: previewGuestId("rita@rest.com"), authorName: "rita@rest.com", kind: "owner", agentId: null, content: "After the hour" });
