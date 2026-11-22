@@ -1,6 +1,7 @@
 // The demo chat a company opens from its email (NOT-94): its agents, the time left and nothing else of Cora.
-const LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
-const T = {
+// The browser's language until the demo says which language the company asked in; then the frame speaks that one.
+let LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
+const TEXTS = {
   en: { send: "Send", download: "Download", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing…`,
     hello: (n, r, c) => `Hi, I'm ${n}, the ${r.toLowerCase()} at ${c}.`, intro: "I already know your company from its website. Ask me something real: I'll answer with drafts and plans you can use.", ended: "Your hour is over. Write to us at usecora.space to keep your agent.", failed: "The message did not go through. Try again.", away: "This page is for the people a preview was sent to. Open the link in your email." },
   it: { send: "Invia", download: "Scarica", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo…`,
@@ -9,16 +10,18 @@ const T = {
     hello: (n, r, c) => `Hola, soy ${n}: ${r.toLowerCase()} de ${c}.`, intro: "Ya conozco tu empresa por su web. Pídeme algo real: te respondo con borradores y planes que puedes usar.", ended: "Tu hora ha terminado. Escríbenos en usecora.space para quedarte con tu agente.", failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", away: "Esta página es para quien recibió una vista previa. Abre el enlace de tu correo." },
   de: { send: "Senden", download: "Herunterladen", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt…`,
     hello: (n, r, c) => `Hallo, ich bin ${n}: ${r} bei ${c}.`, intro: "Ich kenne dein Unternehmen schon von seiner Website. Frag mich etwas Konkretes: Ich antworte mit Entwürfen und Plänen, die du nutzen kannst.", ended: "Deine Stunde ist vorbei. Schreib uns auf usecora.space, um deinen Agenten zu behalten.", failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", away: "Diese Seite ist für Empfänger einer Vorschau. Öffne den Link in deiner E-Mail." },
-}[LANG];
+};
+let T = TEXTS[LANG];
 const ROLES = { it: { Manager: "Manager", Programmer: "Programmatore", Secretary: "Segretaria", Researcher: "Ricercatore", "Lead generator": "Lead generator", Marketer: "Marketer", "Customer support": "Assistenza clienti", Analyst: "Analista" },
   es: { Manager: "Mánager", Programmer: "Programador", Secretary: "Secretaria", Researcher: "Investigador", "Lead generator": "Generador de leads", Marketer: "Marketer", "Customer support": "Atención al cliente", Analyst: "Analista" },
   de: { Manager: "Manager", Programmer: "Entwickler", Secretary: "Sekretariat", Researcher: "Recherche", "Lead generator": "Leadgenerierung", Marketer: "Marketing", "Customer support": "Kundensupport", Analyst: "Analyst" } };
-const SUGGEST = {
+const SUGGESTS = {
   en: { Manager: ["Plan our next quarter in five priorities", "Draft this week's team update"], Programmer: ["Sketch a small integration for our website", "Write a script that turns a CSV of orders into a weekly summary"], Secretary: ["Draft a polite follow-up to a client who has not answered", "Prepare the agenda for our Monday meeting"], Researcher: ["Who are our three closest competitors, and how do we differ?", "Summarise the trends that matter for our customers"], "Lead generator": ["Describe our ideal customer in five lines", "Write a three-email outreach sequence for them"], Marketer: ["Write three LinkedIn posts about what we do", "Ideas for this month's newsletter"], "Customer support": ["Answer a customer asking what we offer", "Write an FAQ for our main service"], Analyst: ["Which five numbers should we watch every week?", "Design a simple monthly report for us"] },
   it: { Manager: ["Pianifica il prossimo trimestre in cinque priorità", "Scrivi l'aggiornamento settimanale per il team"], Programmer: ["Abbozza una piccola integrazione per il nostro sito", "Scrivi uno script che trasforma un CSV di ordini in un riepilogo settimanale"], Secretary: ["Scrivi un sollecito gentile a un cliente che non risponde", "Prepara l'ordine del giorno della riunione di lunedì"], Researcher: ["Chi sono i nostri tre concorrenti più vicini e in cosa siamo diversi?", "Riassumi le tendenze che contano per i nostri clienti"], "Lead generator": ["Descrivi il nostro cliente ideale in cinque righe", "Scrivi una sequenza di tre email per contattarli"], Marketer: ["Scrivi tre post LinkedIn su quello che facciamo", "Idee per la newsletter di questo mese"], "Customer support": ["Rispondi a un cliente che chiede cosa offriamo", "Scrivi le FAQ del nostro servizio principale"], Analyst: ["Quali cinque numeri dovremmo guardare ogni settimana?", "Disegna un report mensile semplice per noi"] },
   es: { Manager: ["Planifica el próximo trimestre en cinco prioridades", "Redacta la actualización semanal del equipo"], Programmer: ["Esboza una pequeña integración para nuestra web", "Escribe un script que convierta un CSV de pedidos en un resumen semanal"], Secretary: ["Redacta un recordatorio amable a un cliente que no responde", "Prepara el orden del día de la reunión del lunes"], Researcher: ["¿Quiénes son nuestros tres competidores más cercanos y en qué nos diferenciamos?", "Resume las tendencias que importan a nuestros clientes"], "Lead generator": ["Describe a nuestro cliente ideal en cinco líneas", "Escribe una secuencia de tres correos para contactarlos"], Marketer: ["Escribe tres posts de LinkedIn sobre lo que hacemos", "Ideas para el boletín de este mes"], "Customer support": ["Responde a un cliente que pregunta qué ofrecemos", "Escribe las preguntas frecuentes de nuestro servicio principal"], Analyst: ["¿Qué cinco cifras deberíamos mirar cada semana?", "Diseña un informe mensual sencillo para nosotros"] },
   de: { Manager: ["Plane unser nächstes Quartal in fünf Prioritäten", "Schreib das wöchentliche Team-Update"], Programmer: ["Skizziere eine kleine Integration für unsere Website", "Schreib ein Skript, das eine CSV mit Bestellungen in eine Wochenübersicht verwandelt"], Secretary: ["Schreib eine freundliche Erinnerung an einen Kunden, der nicht antwortet", "Bereite die Tagesordnung für Montag vor"], Researcher: ["Wer sind unsere drei nächsten Wettbewerber und worin unterscheiden wir uns?", "Fasse die Trends zusammen, die für unsere Kunden zählen"], "Lead generator": ["Beschreibe unseren idealen Kunden in fünf Zeilen", "Schreib eine Sequenz aus drei E-Mails, um sie anzusprechen"], Marketer: ["Schreib drei LinkedIn-Posts über das, was wir tun", "Ideen für den Newsletter dieses Monats"], "Customer support": ["Antworte einem Kunden, der fragt, was wir anbieten", "Schreib die FAQ für unseren wichtigsten Service"], Analyst: ["Welche fünf Zahlen sollten wir jede Woche verfolgen?", "Entwirf einen einfachen Monatsbericht für uns"] },
-}[LANG];
+};
+let SUGGEST = SUGGESTS[LANG];
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, ...children) => { const node = document.createElement(tag); for (const [key, value] of Object.entries(attrs)) { if (key === "class") node.className = value; else if (key === "color") node.style.background = value; else if (key.startsWith("on")) node.addEventListener(key.slice(2), value); else node.setAttribute(key, value); } node.append(...children.filter((child) => child !== null && child !== undefined)); return node; };
@@ -148,22 +151,33 @@ async function send(text) {
   }
 }
 
+/** Puts the frame in the language of the request; returns whether it changed. */
+function language(code) {
+  const next = TEXTS[code] ? code : LANG;
+  const changed = next !== LANG;
+  LANG = next; T = TEXTS[LANG]; SUGGEST = SUGGESTS[LANG];
+  document.documentElement.lang = LANG;
+  $("pv-send").textContent = T.send;
+  $("pv-label").textContent = T.message;
+  return changed;
+}
+
 async function refresh() {
   const state = await api("/api/state");
   if (!state.preview) { $("pv-thread").replaceChildren(el("section", { class: "pv-intro" }, el("p", {}, T.away))); $("pv-form").hidden = true; return; }
   S.preview = state.preview;
+  const changed = language(S.preview.lang);
   $("pv-company").textContent = S.preview.company;
   document.title = `${S.preview.company} · Cora`;
   if (!S.agent || !S.preview.agents.some((agent) => agent.id === S.agent.id)) { if (S.preview.agents[0]) choose(S.preview.agents[0]); }
+  else if (changed) choose(S.agent);
   else agents();
   clock();
 }
 
 function grow() { const input = $("pv-input"); input.style.height = "auto"; input.style.height = `${Math.min(180, input.scrollHeight)}px`; }
 
-document.documentElement.lang = LANG;
-$("pv-send").textContent = T.send;
-$("pv-label").textContent = T.message;
+language(LANG);
 $("pv-input").addEventListener("input", grow);
 $("pv-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); send($("pv-input").value); } });
 $("pv-form").addEventListener("submit", (event) => { event.preventDefault(); send($("pv-input").value); });

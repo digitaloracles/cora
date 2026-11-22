@@ -13,6 +13,8 @@ export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "
 
 export const previewTokenHash = (token) => createHash("sha256").update(String(token || "")).digest("hex");
 export const previewGuestId = (email) => `preview-${createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex").slice(0, 16)}`;
+/** The language of the request a guest's link came from: the demo chat speaks it, whatever the browser says. */
+export const previewLang = (value) => (["en", "it", "es", "de"].includes(String(value || "").slice(0, 2).toLowerCase()) ? String(value).slice(0, 2).toLowerCase() : "");
 const GUEST_WRITES = /^\/api\/rooms\/web-[\w-]+\/messages$/;
 /** All a guest reads: its clock and agents, their chats and the files they made. The rest of the space stays closed. */
 const GUEST_READS = /^\/api\/(?:state|rooms\/web-[\w-]+\/messages|files\/[^/]+)$/;
@@ -51,7 +53,7 @@ export class PreviewWindow {
     if (!guest) return null;
     const group = (this.store.value(PREVIEW_GROUPS_KEY, []) || []).find((entry) => entry.id === guest.group && !entry.removedAt);
     const agents = (group?.agentIds || []).map((id, i) => ({ id, name: group.agents[i]?.name || "", role: group.agents[i]?.role || "", color: group.agents[i]?.color || "#264cd6", starters: group.agents[i]?.starters || [] })).filter((agent) => this.store.agent(agent.id));
-    return { ...this.groupState(guest.group), company: group?.company || "", agents };
+    return { ...this.groupState(guest.group), company: group?.company || "", lang: previewLang(guest.lang || group?.lang), agents };
   }
 
   /** The company's first message starts its hour; later ones leave it where it is. */
