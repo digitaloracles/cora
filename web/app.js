@@ -3613,7 +3613,7 @@ function connectorsPane() {
       const state = serviceState(service.id);
       const status = state.status.includes("{count}") ? tr(state.status, { count: state.count }) : tr(state.status);
       return h("button", { type: "button", class: "connector-card", "aria-label": tr("Apri connettore {name}", { name: service.name }), onclick: () => { show(service.id); draw(); detail.querySelector(".connector-back")?.focus(); } },
-        h("span", { class: "connector-card-head" }, h("span", { class: "connector-mark", "aria-hidden": "true" }, icon(service.icon)), tag(status, state.connected ? "ok" : "agent")),
+        h("span", { class: "connector-card-head" }, h("span", { class: "connector-mark", "aria-hidden": "true" }, icon(service.icon)), Object.assign(tag(status, state.connected ? "ok" : "agent"), { title: status })),
         h("span", { class: "connector-card-name" }, service.name),
         h("span", { class: "connector-card-description" }, tr(service.description)),
         h("span", { class: "connector-card-meta" }, tr(service.meta)),
