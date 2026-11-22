@@ -223,4 +223,15 @@ test("a person who asks for a second company gets that company's chat, not the f
   assert.equal(mails.length, 2, "a known address gets no second mail");
   const again = await signIn(linkOf("anna@acme.com"));
   assert.equal((await call(again.cookie, "/api/state")).preview.company, "Beta", "the same link still opens Beta");
+
+  // Acme's hour ends and Acme goes: her Beta link, its access and its chat stay.
+  f.app.store.setValue(PREVIEW_WINDOWS_KEY, { ...f.app.store.value(PREVIEW_WINDOWS_KEY, {}), acme: Date.now() - 70 * 60000 });
+  await runOnce(deps);
+  assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 0, "Acme is removed");
+  assert.equal(f.app.store.value("previewGuests", []).find((guest) => guest.email === "anna@acme.com")?.group, "beta", "her record still points to Beta");
+  assert.ok(f.app.store.accessPolicy().emails.includes("anna@acme.com"), "and she keeps her access");
+  const after = await signIn(linkOf("anna@acme.com"));
+  assert.equal(after.status, 200, "the Beta link still opens after Acme's hour");
+  assert.equal((await call(after.cookie, "/api/state")).preview.company, "Beta");
+  assert.equal(await room("Mara · Beta"), 200, "and her chat stays readable");
 });

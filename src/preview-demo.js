@@ -52,11 +52,12 @@ export function storeGroups(app, { model, minutes }) {
     },
     /** The company's agents, chats, links and access go; the space's own people never notice. */
     remove(entry) {
-      const emails = new Set(entry.guests.map((guest) => guest.email.toLowerCase()));
+      // An address that later asked for another company keeps that link: only the records of this group go.
+      const emails = new Set(guests().filter((guest) => guest.group === entry.id).map((guest) => guest.email.toLowerCase()));
       const rooms = [...(entry.agentIds || []).map((id) => `web-${id}`), ...[...emails].map((email) => ownerRoom(previewGuestId(email)))];
       for (const id of entry.agentIds || []) { if (store.agent(id)) { store.deleteAgent(id); app.skills?.forget?.(id); } }
       for (const room of rooms) store.stmt("DELETE FROM messages WHERE channel_id = ?").run(room);
-      store.setValue(PREVIEW_GUESTS_KEY, guests().filter((guest) => guest.group !== entry.id && !emails.has(guest.email)));
+      store.setValue(PREVIEW_GUESTS_KEY, guests().filter((guest) => guest.group !== entry.id));
       const windows = { ...(store.value(PREVIEW_WINDOWS_KEY, {}) || {}) };
       delete windows[entry.id];
       store.setValue(PREVIEW_WINDOWS_KEY, windows);
