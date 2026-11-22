@@ -34,7 +34,7 @@ export const MEMORY_TOOLS = new Set(["say", "list_channels", "list_agents", "rem
  * changing, pausing or deleting one touches nothing else — so they are not
  * locked behind the computer, which only opens when the owner is the one asking.
  */
-export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "skill_install", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings"]);
+export const OWN_TOOLS = new Set(["encrypted_request", ...MEMORY_TOOLS, ...THREAD_PLAN_TOOLS, "read_attachment", "skill_read", "skill_install", "thread_open", "voice_join", "voice_leave", "list_routines", "set_routine", "set_reminder", "delete_routine", "routine_history", "artifact_folders", "artifact_log", "secret_list", "secret_request", "email_inbox", "email_read", "email_draft", "email_send", "email_cancel", "email_settings", "create_file"]);
 
 export const TOOL_DEFS = [
   ...PLAN_TOOLS,
@@ -413,6 +413,19 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "create_file",
+    description: "Create a real file from text you write and post it in this chat, where the person downloads it: a document or post (.md, .txt), a table (.csv), a web page or one-pager (.html), data (.json) or a vector graphic (.svg). Use it whenever the result is a deliverable they will keep or reuse. Write the whole file in content.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "file name with its extension, e.g. linkedin-posts-week-48.md" },
+        content: { type: "string", description: "the complete text of the file" },
+        caption: { type: "string", description: "optional one line shown with the file" },
+      },
+      required: ["name", "content"],
+    },
+  },
+  {
     name: "send_file",
     description: "Post a file from your computer to the current Discord channel (an image, a PDF, a CSV, ...). Max 8 MB.",
     parameters: {
@@ -432,6 +445,10 @@ const MIME = {
   html: "text/html", zip: "application/zip", mp4: "video/mp4", mp3: "audio/mpeg",
 };
 
+/** What create_file writes: text formats only, posted as a download in the chat. */
+const CREATED_FILE_TYPES = { md: "text/markdown", txt: "text/plain", csv: "text/csv", html: "text/html", json: "application/json", svg: "image/svg+xml" };
+const CREATED_FILE_MAX = 200000;
+
 function num(value, fallback = 0) {
   const number = Math.round(Number(value));
   return Number.isFinite(number) ? number : fallback;
@@ -449,6 +466,7 @@ export function summarizeArgs(name, args) {
   if (name === "update_core") return `${String(args.text || "").length} caratteri`;
   if (name === "forget") return String(args.memory_id || "");
   if (name === "send_file") return String(args.path || "");
+  if (name === "create_file") return String(args.name || "").slice(0, 120);
   if (name === "share_file") return `${String(args.path || "")} → ${String(args.agent || "")}`;
   if (name === "artifact_push") return `${String(args.path || "")} → ${String(args.folder || "")}${args.create ? " (nuova)" : ""}`;
   if (name === "artifact_pull" || name === "artifact_log") return String(args.folder || "");
@@ -966,6 +984,18 @@ export async function executeTool(call, ctx) {
         }
         ctx.vault.createSend({ ...request, status: "proposed" });
         return { text: "REQUESTED, NOT SENT: the owner approves it in the panel and sends the link. Say so; you never get the link or the value." };
+      }
+      case "create_file": {
+        if (!postFile || !channelId) return { text: "error: there is no chat to post the file to right now" };
+        const content = String(args.content ?? "");
+        if (!content.trim()) return { text: "error: content is empty" };
+        if (content.length > CREATED_FILE_MAX) return { text: `error: content is longer than ${CREATED_FILE_MAX} characters; split it into more files` };
+        const raw = basename(String(args.name || "").trim()).replace(/[^\w.\- ]+/g, "_").replace(/^[.\s]+/, "").slice(0, 100);
+        const extension = raw.includes(".") ? raw.split(".").pop().toLowerCase() : "";
+        if (!CREATED_FILE_TYPES[extension]) return { text: `error: use one of these extensions: ${Object.keys(CREATED_FILE_TYPES).map((ext) => `.${ext}`).join(", ")}` };
+        const data = Buffer.from(content, "utf8");
+        await postFile({ name: raw, data, type: CREATED_FILE_TYPES[extension] }, String(args.caption || "").slice(0, 300));
+        return { text: `posted ${raw} (${Math.max(1, Math.round(data.length / 1024))} KB) in the chat` };
       }
       case "send_file": {
         if (!postFile || !channelId) return { text: "error: there is no channel to post to right now" };

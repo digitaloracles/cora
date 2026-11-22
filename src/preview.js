@@ -9,7 +9,7 @@ export const PREVIEW_WINDOWS_KEY = "previewWindows";
 export const PREVIEW_GUESTS_KEY = "previewGuests";
 export const PREVIEW_GROUPS_KEY = "previewGroups";
 /** What a preview agent may use: its own memory and the pictures it is sent. No routines, mail, files or connectors. */
-export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "forget"]);
+export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "forget", "create_file"]);
 
 export const previewTokenHash = (token) => createHash("sha256").update(String(token || "")).digest("hex");
 export const previewGuestId = (email) => `preview-${createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex").slice(0, 16)}`;
