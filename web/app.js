@@ -715,7 +715,7 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
       back ? h("a", { class: "icon-btn", href: back, "aria-label": "Indietro" }, icon("back")) : h("a", { class: "appbar-brand", href: "#/" }, h("img", { src: panelAsset("icon-192.png"), alt: "Cora" })),
       h("h1", {}, title),
       accountButton("bar")),
-    h("main", { class: "content" }, h("div", { class: "wrap" }, S.data?.encryptionRequired && (["brain", "thread", "salotto", "contesto"].includes(section) || section === "agent" && ["chat", "memoria", "ragionamento"].includes(route()[2])) ? encryptionWarning("Lo storico precedente all’attivazione può contenere dati in chiaro e resta accessibile.") : null, content)),
+    h("main", { class: "content" }, h("div", { class: "wrap" }, S.data?.preview ? h("div", { class: "banners" }, previewBanner(S.data.preview)) : null, S.data?.encryptionRequired && (["brain", "thread", "salotto", "contesto"].includes(section) || section === "agent" && ["chat", "memoria", "ragionamento"].includes(route()[2])) ? encryptionWarning("Lo storico precedente all’attivazione può contenere dati in chiaro e resta accessibile.") : null, content)),
     h("nav", { class: "tabbar" }, nav.map(([key, label, name, active, count]) => h("a", { href: `#/${key}`, class: active ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "nav-count", "aria-label": tr("{count} da rivedere", { count }) }, raw(String(count))) : null)))));
   updateLamp();
   if (scroll?.top || scroll?.left) restoreScroll(scroll);
@@ -896,7 +896,16 @@ function feed(agentId) {
 }
 
 /* ---------- dashboard ---------- */
+function previewBanner(preview) {
+  if (preview.ended) return h("div", { class: "banner err", role: "status" }, icon("alert"), h("span", {}, h("b", {}, "L'anteprima è finita. "), "Scrivici su usecora.space per continuare con i tuoi agenti."));
+  if (!preview.startedAt) return h("div", { class: "banner", role: "status" }, icon("info"), h("span", {}, h("b", {}, tr("Anteprima di {minutes} minuti. ", { minutes: preview.minutes })), "Il tempo parte dal tuo primo messaggio a un agente."));
+  const left = Math.max(1, Math.ceil((preview.endsAt - Date.now()) / 60000));
+  return h("div", { class: "banner", role: "status" }, icon("info"), h("span", {}, h("b", {}, tr(left === 1 ? "Resta 1 minuto di anteprima. " : "Restano {minutes} minuti di anteprima. ", { minutes: left })), "Poi gli agenti smettono di ricevere messaggi."));
+}
+
 function banners() {
+  // A preview space shows only its clock, already above every page: the company has nothing to configure here.
+  if (S.data.preview) return null;
   const out = [];
   const info = transportInfo();
   if (info.state === "missing-token") out.push(h("a", { class: "banner err", href: "#/settings" }, icon("key"), h("span", {}, h("b", {}, info.kind === "telegram" ? "Telegram senza token. " : "Nessuno ascolta Discord. "), info.kind === "telegram" ? "Incolla il token del bot (da BotFather) nelle impostazioni." : "Attiva «Message Content Intent» nella pagina Bot dell'app Discord di almeno un agente: Cora ascolterà con quel bot.")));
@@ -11404,6 +11413,11 @@ async function render() {
   if (page === "domini") {
     history.replaceState(null, "", "#/settings/domini");
     page = "settings";
+  }
+  // A preview space opens on its first agent's chat: the company came to talk to its agents.
+  if (S.data.preview && page === "agenti" && !location.hash.replace(/^#\/?/, "") && S.data.agents[0]) {
+    history.replaceState(null, "", `#/agent/${S.data.agents[0].id}/chat`);
+    page = "agent";
   }
   if (page === "app") {
     const query = location.hash.split("?")[1];
