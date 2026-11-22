@@ -20,6 +20,21 @@ export const promptLanguageOf = (value) => {
   return PROMPT_LANGUAGES.includes(code) ? code : "";
 };
 
+const WORDS = {
+  it: "il lo la le gli un una uno di del della dei delle e è con per su nel nella nei sul sulla che non ora più tutti tutte tutto aggiornato aggiornata aggiornati versione prezzo pagina sito link acquisto pulsanti pulsante ecco qui file nuovo nuova".split(" "),
+  en: "the a an of and is are with for on in to now all every updated update version price page site link buy button buttons here file new your this that".split(" "),
+  es: "el la los las un una de del y es con para en ahora todo todos todas actualizado actualizada versión precio página sitio enlace compra botones botón aquí archivo nuevo nueva".split(" "),
+  de: "der die das ein eine und ist mit für auf im in jetzt alle aktualisiert aktualisierte version preis seite link kauf kaufen schaltfläche hier datei neu neue".split(" "),
+};
+
+/** The language a short text is written in, among Cora's four, or "" when its words do not say it clearly. */
+export const textLanguage = (text) => {
+  const words = String(text || "").toLowerCase().match(/\p{L}+/gu) || [];
+  const score = Object.fromEntries(PROMPT_LANGUAGES.map((lang) => [lang, words.filter((word) => WORDS[lang].includes(word)).length]));
+  const [first, second] = Object.entries(score).sort((a, b) => b[1] - a[1]);
+  return first[1] >= 2 && first[1] >= 2 * second[1] ? first[0] : "";
+};
+
 export const withPromptLanguage = (lang, fn) => current.run(promptLanguageOf(lang) || "it", fn);
 export const promptLanguage = () => current.getStore() || "it";
 

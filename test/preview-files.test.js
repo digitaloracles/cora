@@ -4,7 +4,8 @@ import { knowledgeWorld } from "./knowledge-fixtures.js";
 import { storeGroups } from "../src/preview-demo.js";
 import { runOnce } from "../src/preview-pipeline.js";
 import { PREVIEW_TOOLS } from "../src/preview.js";
-import { executeTool, OWN_TOOLS } from "../src/tools.js";
+import { executeTool, OWN_TOOLS, TOOL_DEFS } from "../src/tools.js";
+import { textLanguage } from "../src/prompt-lang.js";
 
 const BRIEF = JSON.stringify({ summary: "Makes things.", products: ["Things"], audience: "People", tone: "Plain", focus: "posts" });
 
@@ -60,4 +61,28 @@ test("the demo space: a file a preview agent makes downloads for its company onl
   assert.equal(await download.text(), "# Posts\n");
   assert.match(download.headers.get("content-disposition"), /attachment; filename="posts\.md"/);
   assert.equal((await fetch(`${f.base}/api/files/${item.file.id}`, { headers: { cookie: gina, "x-cora": "1" } })).status, 404, "another company never gets it");
+});
+
+test("a file's caption in another language than the agent's is left out, so the chat never switches language under a file", async (t) => {
+  const f = await knowledgeWorld({ previewMinutes: 60 }); t.after(f.close);
+  const posted = [];
+  const ctx = (language) => ({ store: f.app.store, agent: { id: "ag_x", name: "Maya", ...(language ? { language } : {}) }, channelId: "web-ag_x", postFile: async (file, caption) => { posted.push(caption); } });
+  const make = (caption, language) => executeTool({ name: "create_file", args: { name: "noto.html", content: "<p>Noto</p>", caption } }, ctx(language));
+  await make("One-pager Noto aggiornata: prezzo 9 € e acquisto su letzgo.guide/noto.", "en");
+  await make("Updated one-pager: 9 € and letzgo.guide/noto on every CTA.", "en");
+  await make("Web de una página, con el precio y el enlace de compra.", "es");
+  await make("Sito aggiornato: prezzo 9 € e acquisto su letzgo.guide/noto", "");
+  await make("Noto", "en");
+  assert.deepEqual(posted, ["", "Updated one-pager: 9 € and letzgo.guide/noto on every CTA.", "Web de una página, con el precio y el enlace de compra.", "Sito aggiornato: prezzo 9 € e acquisto su letzgo.guide/noto", "Noto"]);
+  const schema = TOOL_DEFS.find((tool) => tool.name === "create_file").parameters.properties;
+  assert.equal(Object.keys(schema)[0], "caption", "the caption is written before the file, while the message's language is in front of the model");
+});
+
+test("textLanguage tells Cora's four languages apart in a short line and stays silent when unsure", () => {
+  assert.equal(textLanguage("Aggiornato: prezzo 9 € e link letzgo.guide/noto su tutti i pulsanti."), "it");
+  assert.equal(textLanguage("Updated: the price and the buy link are now on every button."), "en");
+  assert.equal(textLanguage("Actualizado: el precio y el enlace de compra en todos los botones."), "es");
+  assert.equal(textLanguage("Aktualisiert: der Preis und der Link sind jetzt auf der Seite."), "de");
+  assert.equal(textLanguage("noto.html"), "");
+  assert.equal(textLanguage(""), "");
 });
