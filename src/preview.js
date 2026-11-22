@@ -14,6 +14,8 @@ export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "
 export const previewTokenHash = (token) => createHash("sha256").update(String(token || "")).digest("hex");
 export const previewGuestId = (email) => `preview-${createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex").slice(0, 16)}`;
 const GUEST_WRITES = /^\/api\/rooms\/web-[\w-]+\/messages$/;
+/** All a guest reads: its clock and agents, their chats and the files they made. The rest of the space stays closed. */
+const GUEST_READS = /^\/api\/(?:state|rooms\/web-[\w-]+\/messages|files\/[^/]+)$/;
 
 export class PreviewWindow {
   constructor({ store, minutes = 0, now = () => Date.now() }) {
@@ -58,7 +60,8 @@ export class PreviewWindow {
   /** What a guest may not do: anything after the hour, and anything but writing to an agent before it. */
   refusal(user, method, path) {
     const guest = this.guestOf(user);
-    if (!guest || ["GET", "HEAD"].includes(method) || path === "/api/logout") return "";
+    if (!guest || path === "/api/logout") return "";
+    if (["GET", "HEAD"].includes(method)) return GUEST_READS.test(path) ? "" : "Nell'anteprima puoi solo leggere la chat dei tuoi agenti.";
     if (this.groupState(guest.group).ended) return "L'anteprima è finita: l'ora di prova è scaduta.";
     return GUEST_WRITES.test(path) ? "" : "Nell'anteprima puoi solo scrivere ai tuoi agenti.";
   }
