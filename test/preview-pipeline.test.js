@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentName, agentSpecs, briefing, previewEmail, publicAddress, readPage, readSite, runOnce, slugFor, tokenHash } from "../src/preview-pipeline.js";
 
-function world({ chat = async () => JSON.stringify({ summary: "Acme makes rockets.", products: ["Rockets"], audience: "Space fans", tone: "Bold", agents: [{ name: "Ava", role: "writer", focus: "posts" }, { name: "Leo", role: "support", focus: "answers" }, { name: "Mia", role: "research", focus: "plans" }] }), siteFails = false } = {}) {
+function world({ chat = async () => JSON.stringify({ summary: "Acme makes rockets.", products: ["Rockets"], audience: "Space fans", tone: "Bold", archetype: "support", focus: "answers" }), siteFails = false } = {}) {
   let clock = Date.parse("2026-11-22T08:00:00Z");
   const previews = new Map();
   const calls = { first: [], mails: [], created: [], guests: [], removed: [] };
@@ -21,11 +21,12 @@ function world({ chat = async () => JSON.stringify({ summary: "Acme makes rocket
       load: () => structuredClone(groups), save: (entries) => { groups = structuredClone(entries); },
       create: (entry) => { calls.created.push(entry.id); return entry.agents.map((_, i) => `ag_${entry.id}_${i}`); },
       addGuest: (entry, guest) => calls.guests.push([entry.id, guest.email]),
+      addAgents: (entry, specs) => { calls.added = [...(calls.added || []), ...specs.map((spec) => spec.archetype)]; return specs.map((_, i) => `ag_${entry.id}_x${entry.agentIds.length + i}`); },
       remove: (entry) => calls.removed.push(entry.id),
       window: (entry) => windows.get(entry.id) || null,
     },
   };
-  const request = (id, email, site, company = "Acme") => previews.set(id, { id, email, site, company, lang: "en", status: "requested", space: "" });
+  const request = (id, email, site, company = "Acme", archetype = "marketer") => previews.set(id, { id, email, site, company, archetype, lang: "en", status: "requested", space: "" });
   return { deps, calls, previews, windows, request, groups: () => groups, tick: (ms) => { clock += ms; }, now: () => clock };
 }
 
@@ -41,8 +42,9 @@ test("one request makes one group of sealed agents and one email; the same site 
   const link = /https:\/\/demo\.usecora\.space\/auth\/preview\?token=([\w-]+)/.exec(w.calls.mails[0].text)[1];
   assert.equal(w.groups()[0].guests[0].tokenHash, tokenHash(link), "only the hash of the mailed link is kept");
   assert.ok(!JSON.stringify(w.groups()).includes(link));
-  assert.equal(w.groups()[0].agents.length, 3);
-  assert.equal(w.groups()[0].agentIds.length, 3);
+  assert.deepEqual(w.groups()[0].agents.map((agent) => [agent.archetype, agent.name, agent.role]), [["marketer", "Mia", "Marketer"]], "the archetype the company chose");
+  assert.equal(w.groups()[0].agentIds.length, 1);
+  assert.match(w.calls.mails[0].text, /your Cora marketer for Acme/);
 
   await runOnce(w.deps);
   assert.equal(w.calls.created.length, 1);
@@ -60,6 +62,14 @@ test("one request makes one group of sealed agents and one email; the same site 
   assert.deepEqual(w.calls.guests, [["acme", "bo@acme.com"]]);
   assert.equal(w.calls.mails.length, 2);
   assert.equal(w.calls.mails[1].to, "bo@acme.com");
+
+  // Other archetypes join the group up to three agents; then the group stays as it is.
+  for (const [id, archetype] of [["pv_4", "analyst"], ["pv_5", "programmer"], ["pv_6", "secretary"], ["pv_7", "analyst"]]) w.request(id, "anna@acme.com", "https://acme.com", "Acme", archetype);
+  await runOnce(w.deps);
+  assert.deepEqual(w.calls.added, ["analyst", "programmer"]);
+  assert.deepEqual(w.groups()[0].agents.map((agent) => agent.archetype), ["marketer", "analyst", "programmer"]);
+  assert.equal(w.previews.get("pv_6").status, "ready", "a fourth choice still gets an answer, without a fourth agent");
+  assert.equal(w.calls.mails.length, 2);
 });
 
 test("the hour starts at the first message, is told to usecora.space once and the group goes after it", async () => {
@@ -112,7 +122,14 @@ test("names, briefing fallback, page reading and public addresses", async () => 
   assert.equal(agentName("Ava", "Discord Corp", () => false), "Ava · Corp");
 
   const fallback = await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: [{ url: "https://acme.com", title: "Acme", description: "Rockets for everyone", headings: ["Rockets"], text: "" }], chat: async () => { throw new Error("down"); } });
-  assert.equal(fallback.agents.length, 3);
+  assert.deepEqual(fallback.agents.map((agent) => agent.role), ["Marketer"], "without the model and without a choice, the default archetype");
+  const home = [{ url: "https://acme.com", title: "Acme", description: "", headings: [], text: "" }];
+  const chosen = await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: home, archetype: "Lead_generator", chat: async () => JSON.stringify({ archetype: "programmer", focus: "SaaS buyers" }) });
+  assert.deepEqual(chosen.agents.map((agent) => [agent.archetype, agent.name]), [["lead-generator", "Leo"]], "the company's choice wins over the model's");
+  const picked = await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: home, chat: async () => JSON.stringify({ archetype: "programmer", focus: "an API" }) });
+  assert.deepEqual(picked.agents.map((agent) => agent.archetype), ["programmer"]);
+  assert.match(agentSpecs(picked)[0].personality, /programmer of Acme[\s\S]*Start from this: an API/);
+  assert.equal((await briefing({ company: "Acme", site: "https://acme.com", lang: "en", pages: home, chat: async () => JSON.stringify({ archetype: "astronaut" }) })).agents[0].archetype, "marketer");
   assert.equal(fallback.summary, "Rockets for everyone");
   assert.match(agentSpecs(fallback)[0].personality, /Acme/);
 

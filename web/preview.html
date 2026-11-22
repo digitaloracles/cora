@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Cora preview</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600&family=Unbounded:wght@500;600&display=swap">
+<link rel="stylesheet" href="/assets/preview.css">
+<script type="module" src="/assets/preview.js"></script>
+</head>
+<body>
+<div class="pv" id="pv">
+  <header class="pv-top">
+    <div class="pv-brand"><img src="/assets/favicon.svg" alt="" width="28" height="28"><span class="pv-word">Cora</span><span class="pv-company" id="pv-company"></span></div>
+    <div class="pv-clock" id="pv-clock" role="status" aria-live="polite"></div>
+  </header>
+  <nav class="pv-agents" id="pv-agents" aria-label="Agents"></nav>
+  <main class="pv-thread" id="pv-thread" aria-live="polite"></main>
+  <footer class="pv-compose">
+    <form id="pv-form" autocomplete="off">
+      <label class="sr" for="pv-input" id="pv-label">Message</label>
+      <textarea id="pv-input" rows="1" maxlength="3000"></textarea>
+      <button type="submit" id="pv-send"></button>
+    </form>
+    <p class="pv-fine" id="pv-fine"></p>
+  </footer>
+</div>
+</body>
+</html>

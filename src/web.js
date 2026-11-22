@@ -62,6 +62,9 @@ const STATIC = {
   "/assets/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
   "/sw.js": ["sw.js", "text/javascript; charset=utf-8"],
   "/assets/send.js": ["send.js", "text/javascript; charset=utf-8"],
+  "/preview": ["preview.html", "text/html; charset=utf-8"],
+  "/assets/preview.js": ["preview.js", "text/javascript; charset=utf-8"],
+  "/assets/preview.css": ["preview.css", "text/css; charset=utf-8"],
   "/assets/encrypted-conversion.js": ["encrypted-conversion.js", "text/javascript; charset=utf-8"],
   "/assets/encrypted-passkeys.js": ["encrypted-passkeys.js", "text/javascript; charset=utf-8"],
   "/assets/encrypted-space.js": ["encrypted-space.js", "text/javascript; charset=utf-8"],
@@ -2536,7 +2539,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         english ? (ended ? "The hour with your agents is over. Write to us at usecora.space to keep going." : "Open the latest link we sent you by email.") : (ended ? "L'ora con i tuoi agenti è finita. Scrivici su usecora.space per continuare." : "Apri l'ultimo link che ti abbiamo mandato per email.")), headers);
     }
     activity({ type: "settings", text: `accesso all'anteprima (${guest.email})` });
-    return send(res, 200, page(english ? "Opening your preview…" : "Apro la tua anteprima…", `<a href="/">${english ? "Continue" : "Continua"}</a>`, '<meta http-equiv="refresh" content="0;url=/">'), { ...headers, "Set-Cookie": sessionCookie(guest) });
+    return send(res, 200, page(english ? "Opening your preview…" : "Apro la tua anteprima…", `<a href="/preview">${english ? "Continue" : "Continua"}</a>`, '<meta http-equiv="refresh" content="0;url=/preview">'), { ...headers, "Set-Cookie": sessionCookie(guest) });
   }
 
   /**
@@ -2719,6 +2722,11 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       if (url.pathname.startsWith("/github/") && github && (req.method === "GET" || req.method === "HEAD")) return await githubReturn(res, url);
       if (url.pathname.startsWith("/api/")) return await api(req, res, url);
       if (url.pathname.startsWith("/box/")) return await proxyBox(req, res);
+      // A preview guest never sees the panel: only the demo chat.
+      if (url.pathname === "/" && previewWindow.enabled && previewWindow.guestOf(sessionUser(req))) {
+        res.writeHead(302, { Location: "/preview", "Cache-Control": "no-store" });
+        return res.end();
+      }
       const file = req.method === "GET" || req.method === "HEAD" ? assets.resolve(url.pathname) : null;
       if (file) {
         return send(res, 200, file.body, {

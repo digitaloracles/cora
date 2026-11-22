@@ -1,8 +1,8 @@
-import { PREVIEW_GUESTS_KEY, PREVIEW_WINDOWS_KEY, PreviewWindow, previewGuestId } from "./preview.js";
+import { PREVIEW_GROUPS_KEY, PREVIEW_GUESTS_KEY, PREVIEW_TOOLS, PREVIEW_WINDOWS_KEY, PreviewWindow, previewGuestId } from "./preview.js";
 import { agentName, readSite, runOnce } from "./preview-pipeline.js";
 import { ownerRoom } from "./rooms.js";
 
-export const PREVIEW_GROUPS_KEY = "previewGroups";
+export { PREVIEW_GROUPS_KEY };
 
 /** The demo space's store as the pipeline's groups: guests, sealed agents and the hour of each company. */
 export function storeGroups(app, { model, minutes }) {
@@ -16,22 +16,30 @@ export function storeGroups(app, { model, minutes }) {
     if (!policy.emails.includes(email)) store.updateAccessPolicy({ emails: [...policy.emails, email] });
     return store.registerPanelUser({ id: previewGuestId(email), name: email, email, avatar: "", role: "member", emailVerified: true, source: "local" }).id;
   };
+  const makeAgents = (entry, specs, owner, coOwners) => {
+    const ids = [];
+    try {
+      for (const spec of specs) {
+        const name = agentName(spec.name, entry.company, (lower) => store.agents().some((agent) => agent.name.toLowerCase() === lower));
+        ids.push(store.createAgent({ name, personality: spec.personality, color: spec.color, model, sealed: true, tools: false, enabled: true, brainSource: "internal", brainOwnerId: owner, coOwnerIds: coOwners, channelIds: [] }).id);
+      }
+    } catch (error) {
+      for (const id of ids) store.deleteAgent(id);
+      throw error;
+    }
+    return ids;
+  };
   return {
     load: () => store.value(PREVIEW_GROUPS_KEY, []) || [],
     save: (entries) => store.setValue(PREVIEW_GROUPS_KEY, entries),
     create(entry, guest) {
       const owner = admit(entry, guest);
-      const ids = [];
-      try {
-        for (const spec of entry.agents) {
-          const name = agentName(spec.name, entry.company, (lower) => store.agents().some((agent) => agent.name.toLowerCase() === lower));
-          ids.push(store.createAgent({ name, personality: spec.personality, color: spec.color, model, sealed: true, tools: false, enabled: true, brainSource: "internal", brainOwnerId: owner, coOwnerIds: [], channelIds: [] }).id);
-        }
-      } catch (error) {
-        for (const id of ids) store.deleteAgent(id);
-        throw error;
-      }
-      return ids;
+      return makeAgents(entry, entry.agents, owner, []);
+    },
+    addAgents(entry, specs) {
+      const first = store.agent(entry.agentIds?.[0]);
+      const ids = entry.guests.map((guest) => previewGuestId(guest.email));
+      return makeAgents(entry, specs, first?.brainOwnerId || ids[0], ids.filter((id) => id !== (first?.brainOwnerId || ids[0])));
     },
     addGuest(entry, guest) {
       const id = admit(entry, guest);
@@ -69,6 +77,7 @@ export function startPreviewPipeline(app, { cloudUrl, token, space, base, model,
     groups: storeGroups(app, { model, minutes }),
     cloud: { list: async (status) => (await cloudCall(`?status=${status}`)).previews, update: (id, body) => cloudCall(`/${id}`, { method: "POST", body }), firstMessage: (id) => cloudCall(`/${id}/first-message`, { method: "POST" }) },
   };
+  app.brain.previewTools = PREVIEW_TOOLS;
   let running = null;
   const pass = () => {
     if (running) return running;

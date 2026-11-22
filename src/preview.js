@@ -7,6 +7,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
  */
 export const PREVIEW_WINDOWS_KEY = "previewWindows";
 export const PREVIEW_GUESTS_KEY = "previewGuests";
+export const PREVIEW_GROUPS_KEY = "previewGroups";
+/** What a preview agent may use: its own memory and the pictures it is sent. No routines, mail, files or connectors. */
+export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "forget"]);
 
 export const previewTokenHash = (token) => createHash("sha256").update(String(token || "")).digest("hex");
 export const previewGuestId = (email) => `preview-${createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex").slice(0, 16)}`;
@@ -34,9 +37,13 @@ export class PreviewWindow {
     return { minutes: this.minutes, startedAt, endsAt, ended: Boolean(endsAt && this.now() >= endsAt) };
   }
 
+  /** The viewer's clock, company and agents; null for the space's own people. */
   state(user) {
     const guest = this.guestOf(user);
-    return guest ? this.groupState(guest.group) : null;
+    if (!guest) return null;
+    const group = (this.store.value(PREVIEW_GROUPS_KEY, []) || []).find((entry) => entry.id === guest.group && !entry.removedAt);
+    const agents = (group?.agentIds || []).map((id, i) => ({ id, name: group.agents[i]?.name || "", role: group.agents[i]?.role || "", color: group.agents[i]?.color || "#264cd6" })).filter((agent) => this.store.agent(agent.id));
+    return { ...this.groupState(guest.group), company: group?.company || "", agents };
   }
 
   /** The company's first message starts its hour; later ones leave it where it is. */
