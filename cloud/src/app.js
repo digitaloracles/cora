@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { passKeys, signPass } from "../../src/pass.js";
 import { createMailer } from "./mail.js";
 import { sendSpaceInvitation } from "./invitation-mail.js";
+import { sendSecretNotice } from "./secret-send-mail.js";
 import { OAuth, pkce } from "./oauth.js";
 import { proxyRequest, proxyUpgrade } from "./proxy.js";
 import { PROVIDERS } from "./store.js";
@@ -250,6 +251,14 @@ export function createCloud({ config, store, endpoints = {}, log = () => {} }) {
       const form = await readForm(req, 1024);
       const space = store.space(invitation[1]);
       const result = await sendSpaceInvitation({ space, nonce: form.nonce, audience: space ? spaceAudience(space) : "", origin: origin.origin, privateKey: keys.privateKey, mailer, allowSend });
+      res.writeHead(result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      return res.end(JSON.stringify(result));
+    }
+    const secretSend = /^\/spaces\/([a-z0-9-]+)\/secret-sends$/.exec(path);
+    if (secretSend && method === "POST") {
+      const form = await readForm(req, 1024);
+      const space = store.space(secretSend[1]);
+      const result = await sendSecretNotice({ space, nonce: form.nonce, audience: space ? spaceAudience(space) : "", origin: origin.origin, privateKey: keys.privateKey, mailer, allowSend });
       res.writeHead(result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       return res.end(JSON.stringify(result));
     }

@@ -55,6 +55,9 @@ export class Vault {
     this.notice = notice;
     this.webPush = push;
     this.instanceUrl = instanceUrl;
+    // Set by the web layer on a cloud space: mails the people a send names (SecretNotices).
+    this.secretNotices = null;
+    this.mailing = new Map();
     // Derived for the vault alone: the session key signs cookies, this one only encrypts values.
     this.key = key ? Buffer.from(hkdfSync("sha256", Buffer.from(String(key)), Buffer.alloc(0), Buffer.from("cora vault v1"), 32)) : null;
   }
@@ -270,7 +273,7 @@ export class Vault {
     return clean;
   }
 
-  createSend({ name, views = 1, days = 7, note = "", by, status = "active", channelId = "", access = null }) {
+  createSend({ name, views = 1, days = 7, note = "", reason, by, status = "active", channelId = "", access = null, mail = true }) {
     this.need();
     const clean = this.cleanName(name);
     const secret = this.store.vaultSecret(clean);
@@ -278,7 +281,7 @@ export class Vault {
     const now = Date.now();
     const send = {
       id: `vx_${randomBytes(6).toString("hex")}`, name: clean, views: Math.min(Math.max(Math.round(Number(views) || 1), 1), 20),
-      days: Math.min(Math.max(Number(days) || 7, 1), 30), note: String(note || "").trim().slice(0, 300), by: by || null, channelId,
+      days: Math.min(Math.max(Number(days) || 7, 1), 30), note: String(note || "").trim().slice(0, 300), ...(reason !== undefined ? { reason: String(reason || "").trim().slice(0, 300) } : {}), by: by || null, channelId,
       status, createdAt: now, expiresAt: now + Math.min(Math.max(Number(days) || 7, 1), 30) * 86400000, opened: 0, revision: 1,
       access: this.cleanSendAccess(access),
     };
@@ -292,7 +295,19 @@ export class Vault {
     }
     const armed = this.arm(send, secret);
     this.event("send-created", { name: clean, sendId: send.id, mode: send.access.mode, views: send.views, note: send.note, by: actor });
+    if (mail) this.mailRecipients(armed);
     return armed;
+  }
+
+  /** A send for named people, once it can be opened, tells each of them by mail; never a public or password one. */
+  mailRecipients(armed) {
+    if (!this.secretNotices || armed.access?.mode !== "people" || !armed.access.emails?.length) return null;
+    const promise = this.secretNotices.notify(armed, armed.url).then((results) => {
+      for (const result of results) this.event("send-mailed", { name: armed.name, sendId: armed.id, to: result.email, status: result.status });
+      return results;
+    }).catch(() => []).finally(() => setTimeout(() => this.mailing.delete(armed.id), 60000).unref?.());
+    this.mailing.set(armed.id, promise);
+    return promise;
   }
 
   arm(send, secret) {
@@ -324,9 +339,15 @@ export class Vault {
     };
     this.store.stmt("DELETE FROM vault_sends WHERE token_hash = ?").run(found.hash);
     const now = Date.now();
-    const armed = this.arm({ ...found.send, ...chosen, approvedBy: by || null, createdAt: now, expiresAt: now + chosen.days * 86400000 }, secret);
+    // The form shows an agent's reason: kept as it is, the note keeps who it was for; rewritten, it is the reason the mail gives.
+    let reason = {};
+    if (note !== undefined && found.send.reason !== undefined && chosen.note === found.send.reason) chosen.note = found.send.note;
+    else if (note !== undefined && chosen.note !== found.send.note) reason = { reason: chosen.note };
+    const armed = this.arm({ ...found.send, ...chosen, ...reason, approvedBy: by || null, createdAt: now, expiresAt: now + chosen.days * 86400000 }, secret);
     this.event("send-approved", { name: found.send.name, sendId: id, mode: chosen.access.mode, views: chosen.views, by: by ? { kind: by.kind || "user", name: by.name || "" } : null, for: found.send.by?.name || "" });
-    if (found.send.channelId && this.notice) Promise.resolve(this.notice(found.send.channelId, `🔐 Il proprietario ha approvato l'invio di **${found.send.name}**: il link lo manda lui.`)).catch(() => {});
+    const mailed = this.mailRecipients(armed);
+    const told = mailed ? "Cora lo ha mandato per email alle persone indicate" : "il link lo manda lui";
+    if (found.send.channelId && this.notice) Promise.resolve(this.notice(found.send.channelId, `🔐 Il proprietario ha approvato l'invio di **${found.send.name}**: ${told}.`)).catch(() => {});
     return armed;
   }
 

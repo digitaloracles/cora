@@ -401,11 +401,11 @@ export const TOOL_DEFS = [
   },
   {
     name: "secret_send",
-    description: "Send a secret from the vault through a link that opens a set number of times. When the owner of the space asks you in this conversation, Cora sends the link to them at once, in a private message: you never see it, so tell them it is in their private messages (they forward it if it is for someone else). Anyone else's request is created switched off and waits for the owner's approval in the panel: say so.",
+    description: "Send a secret from the vault through a link that opens a set number of times. When the owner of the space asks you in this conversation, Cora sends the link to them at once, in a private message: you never see it, so tell them it is in their private messages (they forward it if it is for someone else). With emails, on a space on usecora.space, each of those people also gets an email from Cora saying who sent them a secret and why (the reason only, never the secret's name), with the link: that happens as soon as the link exists, so write a reason that does not contain the secret itself. Anyone else's request is created switched off and waits for the owner's approval in the panel: say so.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string" }, to: { type: "string", description: "who should receive it" }, reason: { type: "string" },
+        name: { type: "string" }, to: { type: "string", description: "who should receive it" }, reason: { type: "string", description: "what it is for, in a few words: the recipients' email says it" },
         views: { type: "number", description: "how many times the link opens, 1 to 20 (default 1)" }, days: { type: "number", description: "how many days it lasts, 1 to 30 (default 7)" },
         emails: { type: "array", items: { type: "string" }, description: "optional: only these people open it, after signing in" },
       },
@@ -947,16 +947,20 @@ export async function executeTool(call, ctx) {
         if (!secret || !ctx.vault.canUse(secret, agent)) return { text: "error: no such secret you may use" };
         const request = {
           name: secret.name, views: args.views, days: args.days, note: `${String(args.to || "").slice(0, 120)}: ${String(args.reason || "").slice(0, 160)}`,
+          reason: String(args.reason || "").slice(0, 160),
           by: { kind: "agent", id: agent.id, name: agent.name }, channelId,
           access: Array.isArray(args.emails) && args.emails.length ? { mode: "people", emails: args.emails, domains: [], members: false } : null,
         };
         // The owner asking now gets the link at once, privately from Cora: it never enters the chat, the archive or the agent's context.
         if (ctx.requester?.kind === "owner" && ctx.messageOwner) {
-          const send = ctx.vault.createSend({ ...request, status: "active" });
+          const send = ctx.vault.createSend({ ...request, status: "active", mail: false });
           const until = new Date(send.expiresAt).toISOString().slice(0, 10);
           const times = send.views === 1 ? "una volta" : `${send.views} volte`;
           const delivered = await ctx.messageOwner(`🔐 ${agent.name} ti manda **${secret.name}**${args.to ? ` (per ${String(args.to).slice(0, 80)})` : ""}: ${send.url}\nSi apre ${times}, fino al ${until}.`).catch(() => false);
-          if (delivered) return { text: `SENT: Cora sent the owner the link to ${secret.name} in a private message; it opens ${send.views} time(s) until ${until}. You never see the link: tell them it is in their private messages from Cora.` };
+          // The people it names hear of it only once the owner has the link: a send that is then revoked never mails.
+          const mailed = delivered ? await (ctx.vault.mailRecipients(send) || Promise.resolve([])) : [];
+          const mailNote = mailed.length ? ` Cora also emailed ${mailed.map((item) => `${item.email} (${item.status === "sent" ? "sent" : `not confirmed: ${item.status}`})`).join(", ")} that a secret waits for them, with the link and the reason only.` : "";
+          if (delivered) return { text: `SENT: Cora sent the owner the link to ${secret.name} in a private message; it opens ${send.views} time(s) until ${until}.${mailNote} You never see the link: tell them it is in their private messages from Cora.` };
           ctx.vault.revokeSend(send.id, { kind: "agent", name: agent.name });
           return { text: "NOT SENT: Cora could not write to the owner privately, so the link was not made. Tell them to send it from the panel (Artefatti → Segreti → Manda)." };
         }
