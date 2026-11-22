@@ -15,7 +15,7 @@ import { writtenReplyEvidence } from "./voice.js";
 import { attachmentImage } from "./images.js";
 import { agentPersona, agentTagline } from "./character.js";
 import { issueKeys, leakMessage, leakPointer, sameChannel, threadLeak, threadLink, threadTopics } from "./thread-topics.js";
-import { L, promptLanguageOf, promptLocale, tf, withPromptLanguage } from "./prompt-lang.js";
+import { L, promptLanguageOf, promptLocale, textLanguage, tf, withPromptLanguage } from "./prompt-lang.js";
 
 /** A conversation without the computer is short; a task runs until it is done, within these bounds. */
 const CHAT_STEPS = 14;
@@ -74,6 +74,8 @@ const UNFINISHED = [
   /\b(vuoi|volete) che (continu|proced|vada avanti|finisca|completi)|\b(continuo|procedo|vado avanti|proseguo)\s*\?|\b(shall|should) i (continue|proceed|go on|keep going)\b|\bwant me to (continue|proceed|go on|finish|keep going)\b/i,
   /\b(sto|stiamo) (scaricando|caricando|lavorando|applicando|facendo|preparando|verificando|controllando|installando|sistemando|aggiornando|generando|creando)\b|\b(adesso|ora|subito) (faccio|passo|carico|applico|scarico|sistemo|procedo|verifico|controllo|installo|creo|genero)\b|\bripart[oi]\b|\bti (aggiorno|scrivo|avviso) (qui )?(appena|quando|non appena)\b|\bi'?ll (now |next |then )?(do|start|apply|upload|deploy|fix|check|download|update|finish|create|build)\b|\bi'?m (now )?(downloading|uploading|applying|deploying|fixing|checking|building|working on)\b|\bnext,? i'?ll\b|\bstarting (now|the)\b/i,
 ];
+
+const LANGUAGE_NAMES = { it: "italiano", en: "English", es: "español", de: "Deutsch" };
 
 export function unfinished(text) {
   return UNFINISHED.some((pattern) => pattern.test(String(text || "")));
@@ -1108,7 +1110,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       canManagePlan,
       canEndConversation: mode === "chat" && ["owner", "human"].includes(replyTo?.kind),
       agentDirectory: () => this.conversationDirectory(agent, channel.id),
-      agent, attachments, boxes: this.boxes, store: this.store, skills: this.skills, memory: this.memory, channelId: channel.id, postFile: postFile ? (file, caption) => postFile(file, caption, { replyTo, traceId: trace.id }) : null, log: this.log, push: this.push, companyBrain: selectedBrain, knowledge: this.knowledge, gitAttribution: this.gitAttribution,
+      agent, attachments, boxes: this.boxes, store: this.store, skills: this.skills, memory: this.memory, channelId: channel.id, postFile: postFile ? (file, caption) => postFile(file, caption, { replyTo, traceId: trace.id }) : null, answerLanguage: () => answerLanguage(), log: this.log, push: this.push, companyBrain: selectedBrain, knowledge: this.knowledge, gitAttribution: this.gitAttribution,
       // Who asked, when a person did: only then may an agent open a new artifact folder.
       artifacts: this.artifacts, artifactUserId: transportOf(channel.id) === "web" ? replyTo?.authorId || requester?.id || "" : "", vault: this.vault, connectors: this.connectors, requester, mailAuthorized: Boolean(computer || requestAuthorized), email: this.email, emailInvocation: channel.emailInvocation || null, traceId: trace.id, messageOwner: this.knowledge?.ownerMemory ? (text) => this.messagePersonFor?.(agent, text) || Promise.resolve(false) : this.messageOwner,
       openThread: this.openThread ? (options) => this.openThread(agent, channel.id, options) : null,
@@ -1482,6 +1484,21 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
      * tools if it means an earlier turn, or to say plainly that it did not do it.
      */
     let claimChecked = false;
+    /**
+     * The language the reply owes: the one the message being answered is clearly written in,
+     * else the language the agent was started in. Empty when neither says it.
+     */
+    const answerLanguage = () => textLanguage(replyTo?.content) || promptLanguageOf(agent.language);
+    let languageChecked = false;
+    const languageVerdict = (raw) => {
+      if (languageChecked || halted || asked) return null;
+      const want = answerLanguage();
+      const text = cleanReply(raw, agent);
+      const written = textLanguage(text);
+      if (!want || !written || written === want) return null;
+      languageChecked = true;
+      return { kind: "language", text, prompt: L`[Cora] Hai risposto in una lingua diversa da quella del messaggio a cui rispondi. Riscrivi adesso la stessa risposta, per intero e senza aggiungere altro, in questa lingua: ${LANGUAGE_NAMES[want]}.` };
+    };
     const claimVerdict = (raw) => {
       if (claimChecked || changed || looping || asked || Date.now() > deadline - 20000) return null;
       const text = cleanReply(raw, agent);
@@ -1518,7 +1535,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       trace.add({ type: "note", text: `doc: risposta fermata — ${reason}` });
       return { kind: "doc", text, prompt: L`[Cora] ${reason} Scrivi di nuovo la risposta finale, senza rifare il lavoro.` };
     };
-    const HARNESS_NOTES = { plan: "riprendo il prossimo passo del piano", confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread" };
+    const HARNESS_NOTES = { language: "risposta in un'altra lingua: la faccio riscrivere in quella del messaggio", plan: "riprendo il prossimo passo del piano", confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread" };
     const nudgedPlanSteps = new Set();
     const planVerdict = () => {
       if (!followedPlan || !caps.tools || halted || asked || looping || blockedWork || goalBlocked || Date.now() > deadline - 20000) return null;
@@ -1534,7 +1551,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       await settleNews();
       checkPlanClosure();
       if (halted) return null;
-      return threadVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (goal ? await goalVerdict(raw) : null) || planVerdict() || (!goal ? verdict(raw) : null);
+      return threadVerdict(raw) || languageVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (goal ? await goalVerdict(raw) : null) || planVerdict() || (!goal ? verdict(raw) : null);
     };
 
     control.settle = settleNews;

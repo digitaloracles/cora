@@ -1,6 +1,7 @@
 // Cora's agent instructions in Spanish, keyed by their source text (src/prompt-lang.js).
 // Italian sources come from L`` and tf(), English ones (the demo's company cards) from LE`` and te().
 export default {
+ "[Cora] Hai risposto in una lingua diversa da quella del messaggio a cui rispondi. Riscrivi adesso la stessa risposta, per intero e senza aggiungere altro, in questa lingua: {0}.": "[Cora] Has respondido en un idioma distinto del mensaje al que respondes. Vuelve a escribir ahora la misma respuesta, entera y sin añadir nada, en este idioma: {0}.",
  "\n\nHai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve.": "\n\nHas respondido PASS, pero la persona te ha hablado a ti: responde en voz con palabras reales, aunque sea solo una frase breve.",
  "\n\n[Obiettivo] Questa è l'unica condizione attuale; sostituisce gli obiettivi precedenti: {0}": "\n\n[Objetivo] Esta es la única condición actual; sustituye a los objetivos anteriores: {0}",
  "  \"core\": \"la nuova scheda completa (max 2500 caratteri): chi è il proprietario e cosa gli importa, i tuoi rapporti con gli altri, cosa sta succedendo, impegni aperti. Mantieni ciò che è ancora vero.\",": "  \"core\": \"la nueva ficha completa (máx. 2500 caracteres): quién es el propietario y qué le importa, tus relaciones con los demás, qué está pasando, compromisos abiertos. Mantén lo que sigue siendo cierto.\",",
