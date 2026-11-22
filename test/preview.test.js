@@ -156,3 +156,45 @@ test("a restart never leaves a guest's message unanswered: the demo answers it o
   again.app.store.setValue(PREVIEW_WINDOWS_KEY, { rest: Date.now() - 61 * 60000 });
   assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [], "no answer after the company's hour");
 });
+
+test("a person who asks for a second company gets that company's chat, not the first one's", async (t) => {
+  const f = await knowledgeWorld({ previewMinutes: 60 }); t.after(f.close);
+  const previews = new Map();
+  const mails = [];
+  const request = (id, email, company, site, archetype = "manager") => previews.set(id, { id, email, company, site, archetype, lang: "en", status: "requested", space: "" });
+  const deps = {
+    now: () => Date.now(), log: () => {}, space: "demo", base: f.base, chat: async () => BRIEF,
+    site: async (url) => [{ url, title: "Home", description: "A company", headings: [], text: "" }],
+    mail: async (message) => { mails.push(message); },
+    groups: storeGroups(f.app, { model: "ollama/gpt-oss:120b", minutes: 60 }),
+    cloud: { list: async (status) => [...previews.values()].filter((item) => item.status === status), update: async (id, body) => { Object.assign(previews.get(id), body); }, firstMessage: async () => {} },
+  };
+  const linkOf = (to) => new URL(/https?:\/\/\S+\/auth\/preview\?token=[\w-]+/.exec(mails.filter((mail) => mail.to === to).at(-1).text)[0]);
+  const signIn = async (url) => {
+    const res = await fetch(`${f.base}${url.pathname}${url.search}`, { redirect: "manual", headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" } });
+    return { status: res.status, cookie: (res.headers.get("set-cookie") || "").split(";")[0], body: await res.text() };
+  };
+  const call = async (cookie, path) => (await (await fetch(`${f.base}${path}`, { headers: { cookie, "x-cora": "1" } })).json());
+
+  request("pv_1", "anna@acme.com", "Acme", "https://acme.com");
+  await runOnce(deps);
+  request("pv_2", "anna@acme.com", "Beta", "https://beta.com");
+  await runOnce(deps);
+
+  const records = f.app.store.value("previewGuests", []).filter((guest) => guest.email === "anna@acme.com");
+  assert.equal(records.length, 1, "one record per address");
+  assert.equal(records[0].group, "beta", "the link follows the company she asked for last");
+
+  const beta = await signIn(linkOf("anna@acme.com"));
+  assert.equal(beta.status, 200);
+  const state = await call(beta.cookie, "/api/state");
+  assert.equal(state.preview.company, "Beta", "the demo shows the company of the link she opened");
+  assert.deepEqual(state.preview.agents.map((agent) => agent.name), ["Mara"], "and only its own agent");
+  assert.ok(state.agents.map((agent) => agent.name).includes("Mara · Beta"), "and her own agent is reachable");
+
+  request("pv_3", "anna@acme.com", "Beta", "https://beta.com", "researcher");
+  await runOnce(deps);
+  assert.equal(mails.length, 2, "a known address gets no second mail");
+  const again = await signIn(linkOf("anna@acme.com"));
+  assert.equal((await call(again.cookie, "/api/state")).preview.company, "Beta", "the same link still opens Beta");
+});

@@ -37,6 +37,8 @@ const COPY = {
     ],
     fallback: "If the button does not work, copy this link:",
     why: "You get this email because someone asked for a Cora preview with this address on usecora.space. If it was not you, ignore it: nothing happens.",
+    cappedHead: "Three agents already",
+    capped: (existing, wanted) => `This demo already has its three agents: ${existing}. The role you asked for, ${wanted}, was not added: three agents per company is the limit. Use the three that are there.`,
     bye: "The Cora team",
   },
   it: {
@@ -55,6 +57,8 @@ const COPY = {
     ],
     fallback: "Se il pulsante non funziona, copia questo link:",
     why: "Ricevi questa email perché su usecora.space è stata chiesta un'anteprima di Cora con questo indirizzo. Se non sei stato tu, ignorala: non succede nulla.",
+    cappedHead: "Tre agenti già attivi",
+    capped: (existing, wanted) => `Questa anteprima ha già i suoi tre agenti: ${existing}. Il ruolo che hai chiesto, ${wanted}, non è stato aggiunto: il limite è tre agenti per azienda. Usa i tre che ci sono.`,
     bye: "Il team di Cora",
   },
   es: {
@@ -73,6 +77,8 @@ const COPY = {
     ],
     fallback: "Si el botón no funciona, copia este enlace:",
     why: "Recibes este correo porque alguien pidió una vista previa de Cora con esta dirección en usecora.space. Si no fuiste tú, ignóralo: no pasa nada.",
+    cappedHead: "Ya hay tres agentes",
+    capped: (existing, wanted) => `Esta vista previa ya tiene sus tres agentes: ${existing}. El rol que pediste, ${wanted}, no se ha añadido: el límite son tres agentes por empresa. Usa los tres que hay.`,
     bye: "El equipo de Cora",
   },
   de: {
@@ -91,6 +97,8 @@ const COPY = {
     ],
     fallback: "Wenn der Button nicht funktioniert, kopieren Sie diesen Link:",
     why: "Sie erhalten diese E-Mail, weil auf usecora.space mit dieser Adresse eine Cora-Vorschau angefragt wurde. Wenn Sie das nicht waren, ignorieren Sie sie: Es passiert nichts.",
+    cappedHead: "Drei Agenten sind schon da",
+    capped: (existing, wanted) => `Diese Vorschau hat schon ihre drei Agenten: ${existing}. Die gewünschte Rolle ${wanted} wurde nicht hinzugefügt: Das Limit sind drei Agenten pro Unternehmen. Nutzen Sie die drei, die da sind.`,
     bye: "Das Cora-Team",
   },
 };
@@ -114,7 +122,7 @@ const DISPLAY = "Unbounded,'Schibsted Grotesk',-apple-system,BlinkMacSystemFont,
  * { company, lang, link, role, agent: { name, role, archetype, does, focus }, site } → { subject, text, html }.
  * `role` alone still works (older callers): the agent card then shows the role.
  */
-export function previewEmail({ company, lang, link, role = "", agent = null, site = "" }) {
+export function previewEmail({ company, lang, link, role = "", agent = null, site = "", capped = null }) {
   const key = COPY[lang] ? lang : "en";
   const copy = COPY[key];
   const who = line(company, 80) || "your company";
@@ -125,6 +133,7 @@ export function previewEmail({ company, lang, link, role = "", agent = null, sit
   const focus = words(agent?.focus, 320);
   const does = line(agent?.does, 200);
   const facts = copy.facts.map(([head, body]) => [head, typeof body === "function" ? body(who) : body]);
+  if (capped) facts[1] = [copy.cappedHead, copy.capped(capped.agents.map((item) => `${item.name} (${roleTitle(item.role, key)})`).join(", "), roleTitle(capped.wantedRole, key))];
   const subject = copy.subject(who, name);
 
   const text = [

@@ -15,7 +15,7 @@ function world({ chat = async () => JSON.stringify({ summary: "Acme makes rocket
     mail: async (message) => { calls.mails.push(message); },
     cloud: {
       list: async (status) => [...previews.values()].filter((item) => item.status === status),
-      update: async (id, body) => { Object.assign(previews.get(id), { status: body.status, space: body.space || previews.get(id).space }); },
+      update: async (id, body) => { Object.assign(previews.get(id), { status: body.status, space: body.space || previews.get(id).space, note: body.note ?? previews.get(id).note }); },
       firstMessage: async (id) => { calls.first.push(id); },
     },
     groups: {
@@ -231,4 +231,25 @@ test("the preview email ends a long agent pitch on a whole word", async () => {
   assert.ok(shown.endsWith("…"), shown);
   assert.ok(focus.includes(shown.slice(0, -1)), "a prefix of the pitch");
   assert.ok(focus[shown.length - 1] === " " || /[,.;]/.test(focus[shown.length - 1]), "cut at a word boundary");
+});
+
+test("a fourth role for a company that already has three is refused in words, not silently", async () => {
+  const w = world();
+  w.request("pv_1", "anna@acme.com", "https://acme.com", "Acme", "marketer");
+  await runOnce(w.deps);
+  for (const [id, archetype] of [["pv_2", "analyst"], ["pv_3", "programmer"]]) w.request(id, "anna@acme.com", "https://acme.com", "Acme", archetype);
+  await runOnce(w.deps);
+  w.request("pv_4", "bo@acme.com", "https://acme.com", "Acme", "secretary");
+  await runOnce(w.deps);
+  assert.equal(w.calls.created.length, 1, "still one preview per company");
+  assert.deepEqual(w.groups()[0].agents.map((agent) => agent.archetype), ["marketer", "analyst", "programmer"]);
+  assert.equal(w.previews.get("pv_4").status, "ready");
+  assert.match(w.previews.get("pv_4").note, /3 agents already, secretary not added/);
+  const mail = w.calls.mails[1];
+  assert.equal(mail.to, "bo@acme.com");
+  const existing = w.groups()[0].agents.map((agent) => `${agent.name} (${agent.role})`).join(", ");
+  assert.ok(mail.text.includes(`This demo already has its three agents: ${existing}.`), "names what is there");
+  assert.match(mail.text, /The role you asked for, Secretary, was not added: three agents per company is the limit/);
+  assert.doesNotMatch(mail.html, /Up to 3 agents/, "no promise of a fourth role");
+  assert.match(mail.html, /Three agents already/);
 });
