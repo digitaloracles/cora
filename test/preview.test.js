@@ -69,6 +69,15 @@ test("the demo space: each company sees only its sealed agents, may only write t
   await f.app.knowledge.ownerBrain(f.alice.user.id).write({ slug: "secret-plan", kind: "project", title: "Secret plan", body: "OWNER_ONLY", author: "librarian" });
   const pages = await call(anna.cookie, "/api/brain/pages");
   assert.doesNotMatch(JSON.stringify(pages.data), /OWNER_ONLY|secret-plan/, "the space owner's brain never reaches a guest");
+  // A guest reads only its clock, its agents' chats and their files: the space's people and folders stay closed.
+  for (const closed of ["/api/artifacts", "/api/brain/pages", "/api/agents", "/api/secrets", "/api/routines", "/api/connectors"]) {
+    const read = await call(anna.cookie, closed);
+    assert.equal(read.status, 403, `${closed} is closed to a guest`);
+    assert.doesNotMatch(JSON.stringify(read.data), /gina@globex\.com|alice/i, `${closed} never lists the space's people`);
+  }
+  assert.equal((await call(anna.cookie, "/api/state")).status, 200);
+  assert.equal((await call(anna.cookie, `/api/rooms/web-${acmeAgent}/messages`)).status, 200, "its own agent's chat stays readable");
+  assert.equal((await call(f.admin.headers.Cookie, "/api/artifacts")).status, 200, "the space's own people still read their folders");
   const create = await call(anna.cookie, "/api/agents", { method: "POST", body: { name: "Mine", tools: false } });
   assert.equal(create.status, 403); assert.match(create.data.error, /solo scrivere ai tuoi agenti/);
   assert.equal((await call(anna.cookie, `/api/agents/${acmeAgent}`, { method: "PUT", body: { model: "deepseek/deepseek-v4-pro" } })).status, 403);
