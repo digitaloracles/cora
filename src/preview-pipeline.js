@@ -15,7 +15,22 @@ const TWO_PART = new Set(["co", "com", "org", "net", "gov", "ac", "edu"]);
 export const UNUSED_DAYS = 7;
 export const GRACE_MS = 2 * 60000;
 const COLORS = ["#264cd6", "#e36a3a", "#7b5cd6", "#1f9d74"];
-const NAMES = ["Ava", "Leo", "Mia"];
+
+/** The roles a preview agent can play; the briefing picks the three that fit the company best. */
+export const ARCHETYPES = {
+  manager: { name: "Mara", role: "Manager", does: "turns goals into plans, priorities, owners and weekly updates, and keeps track of what is late" },
+  programmer: { name: "Theo", role: "Programmer", does: "writes and reviews code, scripts and automations, explains technical choices and drafts specs" },
+  secretary: { name: "Sofia", role: "Secretary", does: "drafts emails and replies, organises agendas, meeting notes, reminders and follow-ups" },
+  researcher: { name: "Iris", role: "Researcher", does: "researches markets, competitors and topics, and turns findings into short, sourced briefs" },
+  "lead-generator": { name: "Leo", role: "Lead generator", does: "defines ideal customers, finds prospect segments and writes outreach sequences and follow-ups" },
+  marketer: { name: "Mia", role: "Marketer", does: "writes posts, newsletters, landing copy and campaign ideas in the company's voice" },
+  support: { name: "Nora", role: "Customer support", does: "answers customers' questions about the offer, drafts help articles and handles complaints kindly" },
+  analyst: { name: "Otto", role: "Analyst", does: "reads numbers and reports, builds KPIs and simple dashboards, and explains what changed and why" },
+};
+const DEFAULT_ARCHETYPES = ["marketer", "lead-generator", "secretary"];
+/** At most this many agents per company: each one costs model time. */
+export const MAX_AGENTS = 3;
+export const archetypeOf = (value) => { const id = String(value || "").toLowerCase().trim().replace(/[\s_]+/g, "-"); return ARCHETYPES[id] ? id : ""; };
 
 export const siteHost = (site) => { try { return new URL(site).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } };
 
@@ -92,54 +107,57 @@ export async function readSite(site, deps = {}) {
 const clip = (value, size) => String(value || "").replace(/\s+/g, " ").trim().slice(0, size);
 
 /** The model's briefing, or one made from the page itself when the model does not answer. */
-export async function briefing({ company, site, lang, pages, chat }) {
+/** The company from its website, and the agent it chose (or, when it did not, the one that fits it best). */
+export async function briefing({ company, site, lang, pages, chat, archetype = "" }) {
   const source = pages.map((page) => `URL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\nHeadings: ${page.headings.join(" | ")}\nText: ${page.text}`).join("\n\n").slice(0, 14000);
+  const chosen = archetypeOf(archetype);
+  const catalog = Object.entries(ARCHETYPES).map(([id, item]) => `${id}: ${item.role}, ${item.does}`).join("\n");
+  const task = chosen
+    ? `The company chose this agent: ${chosen} (${ARCHETYPES[chosen].role}, ${ARCHETYPES[chosen].does}).`
+    : `Pick the one archetype from this list that would help this company most:\n${catalog}`;
   let parsed = null;
   try {
     const answer = await chat([
-      { role: "system", content: "You prepare the briefing for a short Cora agent preview for one company, only from its public website. Answer with JSON only: {\"summary\": string (2-3 sentences), \"products\": [string], \"audience\": string, \"tone\": string, \"agents\": [{\"name\": string (one short first name), \"role\": string (what this agent does for the company, e.g. marketing writer, customer support, sales research), \"focus\": string (one sentence)}] with exactly 3 agents useful for this company. Do not invent facts that are not on the website." },
+      { role: "system", content: `You prepare the briefing for a short Cora agent preview for one company, only from its public website. ${task}\nAnswer with JSON only: {"summary": string (2-3 sentences), "products": [string], "audience": string, "tone": string, "archetype": the archetype id, "focus": string (one sentence: what this agent would do for this company first)}. Do not invent facts that are not on the website.` },
       { role: "user", content: `Company: ${company}\nWebsite: ${site}\nPreferred language of the visitor: ${lang}\n\n${source}` },
     ]);
     parsed = JSON.parse(String(answer).replace(/^```(?:json)?|```$/g, "").trim());
   } catch {}
   const page = pages[0] || {};
-  const agents = (Array.isArray(parsed?.agents) ? parsed.agents : []).filter((agent) => clip(agent?.name, 24) && clip(agent?.role, 80)).slice(0, 3);
-  const fallback = [{ name: "Ava", role: "marketing and content writer", focus: "drafts posts, emails and pages in the company's voice" }, { name: "Leo", role: "customer support", focus: "answers customers' questions about the company's offer" }, { name: "Mia", role: "research and planning", focus: "turns goals into plans, briefs and next steps" }];
-  const used = new Set();
+  const id = chosen || archetypeOf(parsed?.archetype) || DEFAULT_ARCHETYPES[0];
   return {
     company: clip(company, 80), site,
     summary: clip(parsed?.summary, 600) || clip(page.description || page.title, 600) || `${clip(company, 80)} (${siteHost(site)}).`,
     products: (Array.isArray(parsed?.products) ? parsed.products : page.headings || []).map((item) => clip(item, 120)).filter(Boolean).slice(0, 8),
     audience: clip(parsed?.audience, 200), tone: clip(parsed?.tone, 200),
-    agents: (agents.length ? agents : fallback).map((agent, i) => {
-      let name = clip(agent.name, 24).replace(/[^\p{L}\p{N} .'-]/gu, "").trim() || NAMES[i];
-      if (/discord|clyde/i.test(name) || used.has(name.toLowerCase())) name = NAMES[i];
-      used.add(name.toLowerCase());
-      return { name, role: clip(agent.role, 80), focus: clip(agent.focus, 240) };
-    }),
+    agents: [{ archetype: id, name: ARCHETYPES[id].name, role: ARCHETYPES[id].role, does: ARCHETYPES[id].does, focus: clip(parsed?.focus, 240) }],
   };
 }
 
-export function agentSpecs(brief) {
+export function agentSpecs(brief, offset = 0) {
   const facts = [`Company: ${brief.company} (${brief.site}).`, `What it does: ${brief.summary}`, brief.products.length ? `Products and services: ${brief.products.join("; ")}.` : "", brief.audience ? `Customers: ${brief.audience}.` : "", brief.tone ? `Tone of voice: ${brief.tone}.` : ""].filter(Boolean).join("\n");
   return brief.agents.map((agent, i) => ({
-    name: agent.name, color: COLORS[i % COLORS.length],
-    personality: `You are ${agent.name}, ${agent.role} for ${brief.company}, in a one-hour Cora preview prepared from the company's public website.\n${agent.focus ? `Your focus: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
+    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length],
+    personality: `You are ${agent.name}, the ${agent.role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. As ${agent.role.toLowerCase()} you ${agent.does}.\n${agent.focus ? `Start from this: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
   }));
 }
 
 const COPY = {
-  en: { subject: (c) => `Your Cora agents for ${c} are ready`, hello: "Hi,", body: (c) => `we prepared three Cora agents for ${c}, from your website. They are sealed: they work only for you and see nothing else.`, cta: "Open your preview", hour: "The preview stays open for one hour from your first message. The link is personal: do not forward it.", bye: "The Cora team" },
-  it: { subject: (c) => `I tuoi agenti Cora per ${c} sono pronti`, hello: "Ciao,", body: (c) => `abbiamo preparato tre agenti Cora per ${c} partendo dal vostro sito. Sono sealed: lavorano solo per voi e non vedono nient'altro.`, cta: "Apri la tua anteprima", hour: "L'anteprima resta aperta per un'ora dal tuo primo messaggio. Il link è personale: non inoltrarlo.", bye: "Il team di Cora" },
-  es: { subject: (c) => `Tus agentes de Cora para ${c} están listos`, hello: "Hola:", body: (c) => `hemos preparado tres agentes de Cora para ${c} a partir de vuestra web. Están sellados: trabajan solo para vosotros y no ven nada más.`, cta: "Abrir tu vista previa", hour: "La vista previa queda abierta una hora desde tu primer mensaje. El enlace es personal: no lo reenvíes.", bye: "El equipo de Cora" },
-  de: { subject: (c) => `Ihre Cora-Agenten für ${c} sind bereit`, hello: "Hallo,", body: (c) => `wir haben aus Ihrer Website drei Cora-Agenten für ${c} vorbereitet. Sie sind versiegelt: Sie arbeiten nur für Sie und sehen nichts anderes.`, cta: "Vorschau öffnen", hour: "Die Vorschau bleibt ab Ihrer ersten Nachricht eine Stunde lang offen. Der Link ist persönlich: bitte nicht weiterleiten.", bye: "Das Cora-Team" },
+  en: { subject: (c) => `Your Cora agent for ${c} is ready`, hello: "Hi,", body: (c, r) => `we prepared your Cora ${r} for ${c}, from your website. It is sealed: it works only for you and sees nothing else.`, cta: "Open your preview", hour: "The preview stays open for one hour from your first message. The link is personal: do not forward it.", bye: "The Cora team" },
+  it: { subject: (c) => `Il tuo agente Cora per ${c} è pronto`, hello: "Ciao,", body: (c, r) => `abbiamo preparato il tuo agente Cora (${r}) per ${c} partendo dal vostro sito. È sealed: lavora solo per voi e non vede nient'altro.`, cta: "Apri la tua anteprima", hour: "L'anteprima resta aperta per un'ora dal tuo primo messaggio. Il link è personale: non inoltrarlo.", bye: "Il team di Cora" },
+  es: { subject: (c) => `Tu agente de Cora para ${c} está listo`, hello: "Hola:", body: (c, r) => `hemos preparado tu agente de Cora (${r}) para ${c} a partir de vuestra web. Está sellado: trabaja solo para vosotros y no ve nada más.`, cta: "Abrir tu vista previa", hour: "La vista previa queda abierta una hora desde tu primer mensaje. El enlace es personal: no lo reenvíes.", bye: "El equipo de Cora" },
+  de: { subject: (c) => `Ihr Cora-Agent für ${c} ist bereit`, hello: "Hallo,", body: (c, r) => `wir haben aus Ihrer Website Ihren Cora-Agenten (${r}) für ${c} vorbereitet. Er ist versiegelt: Er arbeitet nur für Sie und sieht nichts anderes.`, cta: "Vorschau öffnen", hour: "Die Vorschau bleibt ab Ihrer ersten Nachricht eine Stunde lang offen. Der Link ist persönlich: bitte nicht weiterleiten.", bye: "Das Cora-Team" },
 };
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
 
-export function previewEmail({ company, lang, link }) {
+const ROLE_WORDS = { it: { Manager: "manager", Programmer: "programmatore", Secretary: "segretaria", Researcher: "ricercatore", "Lead generator": "lead generator", Marketer: "marketer", "Customer support": "assistenza clienti", Analyst: "analista" }, es: { Manager: "mánager", Programmer: "programador", Secretary: "secretaria", Researcher: "investigador", "Lead generator": "generador de leads", Marketer: "marketer", "Customer support": "atención al cliente", Analyst: "analista" }, de: { Manager: "Manager", Programmer: "Entwickler", Secretary: "Sekretariat", Researcher: "Recherche", "Lead generator": "Leadgenerierung", Marketer: "Marketing", "Customer support": "Kundensupport", Analyst: "Analyst" } };
+export const roleWord = (role, lang) => ROLE_WORDS[lang]?.[role] || String(role || "agent").toLowerCase();
+
+export function previewEmail({ company, lang, link, role = "" }) {
   const copy = COPY[lang] || COPY.en;
-  const text = `${copy.hello}\n\n${copy.body(company)}\n\n${copy.cta}: ${link}\n\n${copy.hour}\n\n${copy.bye}\nhttps://usecora.space`;
-  const html = `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#17202E;max-width:520px;line-height:1.55"><p>${escape(copy.hello)}</p><p>${escape(copy.body(company))}</p><p style="margin:28px 0"><a href="${escape(link)}" style="background:#264CD6;color:#fff;text-decoration:none;padding:12px 20px;border-radius:999px;display:inline-block;font-weight:600">${escape(copy.cta)}</a></p><p style="color:#4a5568;font-size:14px">${escape(copy.hour)}</p><p>${escape(copy.bye)}<br><a href="https://usecora.space" style="color:#264CD6">usecora.space</a></p></div>`;
+  const word = roleWord(role, COPY[lang] ? lang : "en");
+  const text = `${copy.hello}\n\n${copy.body(company, word)}\n\n${copy.cta}: ${link}\n\n${copy.hour}\n\n${copy.bye}\nhttps://usecora.space`;
+  const html = `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#17202E;max-width:520px;line-height:1.55"><p>${escape(copy.hello)}</p><p>${escape(copy.body(company, word))}</p><p style="margin:28px 0"><a href="${escape(link)}" style="background:#264CD6;color:#fff;text-decoration:none;padding:12px 20px;border-radius:999px;display:inline-block;font-weight:600">${escape(copy.cta)}</a></p><p style="color:#4a5568;font-size:14px">${escape(copy.hour)}</p><p>${escape(copy.bye)}<br><a href="https://usecora.space" style="color:#264CD6">usecora.space</a></p></div>`;
   return { subject: copy.subject(company), text, html };
 }
 
@@ -159,7 +177,7 @@ export function agentName(name, company, taken) {
 
 /**
  * One pass of the pipeline inside the demo space. `deps`: cloud {list(status), update(id, body), firstMessage(id)},
- * groups {load(), save(entries), create(entry, guest), addGuest(entry, guest), remove(entry), window(entry)},
+ * groups {load(), save(entries), create(entry, guest), addGuest(entry, guest), addAgents(entry, specs), remove(entry), window(entry)},
  * space ("demo"), base ("https://demo.usecora.space"), site(url), chat(messages), mail(message), now(), log(event).
  * A group is one company site: its guests, its sealed agents and its hour.
  */
@@ -177,8 +195,10 @@ export async function runOnce(deps) {
     const email = String(request.email || "").trim().toLowerCase();
     try {
       if (same) {
-        // One group per company site: a second request joins it; a new address gets a link of its own.
+        // One group per company site: a second request joins it. A new address gets a link of its own;
+        // an agent it chose that the group lacks is added, up to MAX_AGENTS.
         same.previews.push(request.id);
+        const wanted = archetypeOf(request.archetype);
         const known = same.guests.some((guest) => guest.email === email);
         let token = null;
         if (!known) {
@@ -187,18 +207,26 @@ export async function runOnce(deps) {
           same.guests.push(guest);
           deps.groups.addGuest(same, guest);
         }
+        let added = null;
+        if (wanted && !same.agents.some((agent) => agent.archetype === wanted) && same.agents.length < MAX_AGENTS) {
+          const pages = await deps.site(request.site);
+          const brief = await briefing({ company: same.company, site: same.site, lang: request.lang, pages, chat: deps.chat, archetype: wanted });
+          added = agentSpecs(brief, same.agents.length);
+          same.agentIds.push(...deps.groups.addAgents(same, added));
+          same.agents.push(...added);
+        }
         save();
-        await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: "same site: joined its existing preview" });
+        await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: added ? `same site: ${wanted} added to its preview` : "same site: joined its existing preview" });
         if (token) {
-          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token) }) });
+          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token), role: (added?.[0] || same.agents[0])?.role }) });
           same.guests.find((guest) => guest.email === email).mailedAt = deps.now(); save();
         }
-        deps.log({ type: "preview-joined", id: request.id, group: same.id });
+        deps.log({ type: "preview-joined", id: request.id, group: same.id, added: Boolean(added) });
         continue;
       }
       await deps.cloud.update(request.id, { status: "building" });
       const pages = await deps.site(request.site);
-      const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat });
+      const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat, archetype: request.archetype });
       const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
       const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
@@ -207,7 +235,7 @@ export async function runOnce(deps) {
       entry.agentIds = deps.groups.create(entry, guest);
       entry.ready = true; save();
       await deps.cloud.update(request.id, { status: "ready", space: deps.space });
-      await deps.mail({ to: email, ...previewEmail({ company: brief.company, lang: request.lang, link: link(token) }) });
+      await deps.mail({ to: email, ...previewEmail({ company: brief.company, lang: request.lang, link: link(token), role: brief.agents[0].role }) });
       guest.mailedAt = deps.now(); save();
       deps.log({ type: "preview-ready", id: request.id, group: id });
     } catch (error) {

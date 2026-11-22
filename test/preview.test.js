@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
 import { storeGroups } from "../src/preview-demo.js";
 import { runOnce } from "../src/preview-pipeline.js";
-import { PREVIEW_WINDOWS_KEY } from "../src/preview.js";
+import { PREVIEW_TOOLS, PREVIEW_WINDOWS_KEY } from "../src/preview.js";
 
-const BRIEF = JSON.stringify({ summary: "Makes things.", products: ["Things"], audience: "People", tone: "Plain", agents: [{ name: "Ava", role: "writer", focus: "posts" }, { name: "Leo", role: "support", focus: "answers" }, { name: "Mia", role: "research", focus: "plans" }] });
+const BRIEF = JSON.stringify({ summary: "Makes things.", products: ["Things"], audience: "People", tone: "Plain", focus: "plans" });
 
 test("the demo space: each company sees only its sealed agents, may only write to them, and loses them one hour after its first message", async (t) => {
   const f = await knowledgeWorld({ previewMinutes: 60 }); t.after(f.close);
@@ -13,7 +13,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   const previews = new Map();
   const mails = [];
   const first = [];
-  const request = (id, email, company, site) => previews.set(id, { id, email, company, site, lang: "en", status: "requested", space: "" });
+  const request = (id, email, company, site, archetype = "manager") => previews.set(id, { id, email, company, site, archetype, lang: "en", status: "requested", space: "" });
   const deps = {
     now: () => clock, log: () => {}, space: "demo", base: f.base, chat: async () => BRIEF,
     site: async (url) => [{ url, title: "Home", description: "A company", headings: [], text: "" }],
@@ -33,7 +33,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   };
 
   request("pv_a", "anna@acme.com", "Acme", "https://acme.com");
-  request("pv_g", "gina@globex.com", "Globex", "https://www.globex.com");
+  request("pv_g", "gina@globex.com", "Globex", "https://www.globex.com", "marketer");
   await runOnce(deps);
   assert.equal(previews.get("pv_a").status, "ready"); assert.equal(previews.get("pv_a").space, "demo");
   assert.equal(previews.get("pv_g").status, "ready");
@@ -42,14 +42,22 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal((await signIn("/auth/preview?token=wrong")).status, 403);
   const anna = await signIn(linkOf("anna@acme.com").pathname + linkOf("anna@acme.com").search);
   assert.equal(anna.status, 200);
-  assert.match(anna.body, /http-equiv="refresh" content="0;url=\/"/);
+  assert.match(anna.body, /http-equiv="refresh" content="0;url=\/preview"/);
   const gina = await signIn(linkOf("gina@globex.com").pathname + linkOf("gina@globex.com").search);
 
   const annaState = (await call(anna.cookie, "/api/state")).data;
   const ginaState = (await call(gina.cookie, "/api/state")).data;
-  assert.deepEqual(annaState.agents.map((agent) => [agent.name, agent.sealed]), [["Ava · Acme", true], ["Leo · Acme", true], ["Mia · Acme", true]]);
-  assert.deepEqual(ginaState.agents.map((agent) => agent.name), ["Ava · Globex", "Leo · Globex", "Mia · Globex"]);
-  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false });
+  assert.deepEqual(annaState.agents.map((agent) => [agent.name, agent.sealed]), [["Mara · Acme", true]], "the agent of the archetype Acme chose");
+  assert.deepEqual(ginaState.agents.map((agent) => agent.name), ["Mia · Globex"]);
+  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6" }] });
+
+  // The company only ever sees the demo chat: the panel sends it there, and the chat page is served.
+  const home = await fetch(`${f.base}/`, { redirect: "manual", headers: { cookie: anna.cookie } });
+  assert.equal(home.status, 302); assert.equal(home.headers.get("location"), "/preview");
+  assert.equal((await fetch(`${f.base}/`, { redirect: "manual", headers: { cookie: f.admin.headers.Cookie } })).status, 200, "the space's own people keep the panel");
+  const chat = await (await fetch(`${f.base}/preview`, { headers: { cookie: anna.cookie } })).text();
+  assert.match(chat, /\/assets\/v\/[0-9a-f]{16}\/preview\.js/);
+  assert.equal((await fetch(`${f.base}${/\/assets\/v\/[0-9a-f]{16}\/preview\.css/.exec(chat)[0]}`)).status, 200);
   assert.equal((await call(f.admin.headers.Cookie, "/api/state")).data.preview, null, "the space's own people have no clock");
 
   const acmeAgent = annaState.agents[0].id;
@@ -64,21 +72,32 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal(create.status, 403); assert.match(create.data.error, /solo scrivere ai tuoi agenti/);
   assert.equal((await call(anna.cookie, `/api/agents/${acmeAgent}`, { method: "PUT", body: { model: "deepseek/deepseek-v4-pro" } })).status, 403);
 
+  // A colleague's different choice adds that agent, up to three per company; no more after that.
+  request("pv_a2", "anna@acme.com", "Acme", "https://acme.com", "researcher");
+  request("pv_a3", "anna@acme.com", "Acme", "https://acme.com", "analyst");
+  request("pv_a4", "anna@acme.com", "Acme", "https://acme.com", "programmer");
+  await runOnce(deps);
+  assert.deepEqual(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).map((agent) => agent.name), ["Mara · Acme", "Iris · Acme", "Otto · Acme"]);
+  assert.equal(mails.filter((mail) => mail.to === "anna@acme.com").length, 1, "the same person is not mailed again");
+  assert.deepEqual((await call(anna.cookie, "/api/state")).data.preview.agents.map((agent) => agent.role), ["Manager", "Researcher", "Analyst"]);
+  // Preview agents can only use their own memory and pictures: no routines, mail, files or connectors.
+  for (const name of ["set_routine", "set_reminder", "email_send", "artifact_push", "ask_owner", "say", "shell"]) assert.equal(PREVIEW_TOOLS.has(name), false, name);
+
   // Acme's first message starts Acme's hour only, once.
   assert.equal((await call(anna.cookie, `/api/rooms/web-${acmeAgent}/messages`, { method: "POST", body: { text: "Hello" } })).status, 201);
   const started = (await call(anna.cookie, "/api/state")).data.preview;
   assert.ok(started.startedAt && started.endsAt === started.startedAt + 3600000);
   assert.equal((await call(gina.cookie, "/api/state")).data.preview.startedAt, null);
   await runOnce(deps); await runOnce(deps);
-  assert.deepEqual(first, ["pv_a"]);
+  assert.deepEqual(first, ["pv_a", "pv_a2", "pv_a3", "pv_a4"]);
 
   // A colleague at Acme asks too: same agents, a link of their own, no second set.
   request("pv_b", "bo@acme.com", "Acme", "https://acme.com/");
   await runOnce(deps);
   assert.equal(previews.get("pv_b").space, "demo");
-  assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 3);
+  assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 3, "the same archetype is not made twice");
   const bo = await signIn(linkOf("bo@acme.com").pathname + linkOf("bo@acme.com").search);
-  assert.deepEqual((await call(bo.cookie, "/api/state")).data.agents.map((agent) => agent.id), annaState.agents.map((agent) => agent.id));
+  assert.deepEqual((await call(bo.cookie, "/api/state")).data.agents.map((agent) => agent.id), (await call(anna.cookie, "/api/state")).data.agents.map((agent) => agent.id));
 
   // Minute 59 still writes; minute 61 is refused for Acme, while Globex and the owner carry on.
   const setStart = (at) => f.app.store.setValue(PREVIEW_WINDOWS_KEY, { ...f.app.store.value(PREVIEW_WINDOWS_KEY, {}), acme: at });
@@ -99,5 +118,5 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal((await call(anna.cookie, "/api/state")).status, 401);
   assert.equal((await call(bo.cookie, "/api/state")).status, 401);
   assert.ok(!f.app.store.accessPolicy().emails.includes("anna@acme.com"));
-  assert.equal((await call(gina.cookie, "/api/state")).data.agents.length, 3, "Globex keeps its agents");
+  assert.equal((await call(gina.cookie, "/api/state")).data.agents.length, 1, "Globex keeps its agent");
 });
