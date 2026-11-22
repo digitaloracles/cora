@@ -350,6 +350,8 @@ export function sanitizeAgent(input, previous = {}, { avatarBase = "" } = {}) {
     gender: GENDERS.includes(merged.gender) ? merged.gender : "",
     voice: cleanText(merged.voice, 40).replace(/[^\w .-]/g, "").trim(),
     voiceLanguage: VOICE_LANGUAGES.includes(merged.voiceLanguage) ? merged.voiceLanguage : "",
+    // The language its instructions are written in (src/prompt-lang.js); empty means the instance's language.
+    language: ["it", "en", "es", "de"].includes(merged.language) ? merged.language : "",
     lastSleepAt: previous.lastSleepAt || null,
     sshPort: previous.sshPort || null,
     createdAt: previous.createdAt || new Date().toISOString(),
@@ -481,7 +483,7 @@ export function sanitizeSettings(input, previous = DEFAULT_SETTINGS) {
       label: cleanText(host?.label, 60).trim(),
       gpu: cleanText(host?.gpu, 80).trim(),
     })).filter((host) => host.url),
-    language: ["it", "en"].includes(merged.language) ? merged.language : "it",
+    language: ["it", "en", "es", "de"].includes(merged.language) ? merged.language : "it",
     noticeChannel: cleanText(merged.noticeChannel, 100).trim().replace(/^#/, ""),
     sshKeys: plainKeys(Array.isArray(merged.sshKeys) ? merged.sshKeys.join("\n") : merged.sshKeys).slice(0, 30),
     permissions: cleanPermissions(merged.permissions),

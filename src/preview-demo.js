@@ -23,7 +23,7 @@ export function storeGroups(app, { model, minutes }) {
     try {
       for (const spec of specs) {
         const name = agentName(spec.name, entry.company, (lower) => store.agents().some((agent) => agent.name.toLowerCase() === lower));
-        ids.push(store.createAgent({ name, personality: spec.personality, color: spec.color, model, sealed: true, tools: false, enabled: true, brainSource: "internal", brainOwnerId: owner, coOwnerIds: coOwners, channelIds: [] }).id);
+        ids.push(store.createAgent({ name, personality: spec.personality, color: spec.color, model, language: spec.language || entry.lang || "", sealed: true, tools: false, enabled: true, brainSource: "internal", brainOwnerId: owner, coOwnerIds: coOwners, channelIds: [] }).id);
       }
     } catch (error) {
       for (const id of ids) store.deleteAgent(id);
@@ -104,6 +104,13 @@ export function startPreviewPipeline(app, { cloudUrl, token, space, base, model,
     cloud: { list: async (status) => (await cloudCall(`?status=${status}`)).previews, update: (id, body) => cloudCall(`/${id}`, { method: "POST", body }), firstMessage: (id) => cloudCall(`/${id}/first-message`, { method: "POST" }) },
   };
   app.brain.previewTools = PREVIEW_TOOLS;
+  // Agents made before their language was stored speak the language of their company's request.
+  for (const entry of deps.groups.load().filter((item) => !item.removedAt)) {
+    for (const id of entry.agentIds || []) {
+      const agent = app.store.agent(id);
+      if (agent && !agent.language && entry.lang) app.store.updateAgent(id, { language: entry.lang });
+    }
+  }
   let running = null;
   const pass = () => {
     if (running) return running;

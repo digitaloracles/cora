@@ -5,6 +5,7 @@ import { bm25 } from "./memory.js";
 import { SHARED } from "./store.js";
 import { coauthorTrailer } from "./git-attribution.js";
 import { summarizeTool, toolFor } from "./connectors/index.js";
+import { L } from "./prompt-lang.js";
 
 const XDOTOOL_BUTTON = { click: "1", double_click: "1", right_click: "3", middle_click: "2" };
 
@@ -567,7 +568,7 @@ export async function executeTool(call, ctx) {
       const folder = ctx.artifacts.findFolder(args.folder);
       if (folder) {
         ctx.artifacts.checkMember(folder, artifactUserId, call.name === "artifact_push");
-        if (["artifact_share", "artifact_folder_update"].includes(call.name) && !ctx.artifacts.canReview(folder, store.panelUser(artifactUserId))) return { text: "error: cambiano una cartella o i suoi link solo il proprietario e i revisori" };
+        if (["artifact_share", "artifact_folder_update"].includes(call.name) && !ctx.artifacts.canReview(folder, store.panelUser(artifactUserId))) return { text: L`error: cambiano una cartella o i suoi link solo il proprietario e i revisori` };
       }
     }
     if (ctx.connectors?.handles(call.name)) {

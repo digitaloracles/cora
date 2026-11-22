@@ -16,6 +16,7 @@ import { VOICE_MESSAGE, obfuscated } from "./discord.js";
 import { AUDIO_LIMIT_BYTES, VOICE_LANGUAGES, speechParts } from "./voice.js";
 import { imageMime } from "./images.js";
 import { issueKeys, sharesTopic, topicPlace } from "./thread-topics.js";
+import { L, withPromptLanguage } from "./prompt-lang.js";
 
 const HUMAN_DEBOUNCE_MS = 1200;
 // After a restart, unanswered human messages this recent are picked up again.
@@ -755,7 +756,7 @@ export class Orchestrator {
           if (this.states.get(channelId)?.working?.has(agent.id) || this.threadWork.has(channelId, agent.id)) continue;
           if (transportOf(channelId) === "discord" && !this.dmAgentId(channelId) && this.bots && !await this.bots.canRead(agent, channelId)) continue;
           if (this.engagements[channelId] !== focus || this.store.settings.conversationIdleMinutes !== minutes) break;
-          const text = this.store.settings.language === "en" ? `It has been ${minutes} minutes since the last message. Should I keep listening to this conversation? I will stay connected until you explicitly ask me to leave.` : `Sono passati ${minutes} minuti dall'ultimo messaggio. Devo rimanere in ascolto di questa conversazione? Resto collegato finché non mi chiedi esplicitamente di uscire.`;
+          const text = withPromptLanguage(this.brain.agentLanguage(agent), () => L`Sono passati ${minutes} minuti dall'ultimo messaggio. Devo rimanere in ascolto di questa conversazione? Resto collegato finché non mi chiedi esplicitamente di uscire.`);
           try { await this.postAs(agent, this.state(channelId), text, undefined, undefined, { passive: true }); }
           finally {
             // A question that cannot be delivered counts as asked: it waits for the next message instead of retrying every minute.
@@ -1833,8 +1834,7 @@ export class Orchestrator {
       replyTo = delivery ? { ...archived(delivery.id), ...delivery } : original || matchingRequest || recent;
       const requestAuthorized = this.recoveredRequestAuthorized(requestOrigin, agent, state);
       const delegationAuthorized = requestAuthorized && (requestOrigin.kind === "owner" || requestOrigin.delegated);
-      const english = this.store.settings.language === "en";
-      await this.postAs(agent, state, english ? "Cora restarted while I was working: picking up where I left off." : "Cora si è riavviata mentre lavoravo: riprendo da dove ero.", undefined, undefined, { ...this.replyDelivery(replyTo), delegationAuthorized });
+      await this.postAs(agent, state, withPromptLanguage(this.brain.agentLanguage(agent), () => L`Cora si è riavviata mentre lavoravo: riprendo da dove ero.`), undefined, undefined, { ...this.replyDelivery(replyTo), delegationAuthorized });
       const occupied = await this.withSession(agent, state.id, trace.kind || "chat", () => this.brain.resumeTurn({
         agent, trace, channel: this.turnChannel(state.id), replyTo, requestAuthorized, requestOrigin,
         postFile: (file, caption, options = {}) => this.postAs(agent, state, caption, file, options.traceId, { ...this.replyDelivery(options.replyTo || replyTo), delegationAuthorized }),

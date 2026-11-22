@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { previewEmail } from "./preview-email.js";
+import { LE, promptLanguageOf, te, withPromptLanguage } from "./prompt-lang.js";
 
 /**
  * The custom agent preview pipeline (NOT-94), run on the host every minute:
@@ -150,7 +151,7 @@ export async function briefing({ company, site, lang, pages, chat, archetype = "
   let parsed = null;
   try {
     const answer = await chat([
-      { role: "system", content: `You prepare the briefing for a short Cora agent preview for one company, only from its public website. ${task}\nAnswer with JSON only: {"summary": string (2-3 sentences), "products": [string], "audience": string, "tone": string, "archetype": the archetype id, "focus": string (one sentence: what this agent would do for this company first)}. Do not invent facts that are not on the website.` },
+      { role: "system", content: `You prepare the briefing for a short Cora agent preview for one company, only from its public website. ${task}\nAnswer with JSON only: {"summary": string (2-3 sentences), "products": [string], "audience": string, "tone": string, "archetype": the archetype id, "focus": string (one sentence: what this agent would do for this company first)}. Write summary, products, audience, tone and focus in ${LANGUAGE_NAMES[lang] || "English"}. Do not invent facts that are not on the website.` },
       { role: "user", content: `Company: ${company}\nWebsite: ${site}\nPreferred language of the visitor: ${lang}${wish ? `\nWhat the company wants from this agent: ${clip(wish, 500)}` : ""}\n\n${source}` },
     ]);
     parsed = JSON.parse(String(answer).replace(/^```(?:json)?|```$/g, "").trim());
@@ -167,12 +168,20 @@ export async function briefing({ company, site, lang, pages, chat, archetype = "
   };
 }
 
-export function agentSpecs(brief, offset = 0) {
-  const facts = [`Company: ${brief.company} (${brief.site}).`, `What it does: ${brief.summary}`, brief.products.length ? `Products and services: ${brief.products.join("; ")}.` : "", brief.audience ? `Customers: ${brief.audience}.` : "", brief.tone ? `Tone of voice: ${brief.tone}.` : ""].filter(Boolean).join("\n");
-  return brief.agents.map((agent, i) => ({
-    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length], starters: agent.starters || [], focus: agent.focus || "",
-    personality: `You are ${agent.name}, the ${agent.role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. As ${agent.role.toLowerCase()} you ${agent.does}.\n${agent.wish ? `The company asked you for this: ${agent.wish}\n` : ""}${agent.focus ? `Start from this: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
-  }));
+/** The sealed agents of a briefing, their instructions written in the language of the request that made them. */
+export function agentSpecs(brief, offset = 0, lang = "en") {
+  const language = promptLanguageOf(lang) || "en";
+  return withPromptLanguage(language, () => {
+    const facts = [LE`Company: ${brief.company} (${brief.site}).`, LE`What it does: ${brief.summary}`, brief.products.length ? LE`Products and services: ${brief.products.join("; ")}.` : "", brief.audience ? LE`Customers: ${brief.audience}.` : "", brief.tone ? LE`Tone of voice: ${brief.tone}.` : ""].filter(Boolean).join("\n");
+    return brief.agents.map((agent, i) => {
+      const role = te(agent.role);
+      const does = ARCHETYPES[agent.archetype]?.does === agent.does ? te(agent.does) : agent.does;
+      return {
+        name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length], starters: agent.starters || [], focus: agent.focus || "", language,
+        personality: `${LE`You are ${agent.name}, the ${language === "de" ? role : role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. Your role: ${role} — ${does}.`}\n${agent.wish ? `${LE`The company asked you for this: ${agent.wish}`}\n` : ""}${agent.focus ? `${LE`Start from this: ${agent.focus}`}\n` : ""}\n${facts}\n\n${LE`Be concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`}`,
+      };
+    });
+  });
 }
 
 export { previewEmail, roleWord } from "./preview-email.js";
@@ -230,7 +239,7 @@ export async function runOnce(deps) {
         if (missing && same.agents.length < MAX_AGENTS) {
           const pages = await deps.site(request.site);
           const brief = await briefing({ company: same.company, site: same.site, lang: request.lang, pages, chat: deps.chat, archetype: wanted, wish: request.wish, card: request.draft });
-          added = agentSpecs(brief, same.agents.length);
+          added = agentSpecs(brief, same.agents.length, request.lang);
           same.agentIds.push(...deps.groups.addAgents(same, added));
           same.agents.push(...added);
         }
@@ -250,7 +259,7 @@ export async function runOnce(deps) {
       const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
       const guest = { email, tokenHash: tokenHash(token), mailedAt: null, lang: request.lang || "" };
-      const entry = { id, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief), agentIds: [], createdAt: deps.now(), ready: false };
+      const entry = { id, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief, 0, request.lang), agentIds: [], createdAt: deps.now(), ready: false };
       entries.push(entry); save();
       entry.agentIds = deps.groups.create(entry, guest);
       entry.ready = true; save();

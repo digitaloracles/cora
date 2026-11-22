@@ -1,5 +1,6 @@
 import { SALOTTO, isWebRoom, isSalotto, roomLabel } from "./rooms.js";
 import { isDirectChannel } from "./slack.js";
+import { L } from "./prompt-lang.js";
 
 /** How each transport is named to people. */
 export const TRANSPORT_LABELS = { discord: "Discord", telegram: "Telegram", slack: "Slack", web: "pannello" };
@@ -258,8 +259,8 @@ export class Channels {
   info(id) {
     if (isWebRoom(id)) {
       return isSalotto(id)
-        ? { id, kind: "web", web: true, name: "salotto", where: "nel salotto del pannello", place: "nel pannello web di cora", note: "il proprietario vi scrive dal pannello web di cora, ci siete tutti voi agenti" }
-        : { id, kind: "web", web: true, name: "chat privata", where: "nella chat privata del pannello", place: "nel pannello web di cora", note: "ci siete solo tu e il proprietario, che ti scrive dal pannello web di cora: rispondigli sempre" };
+        ? { id, kind: "web", web: true, name: "salotto", where: L`nel salotto del pannello`, place: L`nel pannello web di cora`, note: L`il proprietario vi scrive dal pannello web di cora, ci siete tutti voi agenti` }
+        : { id, kind: "web", web: true, name: "chat privata", where: L`nella chat privata del pannello`, place: L`nel pannello web di cora`, note: L`ci siete solo tu e il proprietario, che ti scrive dal pannello web di cora: rispondigli sempre` };
     }
     const chatId = telegramChatId(id);
     if (chatId) {
@@ -268,8 +269,8 @@ export class Channels {
       const direct = chat?.type === "private" || Boolean(telegramBotAgent(id));
       return {
         id, kind: "telegram", telegram: true, chatId, name: title, guildId: null, guildName: title,
-        where: direct ? "nella chat privata Telegram" : `nella chat Telegram "${title}"`,
-        place: direct ? "su Telegram, in chat privata con il proprietario" : `su Telegram, nel gruppo "${title}"`,
+        where: direct ? L`nella chat privata Telegram` : L`nella chat Telegram "${title}"`,
+        place: direct ? L`su Telegram, in chat privata con il proprietario` : L`su Telegram, nel gruppo "${title}"`,
       };
     }
     const slack = slackIds(id);
@@ -278,23 +279,23 @@ export class Channels {
       const name = info?.name || slack.channelId;
       const team = info?.guildName || this.slack?.team?.name || "Slack";
       const direct = Boolean(info?.direct) || isDirectChannel(slack.channelId);
-      const where = direct ? "in un messaggio diretto su Slack" : slack.threadTs ? `in un thread di #${name} su Slack` : `nel canale #${name} di Slack`;
+      const where = direct ? L`in un messaggio diretto su Slack` : slack.threadTs ? L`in un thread di #${name} su Slack` : L`nel canale #${name} di Slack`;
       return {
         id, kind: "slack", slack: true, channelId: slack.channelId, threadTs: slack.threadTs,
         name, guildId: info?.guildId || "", guildName: team,
         parentId: slack.threadTs ? slackChannel(slack.channelId) : null,
         direct,
         where,
-        place: direct ? "su Slack, in un messaggio diretto" : `su Slack, nello spazio "${team}"`,
+        place: direct ? L`su Slack, in un messaggio diretto` : L`su Slack, nello spazio "${team}"`,
       };
     }
     const info = this.discordInfo(id);
-    if (!info) return { id, kind: "discord", name: id, guildId: null, guildName: "", parentId: null, where: `in #${id}`, place: "su Discord" };
+    if (!info) return { id, kind: "discord", name: id, guildId: null, guildName: "", parentId: null, where: `in #${id}`, place: L`su Discord` };
     const parent = info.parentId ? this.discordInfo(info.parentId) : null;
     const parentName = parent?.name || "";
     return { ...info, kind: "discord", parentName, thread: Boolean(info.parentId),
-      where: info.parentId ? `in #${info.name}, thread del canale ${parentName ? `#${parentName}` : info.parentId}` : `in #${info.name}`,
-      place: `su Discord, nel server "${info.guildName}"` };
+      where: info.parentId ? L`in #${info.name}, thread del canale ${parentName ? `#${parentName}` : info.parentId}` : `in #${info.name}`,
+      place: L`su Discord, nel server "${info.guildName}"` };
   }
 
   label(id) {

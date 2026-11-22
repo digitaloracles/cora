@@ -1,6 +1,7 @@
 import { agentPersona } from "./character.js";
 import { VoiceLink, peakOf } from "./discord-voice.js";
 import { speakable } from "./voice.js";
+import { L, promptLanguageOf, tf, withPromptLanguage } from "./prompt-lang.js";
 
 /**
  * Agents in Discord voice channels, live: each joins with its own bot, people are heard through
@@ -742,7 +743,11 @@ export class VoiceCalls {
     return false;
   }
 
-  prompt(call, agent, extra = null, { insist = false, farewell = null } = {}) {
+  prompt(call, agent, extra = null, options = {}) {
+    return withPromptLanguage(promptLanguageOf(agent?.language) || this.language(agent), () => this.promptIn(call, agent, extra, options));
+  }
+
+  promptIn(call, agent, extra = null, { insist = false, farewell = null } = {}) {
     // A person spoke last and this agent was picked to answer: they get words, never silence.
     const toMe = Boolean((extra || call.history.at(-1)) && !(extra || call.history.at(-1)).agent);
     const others = [...call.members.values()].filter((member) => member.agent.id !== agent.id).map((member) => member.agent.name);
@@ -750,38 +755,40 @@ export class VoiceCalls {
     const language = this.language(agent);
     const cut = this.pendingCut(call, agent);
     const system = [
-      `Sei ${agent.name}.`,
-      agentPersona(agent) ? `## Chi sei\n${agentPersona(agent).slice(0, 2500)}` : "",
-      agent.core?.trim() ? `## La tua scheda\n${agent.core.trim().slice(0, 3000)}` : "",
+      L`Sei ${agent.name}.`,
+      agentPersona(agent, tf) ? L`## Chi sei\n${agentPersona(agent, tf).slice(0, 2500)}` : "",
+      agent.core?.trim() ? L`## La tua scheda\n${agent.core.trim().slice(0, 3000)}` : "",
       [
-        `## Ora`,
-        `Sei in una chiamata vocale dal vivo su Discord, nel canale «${call.name}».`,
-        `Nella chiamata: ${[...people, ...others].join(", ") || "nessun altro per ora"}${others.length ? ` (${others.join(", ")} ${others.length === 1 ? "è un agente" : "sono agenti"} come te)` : ""}.`,
-        `Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${language === "en" ? "inglese" : "italiano"} se non ti parlano in un'altra lingua, una o due frasi brevi, al massimo una ventina di parole.`,
-        "Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.",
-        "Parli solo per te.",
+        L`## Ora`,
+        L`Sei in una chiamata vocale dal vivo su Discord, nel canale «${call.name}».`,
+        L`Nella chiamata: ${[...people, ...others].join(", ") || L`nessun altro per ora`}${others.length ? L` (${others.join(", ")} ${others.length === 1 ? L`è un agente` : L`sono agenti`} come te)` : ""}.`,
+        L`Quello che scrivi viene detto subito ad alta voce dalla tua voce: rispondi con parole parlate, in ${{ en: L`inglese`, es: L`spagnolo`, de: L`tedesco`, fr: L`francese`, pt: L`portoghese` }[language] || L`italiano`} se non ti parlano in un'altra lingua, una o due frasi brevi, al massimo una ventina di parole.`,
+        L`Niente elenchi, markdown, link, emoji o didascalie: solo quello che diresti a voce. Non scrivere il tuo nome davanti alla risposta.`,
+        L`Parli solo per te.`,
         toMe
-          ? "Una persona ti sta parlando: rispondi sempre a voce, anche solo «sì, ci sono» o una frase breve. Qui PASS non è ammesso."
-          : "Non riempire i silenzi e non confermare la tua presenza a un collega. Se non c'è niente da dire, PASS.",
+          ? L`Una persona ti sta parlando: rispondi sempre a voce, anche solo «sì, ci sono» o una frase breve. Qui PASS non è ammesso.`
+          : L`Non riempire i silenzi e non confermare la tua presenza a un collega. Se non c'è niente da dire, PASS.`,
         cut
-          ? `La persona ti ha interrotto mentre ${cut.said ? `dicevi «${cut.said.slice(0, 280)}»` : "preparavi la risposta"}: la sua richiesta è rimasta senza risposta. Se adesso non cambia discorso e non ti chiede di fermarti o di stare zitto, riprendi in breve da dove eri rimasto, senza ricominciare e senza chiedere di ripetere; se cambia discorso, rispondi alle parole nuove.`
-          : "Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.",
-        "Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto).",
+          ? L`La persona ti ha interrotto mentre ${cut.said ? `dicevi «${cut.said.slice(0, 280)}»` : L`preparavi la risposta`}: la sua richiesta è rimasta senza risposta. Se adesso non cambia discorso e non ti chiede di fermarti o di stare zitto, riprendi in breve da dove eri rimasto, senza ricominciare e senza chiedere di ripetere; se cambia discorso, rispondi alle parole nuove.`
+          : L`Rispondi all'ultima richiesta e basta: non ripetere quello che hai già detto.`,
+        L`Parla poco: niente riassunti, niente spiegazioni non richieste, niente aggiornamenti a voce sui lavori in corso (i risultati vanno per scritto).`,
         ...(this.dispatch ? [
-          "In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, sempre con la sigla della issue a cui si riferisce, se ne ha una (es. NOT-43, REF-73), e con il nome del progetto. Cora lo porta nel thread di quella issue; se quella issue o quel progetto non ha un thread, gliene apre uno, e non lo scrive mai nel thread di un altro argomento. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.",
-          "Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.",
-          "Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.",
-          "Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase, senza riga LAVORO, e non tirare fuori impegni di altri progetti.",
-        ] : ["In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat."]),
-        ...(call.works.length ? [`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
-        "Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».",
-        ...(farewell ? [`${farewell.name} è appena uscito perché una persona gliel'ha chiesto. Se quella richiesta era anche per te (per tutti, oppure ti nomina), saluta in tre parole e aggiungi in fondo la riga «ESCI»; se era solo per ${farewell.name}, rispondi esattamente PASS.`] : []),
-        ...(toMe ? [] : ["Se un collega ha già risposto, non aggiungere niente: PASS.", "Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS."]),
+          L`In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, sempre con la sigla della issue a cui si riferisce, se ne ha una (es. NOT-43, REF-73), e con il nome del progetto. Cora lo porta nel thread di quella issue; se quella issue o quel progetto non ha un thread, gliene apre uno, e non lo scrive mai nel thread di un altro argomento. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.`,
+          L`Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.`,
+          L`Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.`,
+          L`Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase, senza riga LAVORO, e non tirare fuori impegni di altri progetti.`,
+        ] : [L`In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat.`]),
+        ...(call.works.length ? [L`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
+        L`Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».`,
+        ...(farewell ? [L`${farewell.name} è appena uscito perché una persona gliel'ha chiesto. Se quella richiesta era anche per te (per tutti, oppure ti nomina), saluta in tre parole e aggiungi in fondo la riga «ESCI»; se era solo per ${farewell.name}, rispondi esattamente PASS.`] : []),
+        ...(toMe ? [] : [L`Se un collega ha già risposto, non aggiungere niente: PASS.`, L`Se la frase non era per te o non hai niente da aggiungere, rispondi esattamente PASS.`]),
       ].join("\n"),
     ].filter(Boolean).join("\n\n");
-    const lines = [...call.history, ...(extra ? [extra] : [])].map((entry) => entry.agent?.id === agent.id ? `Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
-    const nudge = insist ? "\n\nHai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve." : "";
-    const prompt = `Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}${nudge}\n\nLa tua risposta a voce:`;
+    const lines = [...call.history, ...(extra ? [extra] : [])].map((entry) => entry.agent?.id === agent.id ? L`Tu: ${entry.text}` : `${entry.agent?.name || entry.name}: ${entry.text}`);
+    const nudge = insist ? L`
+
+Hai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve.` : "";
+    const prompt = L`Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}${nudge}\n\nLa tua risposta a voce:`;
     return { system, prompt };
   }
 
