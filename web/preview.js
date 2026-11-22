@@ -1,13 +1,13 @@
 // The demo chat a company opens from its email (NOT-94): its agents, the time left and nothing else of Cora.
 const LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
 const T = {
-  en: { send: "Send", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing…`,
+  en: { send: "Send", download: "Download", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing…`,
     hello: (n, r, c) => `Hi, I'm ${n}, the ${r.toLowerCase()} at ${c}.`, intro: "I already know your company from its website. Ask me something real: I'll answer with drafts and plans you can use.", ended: "Your hour is over. Write to us at usecora.space to keep your agent.", failed: "The message did not go through. Try again.", away: "This page is for the people a preview was sent to. Open the link in your email." },
-  it: { send: "Invia", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo…`,
+  it: { send: "Invia", download: "Scarica", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo…`,
     hello: (n, r, c) => `Ciao, sono ${n}: ${r.toLowerCase()} di ${c}.`, intro: "Conosco già la tua azienda dal suo sito. Chiedimi qualcosa di concreto: ti rispondo con bozze e piani che puoi usare.", ended: "La tua ora è finita. Scrivici su usecora.space per tenere il tuo agente.", failed: "Il messaggio non è partito. Riprova.", away: "Questa pagina è per chi ha ricevuto un'anteprima. Apri il link nella tua email." },
-  es: { send: "Enviar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, left: (m) => (m <= 1 ? "Queda 1 minuto" : `Quedan ${m} minutos`), notStarted: (m) => `${m} minutos desde tu primer mensaje`, over: "Vista previa terminada", writing: (n) => `${n} está escribiendo…`,
+  es: { send: "Enviar", download: "Descargar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, left: (m) => (m <= 1 ? "Queda 1 minuto" : `Quedan ${m} minutos`), notStarted: (m) => `${m} minutos desde tu primer mensaje`, over: "Vista previa terminada", writing: (n) => `${n} está escribiendo…`,
     hello: (n, r, c) => `Hola, soy ${n}: ${r.toLowerCase()} de ${c}.`, intro: "Ya conozco tu empresa por su web. Pídeme algo real: te respondo con borradores y planes que puedes usar.", ended: "Tu hora ha terminado. Escríbenos en usecora.space para quedarte con tu agente.", failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", away: "Esta página es para quien recibió una vista previa. Abre el enlace de tu correo." },
-  de: { send: "Senden", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt…`,
+  de: { send: "Senden", download: "Herunterladen", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt…`,
     hello: (n, r, c) => `Hallo, ich bin ${n}: ${r} bei ${c}.`, intro: "Ich kenne dein Unternehmen schon von seiner Website. Frag mich etwas Konkretes: Ich antworte mit Entwürfen und Plänen, die du nutzen kannst.", ended: "Deine Stunde ist vorbei. Schreib uns auf usecora.space, um deinen Agenten zu behalten.", failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", away: "Diese Seite ist für Empfänger einer Vorschau. Öffne den Link in deiner E-Mail." },
 }[LANG];
 const ROLES = { it: { Manager: "Manager", Programmer: "Programmatore", Secretary: "Segretaria", Researcher: "Ricercatore", "Lead generator": "Lead generator", Marketer: "Marketer", "Customer support": "Assistenza clienti", Analyst: "Analista" },
@@ -63,6 +63,13 @@ function agents() {
     el("span", { class: "pv-face", color: agent.color }, agent.name.slice(0, 1)), el("b", {}, agent.name), el("small", {}, role(agent.role)))) : []));
 }
 
+/** A file the agent made: its name, its kind and a download. */
+function fileCard(file) {
+  const kind = (String(file.name).split(".").pop() || "file").slice(0, 4).toUpperCase();
+  return el("a", { class: "pv-file", href: `/api/files/${encodeURIComponent(file.id)}`, download: file.name, title: file.name },
+    el("span", { class: "pv-file-kind", "aria-hidden": "true" }, kind), el("span", { class: "pv-file-name" }, file.name), el("span", { class: "pv-file-get" }, T.download));
+}
+
 /** Keeps the nodes already on screen and adds only what is new, so nothing redraws or animates again. */
 const NODES = new Map();
 const keyOf = (message) => message.key || (message.id ? `m:${message.id}` : `t:${message.at}`);
@@ -82,7 +89,11 @@ function thread() {
   }
   for (const message of S.messages) {
     const item = node(keyOf(message), () => el("div", { class: `pv-msg ${message.agentId ? "agent" : "me"}` }));
-    if (item.dataset.content !== message.content) { item.innerHTML = render(message.content); item.dataset.content = message.content; }
+    if (item.dataset.content !== message.content) {
+      item.innerHTML = render(message.file ? message.content.replace(/\s*\[file: [^\]]*\]$/, "") : message.content);
+      if (message.file) item.append(fileCard(message.file));
+      item.dataset.content = message.content;
+    }
     items.push(item);
   }
   if (S.running || S.sending) items.push(node(`writing:${agent?.id || ""}`, () => el("div", { class: "pv-msg agent writing" }, T.writing(agent?.name || ""))));
@@ -96,7 +107,7 @@ function thread() {
 async function load() {
   if (!S.agent) return;
   const data = await api(`/api/rooms/web-${encodeURIComponent(S.agent.id)}/messages?limit=100`);
-  const fresh = (data.messages || []).filter((message) => message.content && (!message.agentId || message.agentId === S.agent.id));
+  const fresh = (data.messages || []).filter((message) => (message.content || message.file) && (!message.agentId || message.agentId === S.agent.id)).map((message) => ({ ...message, content: message.content || "" }));
   for (const sent of S.messages.filter((message) => message.key)) {
     const match = fresh.find((message) => !message.agentId && message.content === sent.content && !message.key && message.at >= sent.at - 60000);
     if (match) { const item = NODES.get(sent.key); NODES.delete(sent.key); if (item) NODES.set(keyOf(match), item); }

@@ -32,6 +32,15 @@ body { margin: 0; background: var(--paper); color: var(--ink); font: 400 16px/1.
 .pv-msg.agent { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
 .pv-msg.me { align-self: flex-end; background: var(--cobalt); color: #fff; border-bottom-right-radius: 6px; }
 .pv-msg.me code { background: rgba(255, 255, 255, 0.18); }
+.pv-file { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); text-decoration: none; }
+.pv-msg p + .pv-file, .pv-msg ul + .pv-file, .pv-msg ol + .pv-file { margin-top: 12px; }
+.pv-msg > .pv-file:first-child { margin-top: 0; }
+.pv-file:hover { border-color: var(--cobalt); }
+.pv-msg.agent:has(> .pv-file) { width: min(100%, 440px); }
+.pv-file:focus-visible { outline: 3px solid rgba(38, 76, 214, 0.35); outline-offset: 2px; }
+.pv-file-kind { flex: none; width: 42px; height: 48px; display: grid; place-items: end center; padding-bottom: 7px; border-radius: 6px 14px 6px 6px; background: var(--cobalt); color: #fff; font: 600 10px/1 var(--display); letter-spacing: 0.02em; }
+.pv-file-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-file-get { flex: none; color: var(--cobalt); font-weight: 600; font-size: 15px; }
 .pv-msg.writing { color: var(--slate); font-style: italic; }
 .pv-intro { margin: auto 0 4px; padding: 4px 2px; }
 .pv-intro h1 { font: 600 clamp(22px, 4.6vw, 30px)/1.2 var(--display); letter-spacing: -0.015em; margin: 0 0 10px; text-wrap: balance; }
