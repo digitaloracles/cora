@@ -40,7 +40,8 @@ async function mail({ to, subject, text, html }) {
 async function main() {
   for (const name of ["CORA_SESSION_KEY", "DEEPSEEK_API_KEY"]) if (!env[name]) throw new Error(`${name} must be injected through hush`);
   const seed = new Store(HOME);
-  seed.updateSettings({ defaultModel: MODEL, useResidentSubscriptions: false, language: "en", transports: [], goalMode: false });
+  // A company talks to its agents for one hour: the "should I keep listening?" question would only reach its chat.
+  seed.updateSettings({ defaultModel: MODEL, useResidentSubscriptions: false, language: "en", transports: [], goalMode: false, conversationIdleMinutes: null });
   seed.close();
   const off = "/usr/bin/false";
   const app = startCora({
