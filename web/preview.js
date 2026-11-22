@@ -2,13 +2,13 @@
 const LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
 const T = {
   en: { send: "Send", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing…`,
-    hello: (n, r, c) => `Hi, I'm ${n}, the ${r.toLowerCase()} at ${c}.`, intro: "I already know your company from its website. Ask me something real: I'll answer with drafts and plans you can use.", fine: (c) => `Sealed preview for ${c}: your agent sees only your public website and this chat.`, ended: "Your hour is over. Write to us at usecora.space to keep your agent.", failed: "The message did not go through. Try again.", away: "This page is for the people a preview was sent to. Open the link in your email." },
+    hello: (n, r, c) => `Hi, I'm ${n}, the ${r.toLowerCase()} at ${c}.`, intro: "I already know your company from its website. Ask me something real: I'll answer with drafts and plans you can use.", ended: "Your hour is over. Write to us at usecora.space to keep your agent.", failed: "The message did not go through. Try again.", away: "This page is for the people a preview was sent to. Open the link in your email." },
   it: { send: "Invia", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo…`,
-    hello: (n, r, c) => `Ciao, sono ${n}: ${r.toLowerCase()} di ${c}.`, intro: "Conosco già la tua azienda dal suo sito. Chiedimi qualcosa di concreto: ti rispondo con bozze e piani che puoi usare.", fine: (c) => `Anteprima sealed per ${c}: il tuo agente vede solo il vostro sito pubblico e questa chat.`, ended: "La tua ora è finita. Scrivici su usecora.space per tenere il tuo agente.", failed: "Il messaggio non è partito. Riprova.", away: "Questa pagina è per chi ha ricevuto un'anteprima. Apri il link nella tua email." },
+    hello: (n, r, c) => `Ciao, sono ${n}: ${r.toLowerCase()} di ${c}.`, intro: "Conosco già la tua azienda dal suo sito. Chiedimi qualcosa di concreto: ti rispondo con bozze e piani che puoi usare.", ended: "La tua ora è finita. Scrivici su usecora.space per tenere il tuo agente.", failed: "Il messaggio non è partito. Riprova.", away: "Questa pagina è per chi ha ricevuto un'anteprima. Apri il link nella tua email." },
   es: { send: "Enviar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, left: (m) => (m <= 1 ? "Queda 1 minuto" : `Quedan ${m} minutos`), notStarted: (m) => `${m} minutos desde tu primer mensaje`, over: "Vista previa terminada", writing: (n) => `${n} está escribiendo…`,
-    hello: (n, r, c) => `Hola, soy ${n}: ${r.toLowerCase()} de ${c}.`, intro: "Ya conozco tu empresa por su web. Pídeme algo real: te respondo con borradores y planes que puedes usar.", fine: (c) => `Vista previa sellada para ${c}: tu agente solo ve vuestra web pública y este chat.`, ended: "Tu hora ha terminado. Escríbenos en usecora.space para quedarte con tu agente.", failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", away: "Esta página es para quien recibió una vista previa. Abre el enlace de tu correo." },
+    hello: (n, r, c) => `Hola, soy ${n}: ${r.toLowerCase()} de ${c}.`, intro: "Ya conozco tu empresa por su web. Pídeme algo real: te respondo con borradores y planes que puedes usar.", ended: "Tu hora ha terminado. Escríbenos en usecora.space para quedarte con tu agente.", failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", away: "Esta página es para quien recibió una vista previa. Abre el enlace de tu correo." },
   de: { send: "Senden", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt…`,
-    hello: (n, r, c) => `Hallo, ich bin ${n}: ${r} bei ${c}.`, intro: "Ich kenne dein Unternehmen schon von seiner Website. Frag mich etwas Konkretes: Ich antworte mit Entwürfen und Plänen, die du nutzen kannst.", fine: (c) => `Versiegelte Vorschau für ${c}: Dein Agent sieht nur eure öffentliche Website und diesen Chat.`, ended: "Deine Stunde ist vorbei. Schreib uns auf usecora.space, um deinen Agenten zu behalten.", failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", away: "Diese Seite ist für Empfänger einer Vorschau. Öffne den Link in deiner E-Mail." },
+    hello: (n, r, c) => `Hallo, ich bin ${n}: ${r} bei ${c}.`, intro: "Ich kenne dein Unternehmen schon von seiner Website. Frag mich etwas Konkretes: Ich antworte mit Entwürfen und Plänen, die du nutzen kannst.", ended: "Deine Stunde ist vorbei. Schreib uns auf usecora.space, um deinen Agenten zu behalten.", failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", away: "Diese Seite ist für Empfänger einer Vorschau. Öffne den Link in deiner E-Mail." },
 }[LANG];
 const ROLES = { it: { Manager: "Manager", Programmer: "Programmatore", Secretary: "Segretaria", Researcher: "Ricercatore", "Lead generator": "Lead generator", Marketer: "Marketer", "Customer support": "Assistenza clienti", Analyst: "Analista" },
   es: { Manager: "Mánager", Programmer: "Programador", Secretary: "Secretaria", Researcher: "Investigador", "Lead generator": "Generador de leads", Marketer: "Marketer", "Customer support": "Atención al cliente", Analyst: "Analista" },
@@ -36,7 +36,7 @@ function render(text) {
   }).join("");
 }
 
-const S = { preview: null, agent: null, messages: [], running: false, sending: false, poll: null };
+const S = { preview: null, agent: null, messages: [], running: false, sending: false, failed: false, poll: null };
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options, headers: { "x-cora": "1", ...(options.body ? { "content-type": "application/json" } : {}), ...(options.headers || {}) } });
@@ -54,7 +54,7 @@ function clock() {
   node.className = `pv-clock${over ? " over" : left !== null && left <= 5 ? " low" : ""}`;
   document.body.classList.toggle("pv-ended", Boolean(over));
   $("pv-input").disabled = Boolean(over); $("pv-send").disabled = Boolean(over) || S.sending;
-  $("pv-fine").textContent = over ? T.ended : T.fine(p.company);
+  if (over || !S.failed) $("pv-fine").textContent = over ? T.ended : "";
 }
 
 function agents() {
@@ -63,28 +63,45 @@ function agents() {
     el("span", { class: "pv-face", color: agent.color }, agent.name.slice(0, 1)), el("b", {}, agent.name), el("small", {}, role(agent.role)))) : []));
 }
 
+/** Keeps the nodes already on screen and adds only what is new, so nothing redraws or animates again. */
+const NODES = new Map();
+const keyOf = (message) => message.key || (message.id ? `m:${message.id}` : `t:${message.at}`);
+function node(key, make) {
+  let item = NODES.get(key);
+  if (!item) { item = make(); item.dataset.key = key; NODES.set(key, item); }
+  return item;
+}
+
 function thread() {
   const box = $("pv-thread"), agent = S.agent;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   const items = [];
   if (!S.messages.length && agent) {
-    items.push(el("section", { class: "pv-intro" }, el("h1", {}, T.hello(agent.name, role(agent.role), S.preview.company)), el("p", {}, T.intro),
-      el("div", { class: "pv-suggest" }, ...(agent.starters?.length ? agent.starters : SUGGEST[agent.role] || []).map((text) => el("button", { type: "button", onclick: () => send(text) }, text)))));
+    items.push(node(`intro:${agent.id}`, () => el("section", { class: "pv-intro" }, el("h1", {}, T.hello(agent.name, role(agent.role), S.preview.company)), el("p", {}, T.intro),
+      el("div", { class: "pv-suggest" }, ...(agent.starters?.length ? agent.starters : SUGGEST[agent.role] || []).map((text) => el("button", { type: "button", onclick: () => send(text) }, text))))));
   }
   for (const message of S.messages) {
-    const node = el("div", { class: `pv-msg ${message.agentId ? "agent" : "me"}` });
-    node.innerHTML = render(message.content);
-    items.push(node);
+    const item = node(keyOf(message), () => el("div", { class: `pv-msg ${message.agentId ? "agent" : "me"}` }));
+    if (item.dataset.content !== message.content) { item.innerHTML = render(message.content); item.dataset.content = message.content; }
+    items.push(item);
   }
-  if (S.running || S.sending) items.push(el("div", { class: "pv-msg agent writing" }, T.writing(agent?.name || "")));
-  box.replaceChildren(...items);
+  if (S.running || S.sending) items.push(node(`writing:${agent?.id || ""}`, () => el("div", { class: "pv-msg agent writing" }, T.writing(agent?.name || ""))));
+  items.forEach((item, i) => { if (box.children[i] !== item) box.insertBefore(item, box.children[i] || null); });
+  while (box.children.length > items.length) box.lastElementChild.remove();
+  const kept = new Set(items);
+  for (const [key, item] of NODES) if (!kept.has(item)) NODES.delete(key);
   if (atBottom || S.sending) box.scrollTop = box.scrollHeight;
 }
 
 async function load() {
   if (!S.agent) return;
   const data = await api(`/api/rooms/web-${encodeURIComponent(S.agent.id)}/messages?limit=100`);
-  S.messages = (data.messages || []).filter((message) => message.content && (!message.agentId || message.agentId === S.agent.id));
+  const fresh = (data.messages || []).filter((message) => message.content && (!message.agentId || message.agentId === S.agent.id));
+  for (const sent of S.messages.filter((message) => message.key)) {
+    const match = fresh.find((message) => !message.agentId && message.content === sent.content && !message.key && message.at >= sent.at - 60000);
+    if (match) { const item = NODES.get(sent.key); NODES.delete(sent.key); if (item) NODES.set(keyOf(match), item); }
+  }
+  S.messages = fresh;
   const last = S.messages.at(-1);
   S.running = Boolean((data.running || []).length) || Boolean(last && !last.agentId && Date.now() - last.at < 180000);
   thread();
@@ -93,7 +110,7 @@ async function load() {
 }
 
 function choose(agent) {
-  S.agent = agent; S.messages = [];
+  S.agent = agent; S.messages = []; NODES.clear(); $("pv-thread").replaceChildren();
   $("pv-input").placeholder = T.placeholder(agent.name);
   agents(); thread(); load().catch(() => {});
 }
@@ -102,13 +119,15 @@ async function send(text) {
   const value = String(text || "").trim();
   if (!value || S.sending || !S.agent) return;
   S.sending = true; clock();
-  S.messages.push({ content: value, agentId: null, at: Date.now() }); thread();
+  const at = Date.now();
+  S.messages.push({ content: value, agentId: null, at, key: `local:${at}` }); thread();
   try {
+    S.failed = false;
     await api(`/api/rooms/web-${encodeURIComponent(S.agent.id)}/messages`, { method: "POST", body: JSON.stringify({ text: value }) });
     $("pv-input").value = ""; grow();
   } catch (error) {
-    S.messages.pop();
-    $("pv-fine").textContent = error.status === 403 ? error.message : T.failed;
+    const lost = S.messages.pop(); NODES.get(lost?.key)?.remove(); NODES.delete(lost?.key);
+    S.failed = true; $("pv-fine").textContent = T.failed;
   } finally {
     S.sending = false;
     await refresh().catch(() => {});
