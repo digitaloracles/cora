@@ -6654,6 +6654,37 @@ describe("talking with the agents", () => {
     assert.ok(!posts("Olga").some((text) => text.includes("salvato in /home/agent")), "the false claim is not posted");
   });
 
+  test("Cora harness: a reply in another language than the message is rewritten once in the message's language", async () => {
+    const nudges = [];
+    replies.set("Olga", (body) => {
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "user" && String(last.content).startsWith("[Cora] Hai risposto in una lingua diversa")) {
+        nudges.push(last.content);
+        return { content: "Here is the updated page: the price is now on every button and the link goes to the shop." };
+      }
+      return { content: "Ecco la pagina aggiornata: il prezzo è ora su tutti i pulsanti e il link porta al negozio." };
+    });
+    discord.say({ content: "@Olga, put the price and the shop link in the page and send it to me again" });
+    await waitFor(() => posts("Olga").some((text) => text.startsWith("Here is the updated page")), { what: "Olga answering in English" });
+    await quiet();
+    assert.equal(nudges.length, 1, "asked once");
+    assert.match(nudges[0], /in questa lingua: English\.$/);
+    assert.ok(!posts("Olga").some((text) => text.startsWith("Ecco la pagina")), "the reply in the wrong language is not posted");
+  });
+
+  test("Cora harness: a reply in the message's language goes out as it is", async () => {
+    const nudges = [];
+    replies.set("Olga", (body) => {
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "user" && String(last.content).startsWith("[Cora] Hai risposto in una lingua diversa")) nudges.push(last.content);
+      return { content: "Ecco la pagina aggiornata: il prezzo è ora su tutti i pulsanti e il link porta al negozio." };
+    });
+    discord.say({ content: "@Olga, metti il prezzo e il link del negozio nella pagina e mandamela di nuovo" });
+    await waitFor(() => posts("Olga").some((text) => text.startsWith("Ecco la pagina")), { what: "Olga answering in Italian" });
+    await quiet();
+    assert.equal(nudges.length, 0);
+  });
+
   test("Cora harness: an agent that answers with say and then only notes the message went out posts the answer once", async () => {
     let receipt = "", step = 0;
     replies.set("Olga", (body) => {

@@ -996,7 +996,7 @@ export async function executeTool(call, ctx) {
         if (!CREATED_FILE_TYPES[extension]) return { text: `error: use one of these extensions: ${Object.keys(CREATED_FILE_TYPES).map((ext) => `.${ext}`).join(", ")}` };
         const data = Buffer.from(content, "utf8");
         const caption = String(args.caption || "").slice(0, 300);
-        const language = promptLanguageOf(agent?.language);
+        const language = ctx.answerLanguage?.() || promptLanguageOf(agent?.language);
         const written = textLanguage(caption);
         await postFile({ name: raw, data, type: CREATED_FILE_TYPES[extension] }, language && written && written !== language ? "" : caption);
         return { text: `posted ${raw} (${Math.max(1, Math.round(data.length / 1024))} KB) in the chat` };
