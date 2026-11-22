@@ -226,20 +226,22 @@ export async function runOnce(deps) {
           deps.groups.addGuest(same, guest);
         }
         let added = null;
-        if (wanted && !same.agents.some((agent) => agent.archetype === wanted) && same.agents.length < MAX_AGENTS) {
+        const missing = Boolean(wanted) && !same.agents.some((agent) => agent.archetype === wanted);
+        if (missing && same.agents.length < MAX_AGENTS) {
           const pages = await deps.site(request.site);
           const brief = await briefing({ company: same.company, site: same.site, lang: request.lang, pages, chat: deps.chat, archetype: wanted, wish: request.wish, card: request.draft });
           added = agentSpecs(brief, same.agents.length);
           same.agentIds.push(...deps.groups.addAgents(same, added));
           same.agents.push(...added);
         }
+        const capped = missing && !added ? { agents: same.agents, wantedRole: ARCHETYPES[wanted]?.role || wanted } : null;
         save();
-        await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: added ? `same site: ${wanted} added to its preview` : "same site: joined its existing preview" });
+        await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: capped ? `same site: ${MAX_AGENTS} agents already, ${wanted} not added` : added ? `same site: ${wanted} added to its preview` : "same site: joined its existing preview" });
         if (token) {
-          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token), site: same.site, agent: mailAgent(added?.[0] || same.agents[0]) }) });
+          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token), site: same.site, agent: mailAgent(added?.[0] || same.agents[0]), capped }) });
           same.guests.find((guest) => guest.email === email).mailedAt = deps.now(); save();
         }
-        deps.log({ type: "preview-joined", id: request.id, group: same.id, added: Boolean(added) });
+        deps.log({ type: "preview-joined", id: request.id, group: same.id, added: Boolean(added), capped: Boolean(capped) });
         continue;
       }
       await deps.cloud.update(request.id, { status: "building" });
