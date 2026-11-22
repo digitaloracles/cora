@@ -421,7 +421,7 @@ export const TOOL_DEFS = [
       properties: {
         name: { type: "string", description: "file name with its extension, e.g. linkedin-posts-week-48.md" },
         content: { type: "string", description: "the complete text of the file" },
-        caption: { type: "string", description: "optional one line shown with the file" },
+        caption: { type: "string", description: "optional one line shown with the file, in the language of the person you are answering" },
       },
       required: ["name", "content"],
     },
