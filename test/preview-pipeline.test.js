@@ -231,6 +231,8 @@ test("the preview email ends a long agent pitch on a whole word", async () => {
   assert.ok(shown.endsWith("…"), shown);
   assert.ok(focus.includes(shown.slice(0, -1)), "a prefix of the pitch");
   assert.ok(focus[shown.length - 1] === " " || /[,.;]/.test(focus[shown.length - 1]), "cut at a word boundary");
+});
+
 test("a fourth role for a company that already has three is refused in words, not silently", async () => {
   const w = world();
   w.request("pv_1", "anna@acme.com", "https://acme.com", "Acme", "marketer");
