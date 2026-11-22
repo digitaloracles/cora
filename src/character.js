@@ -158,6 +158,9 @@ const FOCUS_LINES = [
   { max: 20, line: "Metti le persone davanti al risultato: spieghi, rassicuri, cerchi la soluzione che non lascia indietro nessuno." },
 ];
 
+/** No translation: the text as written, with {n} filled. Callers pass their own (brain: the agent's language). */
+const asWritten = (text, ...values) => String(text).replace(/\{(\d+)\}/g, (match, i) => (Number(i) < values.length ? String(values[Number(i)]) : match));
+
 function clampTrait(value) {
   const number = value == null || value === "" ? NaN : Math.round(Number(value));
   return Number.isFinite(number) ? Math.min(TRAIT_MAX, Math.max(TRAIT_MIN, number)) : 10;
@@ -185,21 +188,21 @@ function ranked(scores) {
   return [...CHARACTER_TRAITS].sort((a, b) => (scores[b.key] - scores[a.key]) || (CHARACTER_TRAITS.indexOf(a) - CHARACTER_TRAITS.indexOf(b)));
 }
 
-function joinIt(items) {
+function joinIt(items, t = asWritten) {
   if (items.length <= 1) return items[0] || "";
-  if (items.length === 2) return `${items[0]} e ${items[1]}`;
-  return `${items.slice(0, -1).join(", ")} e ${items[items.length - 1]}`;
+  if (items.length === 2) return t("{0} e {1}", items[0], items[1]);
+  return t("{0} e {1}", items.slice(0, -1).join(", "), items[items.length - 1]);
 }
 
 /** The type comes from the highest trait. A tie names every trait that shares it, and six equal traits are Versatile. */
-export function characterType(scores) {
+export function characterType(scores, t = asWritten) {
   const clean = normalizedScores(scores);
   const rankedTraits = ranked(clean);
   const top = clean[rankedTraits[0].key];
   const leaders = rankedTraits.filter((trait) => clean[trait.key] === top);
-  if (leaders.length === CHARACTER_TRAITS.length) return { main: null, second: null, leaders, title: VERSATILE.name };
-  if (leaders.length > 1) return { main: null, second: null, leaders, title: leaders.map((trait) => TYPES[trait.key].name).join(" · ") };
-  return { main: rankedTraits[0], second: rankedTraits[1], leaders, title: TYPES[rankedTraits[0].key].name };
+  if (leaders.length === CHARACTER_TRAITS.length) return { main: null, second: null, leaders, title: t(VERSATILE.name) };
+  if (leaders.length > 1) return { main: null, second: null, leaders, title: leaders.map((trait) => t(TYPES[trait.key].name)).join(" · ") };
+  return { main: rankedTraits[0], second: rankedTraits[1], leaders, title: t(TYPES[rankedTraits[0].key].name) };
 }
 
 function styleBand(value) {
@@ -214,11 +217,11 @@ function axisLine(score, bands) {
 }
 
 /** The 3×3 style of the two axes: how it works and what it puts first. The label is the wide band; the line moves inside it. */
-export function characterStyle(character) {
+export function characterStyle(character, t = asWritten) {
   const methodScore = clampTrait(character?.method);
   const focusScore = clampTrait(character?.focus);
-  const method = { label: METHOD[styleBand(methodScore)].label, line: axisLine(methodScore, METHOD_LINES) };
-  const focus = { label: FOCUS[styleBand(focusScore)].label, line: axisLine(focusScore, FOCUS_LINES) };
+  const method = { label: t(METHOD[styleBand(methodScore)].label), line: t(axisLine(methodScore, METHOD_LINES)) };
+  const focus = { label: t(FOCUS[styleBand(focusScore)].label), line: t(axisLine(focusScore, FOCUS_LINES)) };
   return { method, focus, label: `${method.label} · ${focus.label}` };
 }
 
@@ -239,43 +242,43 @@ function levelBand(score) {
   return "mid";
 }
 
-function tieProfile(leaders, score) {
+function tieProfile(leaders, score, t = asWritten) {
   if (leaders.length === 2) {
     const [a, b] = leaders;
-    const secondFlaw = FLAWS[b.key];
+    const secondFlaw = t(FLAWS[b.key]);
     return {
-      essence: `${TYPES[a.key].essence} ${TYPES[b.key].essence}`,
-      ideal: `${IDEALS[a.key]} ${IDEALS[b.key]}`,
-      flaw: `${FLAWS[a.key].replace(/\.$/, "")}; ${secondFlaw.charAt(0).toLowerCase()}${secondFlaw.slice(1)}`,
+      essence: `${t(TYPES[a.key].essence)} ${t(TYPES[b.key].essence)}`,
+      ideal: `${t(IDEALS[a.key])} ${t(IDEALS[b.key])}`,
+      flaw: `${t(FLAWS[a.key]).replace(/\.$/, "")}; ${secondFlaw.charAt(0).toLowerCase()}${secondFlaw.slice(1)}`,
     };
   }
-  const names = leaders.map((trait) => TYPES[trait.key].name);
+  const names = leaders.map((trait) => t(TYPES[trait.key].name));
   return {
-    essence: `${joinIt(names)} sono pari in cima, a ${score}, e restano insieme.`,
-    ideal: "Scegliere sul momento tra i tratti messi allo stesso livello.",
+    essence: t("{0} sono pari in cima, a {1}, e restano insieme.", joinIt(names, t), score),
+    ideal: t("Scegliere sul momento tra i tratti messi allo stesso livello."),
     flaw: levelBand(score) === "mid"
-      ? "Nessuno di questi tratti ti sbilancia: il rischio è restare nella media."
-      : "Il rischio è non scegliere da quale di questi tratti partire.",
+      ? t("Nessuno di questi tratti ti sbilancia: il rischio è restare nella media.")
+      : t("Il rischio è non scegliere da quale di questi tratti partire."),
   };
 }
 
-function speechFor(scores) {
+function speechFor(scores, t = asWritten) {
   const lines = [];
-  if (scores.speed >= 14) lines.push("Frasi brevi, vai al punto.");
-  else if (scores.speed <= 9) lines.push("Prenditi il tempo di spiegare, senza fretta di chiudere.");
-  if (scores.warmth >= 14) lines.push("Tono caldo, che mette gli altri a loro agio.");
-  else if (scores.warmth <= 9) lines.push("Tono asciutto e concreto, senza fronzoli.");
-  if (scores.initiative >= 14) lines.push("Dici le cose in faccia, anche quando è scomodo.");
-  else if (scores.initiative <= 9) lines.push("Addolcisci i giudizi e cerca il consenso prima di contraddire.");
-  return lines.length ? lines.join(" ") : "Parla in modo naturale, senza un tono fisso.";
+  if (scores.speed >= 14) lines.push(t("Frasi brevi, vai al punto."));
+  else if (scores.speed <= 9) lines.push(t("Prenditi il tempo di spiegare, senza fretta di chiudere."));
+  if (scores.warmth >= 14) lines.push(t("Tono caldo, che mette gli altri a loro agio."));
+  else if (scores.warmth <= 9) lines.push(t("Tono asciutto e concreto, senza fronzoli."));
+  if (scores.initiative >= 14) lines.push(t("Dici le cose in faccia, anche quando è scomodo."));
+  else if (scores.initiative <= 9) lines.push(t("Addolcisci i giudizi e cerca il consenso prima di contraddire."));
+  return lines.length ? lines.join(" ") : t("Parla in modo naturale, senza un tono fisso.");
 }
 
 /** The block under `## Chi sei`. Empty when the character is off, so an agent without one keeps its free text alone. */
-export function characterSheet(character) {
+export function characterSheet(character, t = asWritten) {
   if (!character || !character.enabled) return "";
   const scores = normalizedScores(character.scores);
-  const { main, second, title, leaders } = characterType(scores);
-  const style = characterStyle(character);
+  const { main, second, title, leaders } = characterType(scores, t);
+  const style = characterStyle(character, t);
   const methodScore = clampTrait(character.method);
   const focusScore = clampTrait(character.focus);
 
@@ -285,18 +288,18 @@ export function characterSheet(character) {
   let extra = "";
   if (!main && leaders.length === CHARACTER_TRAITS.length) {
     const copy = VERSATILE_LEVELS[levelBand(scores[leaders[0].key])];
-    essence = copy.essence;
-    ideal = copy.ideal;
-    flaw = copy.flaw;
+    essence = t(copy.essence);
+    ideal = t(copy.ideal);
+    flaw = t(copy.flaw);
   } else if (!main) {
-    const copy = tieProfile(leaders, scores[leaders[0].key]);
+    const copy = tieProfile(leaders, scores[leaders[0].key], t);
     essence = copy.essence;
     ideal = copy.ideal;
     flaw = copy.flaw;
   } else {
-    essence = TYPES[main.key].essence;
-    ideal = IDEALS[main.key];
-    flaw = FLAWS[main.key];
+    essence = t(TYPES[main.key].essence);
+    ideal = t(IDEALS[main.key]);
+    flaw = t(FLAWS[main.key]);
     const secondScore = scores[second.key];
     const band = traitBand(secondScore);
     if (band) {
@@ -304,33 +307,34 @@ export function characterSheet(character) {
         .filter((trait) => trait.key !== main.key && scores[trait.key] === secondScore)
         .map((trait) => TRAIT_LINES[trait.key][band])
         .filter(Boolean)
+        .map((line) => t(line))
         .join(" ");
     }
   }
 
-  const traits = CHARACTER_TRAITS.map((trait) => `${trait.label} ${scores[trait.key]}`).join(" · ");
+  const traits = CHARACTER_TRAITS.map((trait) => `${t(trait.label)} ${scores[trait.key]}`).join(" · ");
   return [
-    "### Scheda del carattere",
-    `Tipo: **${title}** · Stile: **${style.label}** · Metodo ${methodScore} · Focus ${focusScore}`,
+    t("### Scheda del carattere"),
+    t("Tipo: **{0}** · Stile: **{1}** · Metodo {2} · Focus {3}", title, style.label, methodScore, focusScore),
     traits,
     "",
-    `**Come sei.** Il tuo tipo è **${title}**: ${essence}${extra ? ` ${extra}` : ""} ${style.method.line} ${style.focus.line}`,
-    `**Come parli.** ${speechFor(scores)}`,
-    `**Ti muove.** ${ideal}`,
-    `**Il tuo limite.** ${flaw}`,
+    t("**Come sei.** Il tuo tipo è **{0}**: {1}", title, `${essence}${extra ? ` ${extra}` : ""} ${style.method.line} ${style.focus.line}`),
+    t("**Come parli.** {0}", speechFor(scores, t)),
+    t("**Ti muove.** {0}", ideal),
+    t("**Il tuo limite.** {0}", flaw),
   ].join("\n");
 }
 
 /** One line for the other agents' roster: the type and the style, never the whole sheet. */
-export function characterTagline(character) {
+export function characterTagline(character, t = asWritten) {
   if (!character || !character.enabled) return "";
-  const { title } = characterType(character.scores);
-  return `${title} · ${characterStyle(character).label}`;
+  const { title } = characterType(character.scores, t);
+  return `${title} · ${characterStyle(character, t).label}`;
 }
 
 /** What goes under `## Chi sei`. An enabled sheet commands it; the old free story stays stored and is not appended. */
-export function agentPersona(agent) {
-  const sheet = characterSheet(agent?.character);
+export function agentPersona(agent, t = asWritten) {
+  const sheet = characterSheet(agent?.character, t);
   if (sheet) return sheet;
   return String(agent?.personality || "").trim();
 }
@@ -341,7 +345,7 @@ export function shouldWriteCharacter({ isNew = false, section = "" } = {}) {
 }
 
 /** The one-line description other agents see: the sheet's tagline, or the first line of the story. */
-export function agentTagline(agent) {
-  if (agent?.character?.enabled) return characterTagline(agent.character);
+export function agentTagline(agent, t = asWritten) {
+  if (agent?.character?.enabled) return characterTagline(agent.character, t);
   return String(agent?.personality || "").split("\n")[0].trim();
 }

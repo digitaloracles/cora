@@ -1,3 +1,5 @@
+import { L } from "./prompt-lang.js";
+
 /**
  * A thread named after an issue (REF-23, ACD-73, ...) is that issue's place. Its
  * keys are its topic and its channel is its subject: only the threads of the same channel are
@@ -126,9 +128,9 @@ export function threadLeak(text, { topic = [], others = new Map(), owners = null
 
 export function leakMessage(leak, topic) {
   const where = leak.threads.map((thread) => `«${thread.name}» (${threadLink(thread)}, channel_id "${thread.id}")`).join(" o ");
-  return `Questo thread è dedicato a ${topic.join(", ")}; ${leak.key} ha il suo thread: ${where}. Il lavoro su ${leak.key} va scritto là con say({text, channel_id: "${leak.threads[0].id}"}); qui al massimo un rimando breve con quel link. Non riportare qui il lavoro di quel thread.`;
+  return L`Questo thread è dedicato a ${topic.join(", ")}; ${leak.key} ha il suo thread: ${where}. Il lavoro su ${leak.key} va scritto là con say({text, channel_id: "${leak.threads[0].id}"}); qui al massimo un rimando breve con quel link. Non riportare qui il lavoro di quel thread.`;
 }
 
 export function leakPointer(leak) {
-  return `Questo riguarda ${leak.key}: ne parlo nel suo thread, ${threadLink(leak.threads[0])}`;
+  return L`Questo riguarda ${leak.key}: ne parlo nel suo thread, ${threadLink(leak.threads[0])}`;
 }
