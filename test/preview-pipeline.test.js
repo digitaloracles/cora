@@ -44,7 +44,10 @@ test("one request makes one group of sealed agents and one email; the same site 
   assert.ok(!JSON.stringify(w.groups()).includes(link));
   assert.deepEqual(w.groups()[0].agents.map((agent) => [agent.archetype, agent.name, agent.role]), [["marketer", "Mia", "Marketer"]], "the archetype the company chose");
   assert.equal(w.groups()[0].agentIds.length, 1);
-  assert.match(w.calls.mails[0].text, /your Cora marketer for Acme/);
+  assert.equal(w.calls.mails[0].subject, "Meet Mia, your agent for Acme");
+  assert.match(w.calls.mails[0].text, /Mia · Marketer/);
+  assert.match(w.calls.mails[0].html, /Start the chat with Mia/);
+  assert.match(w.calls.mails[0].html, /Up to 3 agents/);
 
   await runOnce(w.deps);
   assert.equal(w.calls.created.length, 1);
@@ -152,5 +155,15 @@ test("names, briefing fallback, page reading and public addresses", async () => 
     const mail = previewEmail({ company: "Acme <b>", lang, link: "https://acme.usecora.space/auth/preview?token=abc" });
     assert.match(mail.text, /https:\/\/acme\.usecora\.space\/auth\/preview\?token=abc/);
     assert.doesNotMatch(mail.html, /<b>/);
+    assert.match(mail.html, /^<!doctype html>/);
+    assert.match(mail.html, /href="https:\/\/acme\.usecora\.space\/auth\/preview\?token=abc"/);
   }
+  const it = previewEmail({ company: "Acme", lang: "it", site: "https://www.acme.com/", link: "https://demo.usecora.space/auth/preview?token=abc", agent: { name: "Leo · Acme", role: "Lead generator", archetype: "lead-generator", does: "finds prospects", focus: "Write to <script>x</script> clinics" } });
+  assert.equal(it.subject, "Ecco Leo, il tuo agente per Acme");
+  assert.match(it.html, /Abbiamo letto acme\.com/);
+  assert.match(it.html, /Fino a 3 agenti/);
+  assert.match(it.html, /1 ora/);
+  assert.match(it.html, /#e5533d/);
+  assert.doesNotMatch(it.html, /<script>/);
+  assert.match(it.text, /Da dove parte: Write to <script>x<\/script> clinics/);
 });

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { previewEmail } from "./preview-email.js";
 
 /**
  * The custom agent preview pipeline (NOT-94), run on the host every minute:
@@ -142,24 +143,8 @@ export function agentSpecs(brief, offset = 0) {
   }));
 }
 
-const COPY = {
-  en: { subject: (c) => `Your Cora agent for ${c} is ready`, hello: "Hi,", body: (c, r) => `we prepared your Cora ${r} for ${c}, from your website. It is sealed: it works only for you and sees nothing else.`, cta: "Open your preview", hour: "The preview stays open for one hour from your first message. The link is personal: do not forward it.", bye: "The Cora team" },
-  it: { subject: (c) => `Il tuo agente Cora per ${c} è pronto`, hello: "Ciao,", body: (c, r) => `abbiamo preparato il tuo agente Cora (${r}) per ${c} partendo dal vostro sito. È sealed: lavora solo per voi e non vede nient'altro.`, cta: "Apri la tua anteprima", hour: "L'anteprima resta aperta per un'ora dal tuo primo messaggio. Il link è personale: non inoltrarlo.", bye: "Il team di Cora" },
-  es: { subject: (c) => `Tu agente de Cora para ${c} está listo`, hello: "Hola:", body: (c, r) => `hemos preparado tu agente de Cora (${r}) para ${c} a partir de vuestra web. Está sellado: trabaja solo para vosotros y no ve nada más.`, cta: "Abrir tu vista previa", hour: "La vista previa queda abierta una hora desde tu primer mensaje. El enlace es personal: no lo reenvíes.", bye: "El equipo de Cora" },
-  de: { subject: (c) => `Ihr Cora-Agent für ${c} ist bereit`, hello: "Hallo,", body: (c, r) => `wir haben aus Ihrer Website Ihren Cora-Agenten (${r}) für ${c} vorbereitet. Er ist versiegelt: Er arbeitet nur für Sie und sieht nichts anderes.`, cta: "Vorschau öffnen", hour: "Die Vorschau bleibt ab Ihrer ersten Nachricht eine Stunde lang offen. Der Link ist persönlich: bitte nicht weiterleiten.", bye: "Das Cora-Team" },
-};
-const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
-
-const ROLE_WORDS = { it: { Manager: "manager", Programmer: "programmatore", Secretary: "segretaria", Researcher: "ricercatore", "Lead generator": "lead generator", Marketer: "marketer", "Customer support": "assistenza clienti", Analyst: "analista" }, es: { Manager: "mánager", Programmer: "programador", Secretary: "secretaria", Researcher: "investigador", "Lead generator": "generador de leads", Marketer: "marketer", "Customer support": "atención al cliente", Analyst: "analista" }, de: { Manager: "Manager", Programmer: "Entwickler", Secretary: "Sekretariat", Researcher: "Recherche", "Lead generator": "Leadgenerierung", Marketer: "Marketing", "Customer support": "Kundensupport", Analyst: "Analyst" } };
-export const roleWord = (role, lang) => ROLE_WORDS[lang]?.[role] || String(role || "agent").toLowerCase();
-
-export function previewEmail({ company, lang, link, role = "" }) {
-  const copy = COPY[lang] || COPY.en;
-  const word = roleWord(role, COPY[lang] ? lang : "en");
-  const text = `${copy.hello}\n\n${copy.body(company, word)}\n\n${copy.cta}: ${link}\n\n${copy.hour}\n\n${copy.bye}\nhttps://usecora.space`;
-  const html = `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#17202E;max-width:520px;line-height:1.55"><p>${escape(copy.hello)}</p><p>${escape(copy.body(company, word))}</p><p style="margin:28px 0"><a href="${escape(link)}" style="background:#264CD6;color:#fff;text-decoration:none;padding:12px 20px;border-radius:999px;display:inline-block;font-weight:600">${escape(copy.cta)}</a></p><p style="color:#4a5568;font-size:14px">${escape(copy.hour)}</p><p>${escape(copy.bye)}<br><a href="https://usecora.space" style="color:#264CD6">usecora.space</a></p></div>`;
-  return { subject: copy.subject(company), text, html };
-}
+export { previewEmail, roleWord } from "./preview-email.js";
+const mailAgent = (agent) => agent && { ...agent, does: agent.does || ARCHETYPES[agent.archetype]?.does || "" };
 
 export const newToken = () => randomBytes(32).toString("base64url");
 export const tokenHash = (token) => createHash("sha256").update(token).digest("hex");
@@ -218,7 +203,7 @@ export async function runOnce(deps) {
         save();
         await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: added ? `same site: ${wanted} added to its preview` : "same site: joined its existing preview" });
         if (token) {
-          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token), role: (added?.[0] || same.agents[0])?.role }) });
+          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token), site: same.site, agent: mailAgent(added?.[0] || same.agents[0]) }) });
           same.guests.find((guest) => guest.email === email).mailedAt = deps.now(); save();
         }
         deps.log({ type: "preview-joined", id: request.id, group: same.id, added: Boolean(added) });
@@ -235,7 +220,7 @@ export async function runOnce(deps) {
       entry.agentIds = deps.groups.create(entry, guest);
       entry.ready = true; save();
       await deps.cloud.update(request.id, { status: "ready", space: deps.space });
-      await deps.mail({ to: email, ...previewEmail({ company: brief.company, lang: request.lang, link: link(token), role: brief.agents[0].role }) });
+      await deps.mail({ to: email, ...previewEmail({ company: brief.company, lang: request.lang, link: link(token), site: request.site, agent: mailAgent(brief.agents[0]) }) });
       guest.mailedAt = deps.now(); save();
       deps.log({ type: "preview-ready", id: request.id, group: id });
     } catch (error) {
