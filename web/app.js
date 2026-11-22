@@ -8601,6 +8601,7 @@ function vaultLine(event) {
     case "send-proposed": return [by, " ", tr("chiede di mandare"), " ", name];
     case "send-approved": return [by, " ", tr("ha approvato l'invio di"), " ", name, mode];
     case "send-created": return [by, " ", tr("ha creato un link per"), " ", name, mode];
+    case "send-mailed": return [tr("Email a"), " ", h("b", { class: "log-who" }, raw(event.to || "")), " ", tr("per"), " ", name, h("span", { class: "faint" }, raw(` · ${tr(event.status === "sent" ? "mandata" : "non confermata")}`))];
     case "send-rejected": return [by, " ", tr("ha rifiutato l'invio di"), " ", name];
     case "send-revoked": return [by, " ", tr("ha revocato il link di"), " ", name];
     case "send-page": return [who, " ", tr("ha aperto il link di"), " ", name];
@@ -8689,11 +8690,11 @@ function renderSecrets() {
     const views = h("select", { name: "views", "aria-label": tr("Quante volte si apre") }, [1, 2, 3, 5, 10].map((n) => h("option", { value: n, selected: n === times }, n === 1 ? tr("Una volta") : tr("{count} volte", { count: n }))));
     const lasts = proposal?.days || 7;
     const days = h("select", { name: "days", "aria-label": tr("Scadenza") }, [[1, "Un giorno"], [7, "Una settimana"], [30, "Un mese"]].map(([n, label]) => h("option", { value: n, selected: n === lasts }, label)));
-    const note = h("input", { type: "text", name: "note", maxlength: 300, value: proposal?.note || "", placeholder: tr("Giulia, per il deploy di venerdì"), "aria-label": tr("Per chi è") });
+    const note = h("input", { type: "text", name: "note", maxlength: 300, value: proposal?.reason ?? proposal?.note ?? "", placeholder: tr("il deploy di venerdì"), "aria-label": tr("A cosa serve") });
     const el = h("form", { class: "share-new stack" },
       ...access.nodes,
       h("div", { class: "grid2" }, field("Quante volte si apre", views, "poi il link sparisce"), field("Scadenza", days)),
-      field("Per chi è", note, "resta nel registro: il link non lo mostra"),
+      field("A cosa serve", note, "resta nel registro; per persone precise è il motivo scritto nella loro email, il nome del segreto mai"),
       h("div", { class: "row" }, h("span", { class: "spacer" }), btn("Annulla", { cls: "ghost", onclick: () => { form = ""; draw(); } }),
         btn(proposal ? "Approva e crea il link" : "Crea il link", { icon: "link", cls: "primary", type: "submit" })));
     el.addEventListener("submit", async (event) => {
@@ -8702,7 +8703,8 @@ function renderSecrets() {
       const made = await guard(proposal ? api(`/api/secrets/sends/${proposal.id}/approve`, { method: "POST", body }) : api(`/api/secrets/${name}/sends`, { method: "POST", body }));
       if (!made) return;
       form = "";
-      shown = { title: tr("Il link per {name}", { name: made.name }), link: vaultLink(made.url, proposal ? tr("Mandalo tu a chi deve riceverlo: l'agente non lo vede.") : tr("Chi lo apre vede il segreto; poi il link sparisce. La chiave è nel link: la cassaforte non la conosce.")) };
+      const mailed = made.access?.mode === "people" && made.access.emails?.length ? tr("Cora ha mandato il link per email a {emails}, con chi lo manda e il motivo.", { emails: made.access.emails.join(", ") }) : "";
+      shown = { title: tr("Il link per {name}", { name: made.name }), link: vaultLink(made.url, mailed || (proposal ? tr("Mandalo tu a chi deve riceverlo: l'agente non lo vede.") : tr("Chi lo apre vede il segreto; poi il link sparisce. La chiave è nel link: la cassaforte non la conosce."))) };
       reload();
     });
     return panel({ icon: "send", title: proposal ? tr("Approva l'invio di {name}", { name }) : tr("Nuovo link per {name}", { name }),

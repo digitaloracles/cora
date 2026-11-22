@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { AccessInvitations } from "./access-invitations.js";
+import { SecretNotices } from "./secret-notices.js";
 import { PACKAGE_MAX_BYTES } from "./agent-transfer.js";
 import { AppAccess } from "./app-access.js";
 import { PanelMcp } from "./panel-mcp.js";
@@ -218,6 +219,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     logout: `${config.cloudUrl.replace(/\/$/, "")}/logout`,
   } : null;
   const invitations = new AccessInvitations({ store, cloud, space: config.cloudSpace });
+  const secretNotices = new SecretNotices({ store, cloud, space: config.cloudSpace });
+  if (vault) vault.secretNotices = secretNotices;
   const firstUse = passLedger();
   const previewWindow = new PreviewWindow({ store, minutes: config.previewMinutes });
   // A share's own address: answered before anything of the panel, which never runs there.
@@ -2691,6 +2694,14 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         if (!invitation) throw new HttpError(403, "invito non autorizzato");
         return send(res, 200, invitation);
       }
+      if (url.pathname === "/api/cloud/secret-send" && req.method === "POST") {
+        if (!cloud) throw new HttpError(404, "not found");
+        const body = await readJson(req, 8192);
+        const fields = verifyPass(cloud.key, body.pass, { audience: `secret-send:${cloud.audience}` });
+        const notice = fields && firstUse(fields) && secretNotices.claim(fields.nonce);
+        if (!notice) throw new HttpError(403, "invio non autorizzato");
+        return send(res, 200, notice);
+      }
       if (url.pathname === "/api/cloud/notice" && req.method === "POST") return await cloudNotice(req, res);
       if (url.pathname === "/api/cloud/share-access" && req.method === "POST") return await cloudShareAccess(req, res);
       if (url.pathname === "/api/events") return events(req, res);
@@ -2787,5 +2798,5 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
   /** Someone has the panel open and visible (the page drops its event stream when hidden). */
   const watching = () => clients.size > 0;
 
-  return { server, broadcast, watching, stopInvitations: () => invitations.stop() };
+  return { server, broadcast, watching, stopInvitations: () => Promise.all([invitations.stop(), secretNotices.stop()]) };
 }
