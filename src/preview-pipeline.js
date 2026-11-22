@@ -170,13 +170,14 @@ export async function briefing({ company, site, lang, pages, chat, archetype = "
 export function agentSpecs(brief, offset = 0) {
   const facts = [`Company: ${brief.company} (${brief.site}).`, `What it does: ${brief.summary}`, brief.products.length ? `Products and services: ${brief.products.join("; ")}.` : "", brief.audience ? `Customers: ${brief.audience}.` : "", brief.tone ? `Tone of voice: ${brief.tone}.` : ""].filter(Boolean).join("\n");
   return brief.agents.map((agent, i) => ({
-    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length], starters: agent.starters || [],
+    name: agent.name, role: agent.role, archetype: agent.archetype, color: COLORS[(i + offset) % COLORS.length], starters: agent.starters || [], focus: agent.focus || "",
     personality: `You are ${agent.name}, the ${agent.role.toLowerCase()} of ${brief.company}, in a one-hour Cora preview prepared from the company's public website. As ${agent.role.toLowerCase()} you ${agent.does}.\n${agent.wish ? `The company asked you for this: ${agent.wish}\n` : ""}${agent.focus ? `Start from this: ${agent.focus}\n` : ""}\n${facts}\n\nBe concrete and useful from the first answer: propose drafts, plans and examples built on this company. Keep answers short and ask one question when you need context.`,
   }));
 }
 
 export { previewEmail, roleWord } from "./preview-email.js";
-const mailAgent = (agent) => agent && { ...agent, does: agent.does || ARCHETYPES[agent.archetype]?.does || "" };
+// The card's own pitch, in the company's language, says more than the archetype's English line: one or the other.
+const mailAgent = (agent) => agent && { ...agent, does: agent.focus ? "" : agent.does || ARCHETYPES[agent.archetype]?.does || "" };
 
 export const newToken = () => randomBytes(32).toString("base64url");
 export const tokenHash = (token) => createHash("sha256").update(token).digest("hex");

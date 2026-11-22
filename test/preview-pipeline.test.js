@@ -207,3 +207,18 @@ test("the draft door answers only usecora.space with the pipeline token", async 
   assert.equal((await ask({ archetype: "lead-generator" }, "Bearer wrong")).status, 404);
   assert.equal((await ask({ site: "acme.com", archetype: "boss" })).status, 400);
 });
+
+test("a colleague who joins with another role gets the mail of that agent, with its card's pitch in their language", async () => {
+  const w = world();
+  w.request("pv_1", "anna@acme.com", "https://acme.com", "Acme", "secretary");
+  await runOnce(w.deps);
+  w.request("pv_2", "luca@acme.com", "https://acme.com", "Acme", "researcher");
+  Object.assign(w.previews.get("pv_2"), { lang: "it", wish: "Guarda i concorrenti", draft: { name: "Luca", pitch: "Monitoro i concorrenti di Acme.", starters: ["Cosa è cambiato?"] } });
+  await runOnce(w.deps);
+  const mail = w.calls.mails[1];
+  assert.equal(mail.to, "luca@acme.com");
+  assert.match(mail.subject, /Luca/);
+  assert.match(mail.text, /Da dove parte: Monitoro i concorrenti di Acme\./);
+  assert.doesNotMatch(mail.text, /Researches markets/, "no English role line when the card says it in Italian");
+  assert.deepEqual(w.groups()[0].agents[1].starters, ["Cosa è cambiato?"]);
+});
