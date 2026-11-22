@@ -670,7 +670,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       const action = path.startsWith("/api/secrets") ? "secrets" : path.startsWith("/api/artifacts") ? "artifacts" : path.startsWith("/api/context") ? "context" : path.startsWith("/api/access") ? "access-policy" : path.startsWith("/api/permissions") ? "permissions" : path.startsWith("/api/brain") ? "brain" : path.startsWith("/api/rooms") ? "message" : path.startsWith("/api/agents") ? "agent" : path.startsWith("/api/subscriptions") || path.startsWith("/api/providers") ? "connections" : "settings";
       res.once("finish", () => { if (res.statusCode < 400) { try { store.auditAccess(user.id, action); } catch {} } });
     }
-    if (previewWindow.ended() && !["GET", "HEAD"].includes(method) && path !== "/api/logout") throw new HttpError(403, "L'anteprima è finita: l'ora di prova è scaduta.");
+    const previewRefusal = previewWindow.refusal(user, method, path);
+    if (previewRefusal) throw new HttpError(403, previewRefusal);
     const scopedAgent = /^\/api\/agents\/([\w-]+)(?:\/|$)/.exec(path);
     if (scopedAgent && (knowledge?.isSealed(store.agent(scopedAgent[1])) || (knowledge?.ownerMemory && !ownerTransport(user, path)))) checkAgentMemory(scopedAgent[1], user);
     if (path.startsWith("/api/encrypted")) {
@@ -1214,7 +1215,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       ]);
       return send(res, 200, {
         settings: store.settings,
-        preview: previewWindow.state(),
+        preview: previewWindow.state(user),
         encryptionRequired: encrypted.enabled,
         build: assets.build(),
         version: VERSION,
@@ -1911,7 +1912,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         if (text.length > 3000) throw new HttpError(400, "messaggio troppo lungo (max 3000 caratteri)");
         if (agentId && !store.agent(agentId).enabled) throw new HttpError(409, "l'agente è muto: accendilo dal profilo");
         const clientId = /^c_[0-9a-f]{16,32}$/.test(String(body.clientId || "")) ? body.clientId : null;
-        previewWindow.start();
+        previewWindow.start(user);
         return send(res, 201, await orchestrator.onWebMessage({ room, text, user, clientId }));
       }
     }
@@ -2523,13 +2524,14 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
    * sets it and moves on from this origin.
    */
   function previewSignIn(req, res, url) {
-    const guest = sessionKey ? previewWindow.guestFor(url.searchParams.get("token")) : null;
+    const found = sessionKey ? previewWindow.guestFor(url.searchParams.get("token")) : null;
+    const guest = found && !found.ended ? found : null;
     const english = store.settings.language !== "it";
     const page = (title, body, extra = "") => `<!doctype html><html lang="${english ? "en" : "it"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${extra}<title>${title}</title><style>body{font:16px/1.5 system-ui,sans-serif;background:#F5F3EC;color:#17202E;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:28rem;padding:2rem;text-align:center}a{color:#264CD6}</style></head><body><main><h1>${title}</h1><p>${body}</p></main></body></html>`;
     const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" };
     if (!guest) {
       activity({ type: "warning", text: "link dell'anteprima rifiutato" });
-      const ended = previewWindow.ended();
+      const ended = Boolean(found?.ended);
       return send(res, ended ? 410 : 403, page(english ? (ended ? "This preview has ended" : "This link does not work") : (ended ? "L'anteprima è finita" : "Questo link non funziona"),
         english ? (ended ? "The hour with your agents is over. Write to us at usecora.space to keep going." : "Open the latest link we sent you by email.") : (ended ? "L'ora con i tuoi agenti è finita. Scrivici su usecora.space per continuare." : "Apri l'ultimo link che ti abbiamo mandato per email.")), headers);
     }

@@ -1637,6 +1637,7 @@ export const EN = {
   "Restano {minutes} minuti di anteprima. ": "{minutes} minutes of preview left. ",
   "Poi gli agenti smettono di ricevere messaggi.": "After that the agents stop taking messages.",
   "L'anteprima è finita: l'ora di prova è scaduta.": "This preview has ended: the trial hour is over.",
+  "Nell'anteprima puoi solo scrivere ai tuoi agenti.": "In this preview you can only write to your agents.",
   "Va costruita {image} su questa macchina.": "{image} has to be built on this machine.",
   "Provider non disponibili: ": "Providers not available: ",
 

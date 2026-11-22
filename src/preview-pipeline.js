@@ -146,80 +146,91 @@ export function previewEmail({ company, lang, link }) {
 export const newToken = () => randomBytes(32).toString("base64url");
 export const tokenHash = (token) => createHash("sha256").update(token).digest("hex");
 
+/** Agent names are unique in the space: "Ava · Acme", then "Ava · Acme 2". */
+export function agentName(name, company, taken) {
+  const short = String(company || "").replace(/discord|clyde/gi, "").replace(/\s+/g, " ").trim().slice(0, 14).trim();
+  const base = `${name}${short ? ` · ${short}` : ""}`.slice(0, 29).trim();
+  for (let n = 1; n < 50; n++) {
+    const candidate = n === 1 ? base : `${base} ${n}`;
+    if (!taken(candidate.toLowerCase())) return candidate;
+  }
+  throw new Error("no free agent name");
+}
+
 /**
- * One pass of the pipeline. `deps`: cloud {list(status), update(id, body), firstMessage(id)}, registry {load(), save(entries)},
- * spaces {taken(slug), freePort(used), write(entry, spec), start(entry), restart(entry), stop(entry), healthy(entry), register(entry), unregister(entry), window(entry)},
- * site(read), chat(messages), mail({to, subject, text, html}), now(), log(event).
+ * One pass of the pipeline inside the demo space. `deps`: cloud {list(status), update(id, body), firstMessage(id)},
+ * groups {load(), save(entries), create(entry, guest), addGuest(entry, guest), remove(entry), window(entry)},
+ * space ("demo"), base ("https://demo.usecora.space"), site(url), chat(messages), mail(message), now(), log(event).
+ * A group is one company site: its guests, its sealed agents and its hour.
  */
 export async function runOnce(deps) {
-  const now = deps.now();
-  const entries = deps.registry.load();
-  const save = () => deps.registry.save(entries);
+  const entries = deps.groups.load();
+  const save = () => deps.groups.save(entries);
   const live = () => entries.filter((entry) => !entry.removedAt);
+  const link = (token) => `${deps.base}/auth/preview?token=${token}`;
 
   const requests = [...await deps.cloud.list("requested"), ...await deps.cloud.list("building")];
   for (const request of requests) {
     if (entries.some((entry) => entry.previews?.includes(request.id))) continue;
     const host = siteHost(request.site);
     const same = live().find((entry) => entry.host === host && entry.ready);
+    const email = String(request.email || "").trim().toLowerCase();
     try {
       if (same) {
-        // One space per company site: a second request joins the space that is already there.
+        // One group per company site: a second request joins it; a new address gets a link of its own.
         same.previews.push(request.id);
-        const known = same.guests.some((guest) => guest.email === request.email);
+        const known = same.guests.some((guest) => guest.email === email);
         let token = null;
-        if (!known) { token = newToken(); same.guests.push({ email: request.email, name: "", tokenHash: tokenHash(token), mailedAt: null }); }
-        save();
-        if (!known) { deps.spaces.write(same); await deps.spaces.restart(same); await deps.spaces.healthy(same); }
-        await deps.cloud.update(request.id, { status: "ready", space: same.slug, note: "same site: joined the existing space" });
-        if (token) {
-          await deps.mail({ to: request.email, ...previewEmail({ company: same.company, lang: request.lang, link: `https://${same.slug}.usecora.space/auth/preview?token=${token}` }) });
-          same.guests.find((guest) => guest.email === request.email).mailedAt = deps.now(); save();
+        if (!known) {
+          token = newToken();
+          const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
+          same.guests.push(guest);
+          deps.groups.addGuest(same, guest);
         }
-        deps.log({ type: "preview-joined", id: request.id, space: same.slug });
+        save();
+        await deps.cloud.update(request.id, { status: "ready", space: deps.space, note: "same site: joined its existing preview" });
+        if (token) {
+          await deps.mail({ to: email, ...previewEmail({ company: same.company, lang: request.lang, link: link(token) }) });
+          same.guests.find((guest) => guest.email === email).mailedAt = deps.now(); save();
+        }
+        deps.log({ type: "preview-joined", id: request.id, group: same.id });
         continue;
       }
       await deps.cloud.update(request.id, { status: "building" });
       const pages = await deps.site(request.site);
       const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat });
-      const slug = slugFor(request.site, (name) => deps.spaces.taken(name) || entries.some((entry) => entry.slug === name && !entry.removedAt));
+      const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
-      const entry = {
-        slug, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], port: deps.spaces.freePort(live().map((item) => item.port)),
-        guests: [{ email: request.email, name: "", tokenHash: tokenHash(token), mailedAt: null }], agents: agentSpecs(brief), createdAt: now, ready: false,
-      };
+      const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
+      const entry = { id, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief), agentIds: [], createdAt: deps.now(), ready: false };
       entries.push(entry); save();
-      deps.spaces.write(entry);
-      await deps.spaces.start(entry);
-      await deps.spaces.healthy(entry);
-      await deps.spaces.register(entry);
+      entry.agentIds = deps.groups.create(entry, guest);
       entry.ready = true; save();
-      await deps.cloud.update(request.id, { status: "ready", space: slug });
-      await deps.mail({ to: request.email, ...previewEmail({ company: brief.company, lang: request.lang, link: `https://${slug}.usecora.space/auth/preview?token=${token}` }) });
-      entry.guests[0].mailedAt = deps.now(); save();
-      deps.log({ type: "preview-ready", id: request.id, space: slug });
+      await deps.cloud.update(request.id, { status: "ready", space: deps.space });
+      await deps.mail({ to: email, ...previewEmail({ company: brief.company, lang: request.lang, link: link(token) }) });
+      guest.mailedAt = deps.now(); save();
+      deps.log({ type: "preview-ready", id: request.id, group: id });
     } catch (error) {
       deps.log({ type: "preview-failed", id: request.id, error: error.message });
       const entry = entries.find((item) => item.previews?.includes(request.id) && !item.ready);
-      if (entry) { try { await deps.spaces.stop(entry); await deps.spaces.unregister(entry); } catch {} entry.removedAt = deps.now(); entry.failed = error.message; save(); }
+      if (entry) { try { deps.groups.remove(entry); } catch {} entry.removedAt = deps.now(); entry.failed = clip(error.message, 200); save(); }
       try { await deps.cloud.update(request.id, { status: "failed", note: clip(error.message, 200) }); } catch {}
     }
   }
 
-  // The hour: the first message starts it in the space, the cloud hears it once, and the space goes after it.
+  // The hour: the company's first message starts it, usecora.space hears it once, and the group goes after it.
   for (const entry of live().filter((item) => item.ready)) {
-    const window = deps.spaces.window(entry);
+    const window = deps.groups.window(entry);
     if (window?.startedAt && !entry.startReported) {
       for (const id of entry.previews) { try { await deps.cloud.firstMessage(id); } catch {} }
       entry.startReported = deps.now(); save();
     }
     const over = window?.startedAt ? deps.now() >= window.startedAt + (window.minutes || 60) * 60000 + GRACE_MS : deps.now() >= entry.createdAt + UNUSED_DAYS * 86400000;
     if (!over) continue;
-    await deps.spaces.stop(entry);
-    await deps.spaces.unregister(entry);
+    deps.groups.remove(entry);
     entry.removedAt = deps.now(); entry.ended = window?.startedAt ? "hour" : "unused"; save();
-    if (!window?.startedAt) for (const id of entry.previews) { try { await deps.cloud.update(id, { status: "failed", note: "not used within 7 days; space removed" }); } catch {} }
-    deps.log({ type: "preview-removed", space: entry.slug, reason: entry.ended });
+    if (!window?.startedAt) for (const id of entry.previews) { try { await deps.cloud.update(id, { status: "failed", note: "not used within 7 days; preview removed" }); } catch {} }
+    deps.log({ type: "preview-removed", group: entry.id, reason: entry.ended });
   }
   return entries;
 }
