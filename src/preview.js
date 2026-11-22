@@ -39,6 +39,12 @@ export class PreviewWindow {
     return { minutes: this.minutes, startedAt, endsAt, ended: Boolean(endsAt && this.now() >= endsAt) };
   }
 
+  /** The agents of the company this guest's link opens: the only chats it reads or writes. */
+  groupAgentIds(guest) {
+    const group = (this.store.value(PREVIEW_GROUPS_KEY, []) || []).find((entry) => entry.id === guest?.group && !entry.removedAt);
+    return (group?.agentIds || []).map(String);
+  }
+
   /** The viewer's clock, company and agents; null for the space's own people. */
   state(user) {
     const guest = this.guestOf(user);
@@ -61,6 +67,8 @@ export class PreviewWindow {
   refusal(user, method, path) {
     const guest = this.guestOf(user);
     if (!guest || path === "/api/logout") return "";
+    const room = /^\/api\/rooms\/web-([\w-]+)\/messages$/.exec(path);
+    if (room && !this.groupAgentIds(guest).includes(room[1])) return "Questa chat è di un'altra anteprima.";
     if (["GET", "HEAD"].includes(method)) return GUEST_READS.test(path) ? "" : "Nell'anteprima puoi solo leggere la chat dei tuoi agenti.";
     if (this.groupState(guest.group).ended) return "L'anteprima è finita: l'ora di prova è scaduta.";
     return GUEST_WRITES.test(path) ? "" : "Nell'anteprima puoi solo scrivere ai tuoi agenti.";
