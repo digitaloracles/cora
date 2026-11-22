@@ -69,7 +69,7 @@ function thread() {
   const items = [];
   if (!S.messages.length && agent) {
     items.push(el("section", { class: "pv-intro" }, el("h1", {}, T.hello(agent.name, role(agent.role), S.preview.company)), el("p", {}, T.intro),
-      el("div", { class: "pv-suggest" }, ...(SUGGEST[agent.role] || []).map((text) => el("button", { type: "button", onclick: () => send(text) }, text)))));
+      el("div", { class: "pv-suggest" }, ...(agent.starters?.length ? agent.starters : SUGGEST[agent.role] || []).map((text) => el("button", { type: "button", onclick: () => send(text) }, text)))));
   }
   for (const message of S.messages) {
     const node = el("div", { class: `pv-msg ${message.agentId ? "agent" : "me"}` });

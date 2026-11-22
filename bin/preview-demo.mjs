@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCora } from "../src/main.js";
-import { startPreviewPipeline } from "../src/preview-demo.js";
+import { startDraftDoor, startPreviewPipeline } from "../src/preview-demo.js";
 import { Store } from "../src/store.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,11 +55,12 @@ async function main() {
   await app.ready;
   console.log(`demo space on 127.0.0.1:${PORT} as ${HOST}`);
   let pipeline = null;
+  const door = env.CORA_PREVIEW_PIPELINE_TOKEN ? startDraftDoor({ token: env.CORA_PREVIEW_PIPELINE_TOKEN, chat, port: Number(env.CORA_PREVIEW_DRAFT_PORT || 4371), log: (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })) }) : null;
   if (env.CORA_PREVIEW_PIPELINE_TOKEN && env.RESEND_API_KEY) {
     pipeline = startPreviewPipeline(app, { cloudUrl: env.CORA_PREVIEW_CLOUD_URL || "https://usecora.space", token: env.CORA_PREVIEW_PIPELINE_TOKEN, space: "demo", base: `https://${HOST}`, model: MODEL, minutes: MINUTES, chat, mail });
   } else console.log("preview pipeline off: CORA_PREVIEW_PIPELINE_TOKEN or RESEND_API_KEY missing");
   let stopping = false;
-  const stop = () => { if (stopping) return; stopping = true; pipeline?.stop(); app.stop().finally(() => process.exit(0)); };
+  const stop = () => { if (stopping) return; stopping = true; pipeline?.stop(); door?.close(); app.stop().finally(() => process.exit(0)); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }

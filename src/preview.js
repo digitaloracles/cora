@@ -42,7 +42,7 @@ export class PreviewWindow {
     const guest = this.guestOf(user);
     if (!guest) return null;
     const group = (this.store.value(PREVIEW_GROUPS_KEY, []) || []).find((entry) => entry.id === guest.group && !entry.removedAt);
-    const agents = (group?.agentIds || []).map((id, i) => ({ id, name: group.agents[i]?.name || "", role: group.agents[i]?.role || "", color: group.agents[i]?.color || "#264cd6" })).filter((agent) => this.store.agent(agent.id));
+    const agents = (group?.agentIds || []).map((id, i) => ({ id, name: group.agents[i]?.name || "", role: group.agents[i]?.role || "", color: group.agents[i]?.color || "#264cd6", starters: group.agents[i]?.starters || [] })).filter((agent) => this.store.agent(agent.id));
     return { ...this.groupState(guest.group), company: group?.company || "", agents };
   }
 

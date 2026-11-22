@@ -1,5 +1,7 @@
 import { PREVIEW_GROUPS_KEY, PREVIEW_GUESTS_KEY, PREVIEW_TOOLS, PREVIEW_WINDOWS_KEY, PreviewWindow, previewGuestId } from "./preview.js";
-import { agentName, readSite, runOnce } from "./preview-pipeline.js";
+import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
+import { agentName, draftCard, readSite, runOnce } from "./preview-pipeline.js";
 import { ownerRoom } from "./rooms.js";
 
 export { PREVIEW_GROUPS_KEY };
@@ -88,4 +90,33 @@ export function startPreviewPipeline(app, { cloudUrl, token, space, base, model,
   timer.unref?.();
   void pass();
   return { pass, stop: () => clearInterval(timer), deps };
+}
+
+/**
+ * The onboarding's small agent, behind demo.usecora.space/_draft: usecora.space/try asks it with the pipeline
+ * token for the card of the agent a company is setting up. It reads the site and makes one model call.
+ */
+export function startDraftDoor({ token, chat, read = readSite, port = 4371, host = "127.0.0.1", log = () => {} }) {
+  const expected = Buffer.from(`Bearer ${token}`);
+  const server = createServer(async (req, res) => {
+    const reply = (status, body) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); res.end(`${JSON.stringify(body)}\n`); };
+    const given = Buffer.from(String(req.headers.authorization || ""));
+    if (req.method !== "POST" || token.length < 32 || given.length !== expected.length || !timingSafeEqual(given, expected)) return reply(404, { error: "not-found" });
+    let body = "";
+    for await (const chunk of req) { body += chunk; if (body.length > 4096) return reply(413, { error: "too-large" }); }
+    let fields;
+    try { fields = JSON.parse(body); } catch { return reply(400, { error: "body" }); }
+    const raw = String(fields?.site || "").trim();
+    const site = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const draft = await draftCard({ company: fields.company, site, archetype: fields.archetype, lang: fields.lang, wish: fields.wish }, { chat, read });
+      log({ type: "preview-drafted", archetype: fields.archetype });
+      return reply(200, { draft });
+    } catch (error) {
+      log({ type: "preview-draft-failed", error: String(error.message).slice(0, 120) });
+      return reply(error.message === "archetype" ? 400 : 502, { error: error.message === "archetype" ? "archetype" : "draft" });
+    }
+  });
+  server.listen(port, host);
+  return server;
 }
