@@ -106,7 +106,9 @@ function thread() {
 
 async function load() {
   if (!S.agent) return;
-  const data = await api(`/api/rooms/web-${encodeURIComponent(S.agent.id)}/messages?limit=100`);
+  let data;
+  try { data = await api(`/api/rooms/web-${encodeURIComponent(S.agent.id)}/messages?limit=100`); }
+  catch (error) { clearTimeout(S.poll); S.poll = setTimeout(() => load().catch(() => {}), 4000); throw error; }
   const fresh = (data.messages || []).filter((message) => (message.content || message.file) && (!message.agentId || message.agentId === S.agent.id)).map((message) => ({ ...message, content: message.content || "" }));
   for (const sent of S.messages.filter((message) => message.key)) {
     const match = fresh.find((message) => !message.agentId && message.content === sent.content && !message.key && message.at >= sent.at - 60000);
