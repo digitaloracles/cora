@@ -221,7 +221,7 @@ export async function runOnce(deps) {
         let token = null;
         if (!known) {
           token = newToken();
-          const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
+          const guest = { email, tokenHash: tokenHash(token), mailedAt: null, lang: request.lang || "" };
           same.guests.push(guest);
           deps.groups.addGuest(same, guest);
         }
@@ -249,7 +249,7 @@ export async function runOnce(deps) {
       const brief = await briefing({ company: request.company, site: request.site, lang: request.lang, pages, chat: deps.chat, archetype: request.archetype, wish: request.wish, card: request.draft });
       const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
-      const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
+      const guest = { email, tokenHash: tokenHash(token), mailedAt: null, lang: request.lang || "" };
       const entry = { id, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief), agentIds: [], createdAt: deps.now(), ready: false };
       entries.push(entry); save();
       entry.agentIds = deps.groups.create(entry, guest);

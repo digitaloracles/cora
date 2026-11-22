@@ -51,7 +51,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   const ginaState = (await call(gina.cookie, "/api/state")).data;
   assert.deepEqual(annaState.preview.agents.map((agent) => [f.app.store.agent(agent.id).name, Boolean(f.app.store.agent(agent.id).sealed)]), [["Mara · Acme", true]], "the agent of the archetype Acme chose");
   assert.deepEqual(ginaState.preview.agents.map((agent) => agent.name), ["Mia"]);
-  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", agents: [{ id: annaState.preview.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6", starters: [] }] });
+  assert.deepEqual(annaState.preview, { minutes: 60, startedAt: null, endsAt: null, ended: false, company: "Acme", lang: "en", agents: [{ id: annaState.preview.agents[0].id, name: "Mara", role: "Manager", color: "#264cd6", starters: [] }] });
   assert.deepEqual(Object.keys(annaState).sort(), ["currentUser", "preview"], "a guest's state carries its clock and agents, not the space's models, providers or agents");
 
   // The company only ever sees the demo chat: the panel sends it there, and the chat page is served.
@@ -234,4 +234,35 @@ test("a person who asks for a second company gets that company's chat, not the f
   assert.equal(after.status, 200, "the Beta link still opens after Acme's hour");
   assert.equal((await call(after.cookie, "/api/state")).preview.company, "Beta");
   assert.equal(await room("Mara · Beta"), 200, "and her chat stays readable");
+});
+
+test("the chat frame speaks the language each person asked in, whatever their browser says", async (t) => {
+  const f = await knowledgeWorld({ previewMinutes: 60 }); t.after(f.close);
+  const previews = new Map();
+  const mails = [];
+  const request = (id, email, lang, archetype = "manager") => previews.set(id, { id, email, company: "Acme", site: "https://acme.com", archetype, lang, status: "requested", space: "" });
+  const deps = {
+    now: () => Date.now(), log: () => {}, space: "demo", base: f.base, chat: async () => BRIEF,
+    site: async (url) => [{ url, title: "Home", description: "A company", headings: [], text: "" }],
+    mail: async (message) => { mails.push(message); },
+    groups: storeGroups(f.app, { model: "ollama/gpt-oss:120b", minutes: 60 }),
+    cloud: { list: async (status) => [...previews.values()].filter((item) => item.status === status), update: async (id, body) => { Object.assign(previews.get(id), body); }, firstMessage: async () => {} },
+  };
+  const stateOf = async (to) => {
+    const url = new URL(/https?:\/\/\S+\/auth\/preview\?token=[\w-]+/.exec(mails.filter((mail) => mail.to === to).at(-1).text)[0]);
+    const res = await fetch(`${f.base}${url.pathname}${url.search}`, { redirect: "manual", headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "accept-language": "en-US,en;q=0.9" } });
+    const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+    return (await (await fetch(`${f.base}/api/state`, { headers: { cookie, "x-cora": "1", "accept-language": "en-US,en;q=0.9" } })).json()).preview;
+  };
+
+  request("pv_1", "anna@acme.com", "it");
+  await runOnce(deps);
+  request("pv_2", "bob@acme.com", "de");
+  await runOnce(deps);
+  assert.equal((await stateOf("anna@acme.com")).lang, "it", "Anna asked in Italian: her chat is in Italian with an English browser");
+  assert.equal((await stateOf("bob@acme.com")).lang, "de", "Bob joined the same company in German: his chat is in German");
+
+  // A link mailed before the language was kept on the person falls back to the company's request.
+  f.app.store.setValue("previewGuests", f.app.store.value("previewGuests", []).map((guest) => (guest.email === "anna@acme.com" ? { ...guest, lang: undefined } : guest)));
+  assert.equal((await stateOf("anna@acme.com")).lang, "it", "an older record speaks the language of the company's request");
 });

@@ -13,7 +13,7 @@ export function storeGroups(app, { model, minutes }) {
   const guests = () => store.value(PREVIEW_GUESTS_KEY, []) || [];
   const admit = (entry, guest) => {
     const email = guest.email.toLowerCase();
-    store.setValue(PREVIEW_GUESTS_KEY, [...guests().filter((item) => item.email !== email), { email, name: "", tokenHash: guest.tokenHash, group: entry.id }]);
+    store.setValue(PREVIEW_GUESTS_KEY, [...guests().filter((item) => item.email !== email), { email, name: "", tokenHash: guest.tokenHash, group: entry.id, lang: guest.lang || entry.lang || "" }]);
     const policy = store.accessPolicy();
     if (!policy.emails.includes(email)) store.updateAccessPolicy({ emails: [...policy.emails, email] });
     return store.registerPanelUser({ id: previewGuestId(email), name: email, email, avatar: "", role: "member", emailVerified: true, source: "local" }).id;
