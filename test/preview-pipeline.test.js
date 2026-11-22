@@ -31,7 +31,7 @@ function world({ chat = async () => JSON.stringify({ summary: "Acme makes rocket
   return { deps, calls, previews, windows, request, groups: () => groups, tick: (ms) => { clock += ms; }, now: () => clock };
 }
 
-test("one request makes one group of sealed agents and one email; the same site never makes a second one", async () => {
+test("one request makes one preview of sealed agents and one email; another address gets its own", async () => {
   const w = world();
   w.request("pv_1", "Anna@acme.com", "https://www.acme.com");
   await runOnce(w.deps);
@@ -60,10 +60,15 @@ test("one request makes one group of sealed agents and one email; the same site 
   assert.equal(w.previews.get("pv_2").space, "demo");
   assert.equal(w.calls.mails.length, 1, "the same address gets nothing new");
 
+  // Another address at the same site is another person: own preview, own agents, own link.
   w.request("pv_3", "bo@acme.com", "https://acme.com");
   await runOnce(w.deps);
-  assert.equal(w.calls.created.length, 1);
-  assert.deepEqual(w.calls.guests, [["acme", "bo@acme.com"]]);
+  assert.deepEqual(w.calls.created, ["acme", "acme-2"], "a different address never joins another preview");
+  assert.equal(w.groups().length, 2);
+  assert.equal(w.groups()[1].email, "bo@acme.com");
+  assert.deepEqual(w.groups()[1].guests.map((guest) => guest.email), ["bo@acme.com"]);
+  assert.equal(w.calls.guests.length, 0, "nothing is added to the first preview");
+  assert.notDeepEqual(w.groups()[1].agentIds, w.groups()[0].agentIds);
   assert.equal(w.calls.mails.length, 2);
   assert.equal(w.calls.mails[1].to, "bo@acme.com");
 
@@ -208,7 +213,7 @@ test("the draft door answers only usecora.space with the pipeline token", async 
   assert.equal((await ask({ site: "acme.com", archetype: "boss" })).status, 400);
 });
 
-test("a colleague who joins with another role gets the mail of that agent, with its card's pitch in their language", async () => {
+test("a new address gets its own preview and the mail of the agent it chose, with its card's pitch in their language", async () => {
   const w = world();
   w.request("pv_1", "anna@acme.com", "https://acme.com", "Acme", "secretary");
   await runOnce(w.deps);
@@ -220,5 +225,5 @@ test("a colleague who joins with another role gets the mail of that agent, with 
   assert.match(mail.subject, /Luca/);
   assert.match(mail.text, /Da dove parte: Monitoro i concorrenti di Acme\./);
   assert.doesNotMatch(mail.text, /Researches markets/, "no English role line when the card says it in Italian");
-  assert.deepEqual(w.groups()[0].agents[1].starters, ["Cosa è cambiato?"]);
+  assert.deepEqual(w.groups()[1].agents[0].starters, ["Cosa è cambiato?"]);
 });

@@ -13,10 +13,10 @@ export function storeGroups(app, { model, minutes }) {
   const guests = () => store.value(PREVIEW_GUESTS_KEY, []) || [];
   const admit = (entry, guest) => {
     const email = guest.email.toLowerCase();
-    store.setValue(PREVIEW_GUESTS_KEY, [...guests().filter((item) => item.email !== email), { email, name: "", tokenHash: guest.tokenHash, group: entry.id }]);
+    store.setValue(PREVIEW_GUESTS_KEY, [...guests().filter((item) => !(item.email === email && item.group === entry.id)), { email, name: "", tokenHash: guest.tokenHash, group: entry.id }]);
     const policy = store.accessPolicy();
     if (!policy.emails.includes(email)) store.updateAccessPolicy({ emails: [...policy.emails, email] });
-    return store.registerPanelUser({ id: previewGuestId(email), name: email, email, avatar: "", role: "member", emailVerified: true, source: "local" }).id;
+    return store.registerPanelUser({ id: previewGuestId(email, entry.id), name: email, email, avatar: "", role: "member", emailVerified: true, source: "local" }).id;
   };
   const makeAgents = (entry, specs, owner, coOwners) => {
     const ids = [];
@@ -40,7 +40,7 @@ export function storeGroups(app, { model, minutes }) {
     },
     addAgents(entry, specs) {
       const first = store.agent(entry.agentIds?.[0]);
-      const ids = entry.guests.map((guest) => previewGuestId(guest.email));
+      const ids = entry.guests.map((guest) => previewGuestId(guest.email, entry.id));
       return makeAgents(entry, specs, first?.brainOwnerId || ids[0], ids.filter((id) => id !== (first?.brainOwnerId || ids[0])));
     },
     addGuest(entry, guest) {
@@ -53,15 +53,18 @@ export function storeGroups(app, { model, minutes }) {
     /** The company's agents, chats, links and access go; the space's own people never notice. */
     remove(entry) {
       const emails = new Set(entry.guests.map((guest) => guest.email.toLowerCase()));
-      const rooms = [...(entry.agentIds || []).map((id) => `web-${id}`), ...[...emails].map((email) => ownerRoom(previewGuestId(email)))];
+      const rooms = [...(entry.agentIds || []).map((id) => `web-${id}`), ...[...emails].map((email) => ownerRoom(previewGuestId(email, entry.id)))];
       for (const id of entry.agentIds || []) { if (store.agent(id)) { store.deleteAgent(id); app.skills?.forget?.(id); } }
       for (const room of rooms) store.stmt("DELETE FROM messages WHERE channel_id = ?").run(room);
-      store.setValue(PREVIEW_GUESTS_KEY, guests().filter((guest) => guest.group !== entry.id && !emails.has(guest.email)));
+      const kept = guests().filter((guest) => guest.group !== entry.id);
+      store.setValue(PREVIEW_GUESTS_KEY, kept);
       const windows = { ...(store.value(PREVIEW_WINDOWS_KEY, {}) || {}) };
       delete windows[entry.id];
       store.setValue(PREVIEW_WINDOWS_KEY, windows);
+      // An address keeps its access while another preview of the same person is still open.
       const policy = store.accessPolicy();
-      store.updateAccessPolicy({ emails: policy.emails.filter((email) => !emails.has(email)) });
+      const gone = new Set([...emails].filter((email) => !kept.some((guest) => guest.email.toLowerCase() === email)));
+      store.updateAccessPolicy({ emails: policy.emails.filter((email) => !gone.has(email.toLowerCase())) });
     },
     window: (entry) => { const state = window.groupState(entry.id); return state.startedAt ? state : null; },
   };

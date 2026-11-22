@@ -72,7 +72,7 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal(create.status, 403); assert.match(create.data.error, /solo scrivere ai tuoi agenti/);
   assert.equal((await call(anna.cookie, `/api/agents/${acmeAgent}`, { method: "PUT", body: { model: "deepseek/deepseek-v4-pro" } })).status, 403);
 
-  // A colleague's different choice adds that agent, up to three per company; no more after that.
+  // The same person's different choices add those agents, up to three; no more after that.
   request("pv_a2", "anna@acme.com", "Acme", "https://acme.com", "researcher");
   request("pv_a3", "anna@acme.com", "Acme", "https://acme.com", "analyst");
   request("pv_a4", "anna@acme.com", "Acme", "https://acme.com", "programmer");
@@ -91,13 +91,19 @@ test("the demo space: each company sees only its sealed agents, may only write t
   await runOnce(deps); await runOnce(deps);
   assert.deepEqual(first, ["pv_a", "pv_a2", "pv_a3", "pv_a4"]);
 
-  // A colleague at Acme asks too: same agents, a link of their own, no second set.
+  // Another address on the same site is another person: a preview of its own, sealed.
   request("pv_b", "bo@acme.com", "Acme", "https://acme.com/");
   await runOnce(deps);
   assert.equal(previews.get("pv_b").space, "demo");
-  assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 3, "the same archetype is not made twice");
   const bo = await signIn(linkOf("bo@acme.com").pathname + linkOf("bo@acme.com").search);
-  assert.deepEqual((await call(bo.cookie, "/api/state")).data.agents.map((agent) => agent.id), (await call(anna.cookie, "/api/state")).data.agents.map((agent) => agent.id));
+  const boState = (await call(bo.cookie, "/api/state")).data;
+  const boAgent = boState.agents[0].id;
+  assert.equal(boState.agents.length, 1, "one agent, of its own");
+  assert.ok(!boState.agents.some((agent) => agent.id === acmeAgent), "no agent of another person");
+  assert.equal(boState.preview.startedAt, null, "its own hour has not started");
+  assert.notEqual((await call(bo.cookie, `/api/rooms/web-${acmeAgent}/messages`)).status, 200, "the chat of another person stays closed");
+  assert.notEqual((await call(bo.cookie, `/api/rooms/web-${acmeAgent}/messages`, { method: "POST", body: { text: "hello from bo" } })).status, 201);
+  assert.equal(f.app.store.recentMessages(`web-${acmeAgent}`, 10).filter((message) => /hello from bo/.test(message.text)).length, 0);
 
   // Minute 59 still writes; minute 61 is refused for Acme, while Globex and the owner carry on.
   const setStart = (at) => f.app.store.setValue(PREVIEW_WINDOWS_KEY, { ...f.app.store.value(PREVIEW_WINDOWS_KEY, {}), acme: at });
@@ -106,17 +112,21 @@ test("the demo space: each company sees only its sealed agents, may only write t
   setStart(Date.now() - 61 * 60000);
   const late = await call(anna.cookie, `/api/rooms/web-${acmeAgent}/messages`, { method: "POST", body: { text: "Minute 61" } });
   assert.equal(late.status, 403); assert.match(late.data.error, /anteprima è finita/);
-  assert.equal((await call(bo.cookie, "/api/state")).data.preview.ended, true);
+  assert.equal((await call(bo.cookie, "/api/state")).data.preview.ended, false, "the end of another person's hour leaves this one alone");
+  assert.equal((await call(bo.cookie, `/api/rooms/web-${boAgent}/messages`, { method: "POST", body: { text: "Minute 1 of my own hour" } })).status, 201);
   assert.equal((await signIn(linkOf("anna@acme.com").pathname + linkOf("anna@acme.com").search)).status, 410);
+  assert.equal((await signIn(linkOf("bo@acme.com").pathname + linkOf("bo@acme.com").search)).status, 200, "the other person still gets in");
   assert.equal((await call(gina.cookie, `/api/rooms/web-${globexAgent}/messages`, { method: "POST", body: { text: "Still here" } })).status, 201);
 
-  // Two minutes after the hour the pipeline removes Acme: agents, chats, links and access.
+  // Two minutes after that hour the pipeline removes that preview: agents, chats, link and access.
   clock = Date.now() + 3 * 60000;
   await runOnce(deps);
-  assert.equal(f.app.store.agents().filter((agent) => agent.name.endsWith("· Acme")).length, 0);
+  assert.equal(f.app.store.agents().some((agent) => agent.id === acmeAgent), false);
   assert.equal(f.app.store.recentMessages(`web-${acmeAgent}`, 10).length, 0);
   assert.equal((await call(anna.cookie, "/api/state")).status, 401);
-  assert.equal((await call(bo.cookie, "/api/state")).status, 401);
+  assert.equal((await call(bo.cookie, "/api/state")).status, 200, "the preview of another person keeps running");
+  assert.ok(f.app.store.agents().some((agent) => agent.id === boAgent));
   assert.ok(!f.app.store.accessPolicy().emails.includes("anna@acme.com"));
+  assert.ok(f.app.store.accessPolicy().emails.includes("bo@acme.com"));
   assert.equal((await call(gina.cookie, "/api/state")).data.agents.length, 1, "Globex keeps its agent");
 });

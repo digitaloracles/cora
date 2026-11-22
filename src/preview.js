@@ -1,9 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 /**
- * The demo space (NOT-94): each company that asks for a preview on usecora.space gets its own sealed
- * agents here, a personal link for each of its people, and one hour from its first message. A company
- * is a group: its guests, its agents and its clock. The pipeline (src/preview-pipeline.js) fills it.
+ * The demo space (NOT-94): each request that arrives from usecora.space gets sealed agents of its own,
+ * a personal link and one hour from its first message. A request is a group: one address, its agents
+ * and its clock, so no two people ever land in the same chat. The pipeline (src/preview-pipeline.js) fills it.
  */
 export const PREVIEW_WINDOWS_KEY = "previewWindows";
 export const PREVIEW_GUESTS_KEY = "previewGuests";
@@ -12,7 +12,7 @@ export const PREVIEW_GROUPS_KEY = "previewGroups";
 export const PREVIEW_TOOLS = new Set(["read_attachment", "remember", "recall", "forget"]);
 
 export const previewTokenHash = (token) => createHash("sha256").update(String(token || "")).digest("hex");
-export const previewGuestId = (email) => `preview-${createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex").slice(0, 16)}`;
+export const previewGuestId = (email, group = "") => `preview-${createHash("sha256").update(`${String(email || "").trim().toLowerCase()}|${String(group || "")}`).digest("hex").slice(0, 16)}`;
 const GUEST_WRITES = /^\/api\/rooms\/web-[\w-]+\/messages$/;
 
 export class PreviewWindow {
@@ -28,7 +28,7 @@ export class PreviewWindow {
   /** The guest record behind a panel user, or null for anyone else (the space's own people). */
   guestOf(user) {
     if (!this.enabled || !user?.id?.startsWith("preview-")) return null;
-    return this.guests().find((guest) => previewGuestId(guest.email) === user.id) || null;
+    return this.guests().find((guest) => previewGuestId(guest.email, guest.group) === user.id) || null;
   }
 
   groupState(group) {
@@ -71,7 +71,7 @@ export class PreviewWindow {
       const expected = Buffer.from(String(guest.tokenHash || ""));
       if (expected.length !== hash.length || !timingSafeEqual(expected, hash)) continue;
       if (this.groupState(guest.group).ended) return { ended: true };
-      return { id: previewGuestId(guest.email), name: String(guest.name || guest.email || ""), email: String(guest.email || "").toLowerCase(), avatar: "", role: "member", emailVerified: true, source: "local" };
+      return { id: previewGuestId(guest.email, guest.group), name: String(guest.name || guest.email || ""), email: String(guest.email || "").toLowerCase(), avatar: "", role: "member", emailVerified: true, source: "local" };
     }
     return null;
   }

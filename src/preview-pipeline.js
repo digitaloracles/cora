@@ -209,8 +209,8 @@ export async function runOnce(deps) {
   for (const request of requests) {
     if (entries.some((entry) => entry.previews?.includes(request.id))) continue;
     const host = siteHost(request.site);
-    const same = live().find((entry) => entry.host === host && entry.ready);
     const email = String(request.email || "").trim().toLowerCase();
+    const same = live().find((entry) => entry.host === host && entry.email === email && entry.ready);
     try {
       if (same) {
         // One group per company site: a second request joins it. A new address gets a link of its own;
@@ -248,7 +248,7 @@ export async function runOnce(deps) {
       const id = slugFor(request.site, (name) => entries.some((entry) => entry.id === name && !entry.removedAt));
       const token = newToken();
       const guest = { email, tokenHash: tokenHash(token), mailedAt: null };
-      const entry = { id, host, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief), agentIds: [], createdAt: deps.now(), ready: false };
+      const entry = { id, host, email, company: brief.company, site: request.site, lang: request.lang, previews: [request.id], guests: [guest], agents: agentSpecs(brief), agentIds: [], createdAt: deps.now(), ready: false };
       entries.push(entry); save();
       entry.agentIds = deps.groups.create(entry, guest);
       entry.ready = true; save();
