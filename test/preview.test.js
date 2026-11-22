@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
-import { storeGroups } from "../src/preview-demo.js";
+import { answerLeftovers, storeGroups } from "../src/preview-demo.js";
+import { tempHome } from "./helpers.js";
 import { runOnce } from "../src/preview-pipeline.js";
-import { PREVIEW_TOOLS, PREVIEW_WINDOWS_KEY } from "../src/preview.js";
+import { PREVIEW_TOOLS, PREVIEW_WINDOWS_KEY, previewGuestId } from "../src/preview.js";
 
 const BRIEF = JSON.stringify({ summary: "Makes things.", products: ["Things"], audience: "People", tone: "Plain", focus: "plans" });
 
@@ -119,4 +120,39 @@ test("the demo space: each company sees only its sealed agents, may only write t
   assert.equal((await call(bo.cookie, "/api/state")).status, 401);
   assert.ok(!f.app.store.accessPolicy().emails.includes("anna@acme.com"));
   assert.equal((await call(gina.cookie, "/api/state")).data.agents.length, 1, "Globex keeps its agent");
+});
+
+test("a restart never leaves a guest's message unanswered: the demo answers it on start, while the hour is open", async (t) => {
+  const home = tempHome();
+  const first = await knowledgeWorld({ previewMinutes: 60, home });
+  const previews = new Map([["pv_r", { id: "pv_r", email: "rita@rest.com", company: "Rest", site: "https://rest.com", archetype: "manager", lang: "en", status: "requested", space: "" }],
+    ["pv_o", { id: "pv_o", email: "olga@old.com", company: "Old", site: "https://old.com", archetype: "analyst", lang: "en", status: "requested", space: "" }]]);
+  await runOnce({
+    now: () => Date.now(), log: () => {}, space: "demo", base: first.base, chat: async () => BRIEF, mail: async () => {},
+    site: async (url) => [{ url, title: "Home", description: "A company", headings: [], text: "" }],
+    groups: storeGroups(first.app, { model: "ollama/gpt-oss:120b", minutes: 60 }),
+    cloud: { list: async (status) => [...previews.values()].filter((item) => item.status === status), update: async (id, body) => { Object.assign(previews.get(id), body); }, firstMessage: async () => {} },
+  });
+  const groups = first.app.store.value("previewGroups", []);
+  const rest = `web-${groups.find((entry) => entry.company === "Rest").agentIds[0]}`;
+  const old = `web-${groups.find((entry) => entry.company === "Old").agentIds[0]}`;
+  // The restart came while the agent was answering: the guest's message is stored, the answer never was.
+  first.app.store.appendArchive(rest, { id: "web_cut", at: Date.now() - 20000, authorId: previewGuestId("rita@rest.com"), authorName: "rita@rest.com", kind: "owner", agentId: null, content: "Plan our launch" });
+  first.app.store.appendArchive(old, { id: "web_old", at: Date.now() - 20 * 60000, authorId: previewGuestId("olga@old.com"), authorName: "olga@old.com", kind: "owner", agentId: null, content: "Too long ago" });
+  first.app.store.setValue(PREVIEW_WINDOWS_KEY, { rest: Date.now() - 60000 });
+  await first.close();
+
+  const again = await knowledgeWorld({ previewMinutes: 60, home }); t.after(again.close);
+  again.state.answer = () => ({ content: "Here is the launch plan." });
+  assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [rest], "only the recent unanswered message, not the one from twenty minutes ago");
+  const until = Date.now() + 15000;
+  while (Date.now() < until && !again.app.store.recentMessages(rest, 5).some((message) => message.agentId)) await new Promise((resolve) => setTimeout(resolve, 100));
+  const answered = again.app.store.recentMessages(rest, 5);
+  assert.equal(answered.at(-1).content, "Here is the launch plan.");
+  assert.deepEqual(answered.map((message) => message.content), ["Plan our launch", "Here is the launch plan."], "the guest's message is kept, answered once");
+  assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [], "an answered room is left alone");
+
+  again.app.store.appendArchive(rest, { id: "web_late", at: Date.now(), authorId: previewGuestId("rita@rest.com"), authorName: "rita@rest.com", kind: "owner", agentId: null, content: "After the hour" });
+  again.app.store.setValue(PREVIEW_WINDOWS_KEY, { rest: Date.now() - 61 * 60000 });
+  assert.deepEqual(answerLeftovers(again.app, { minutes: 60 }), [], "no answer after the company's hour");
 });
