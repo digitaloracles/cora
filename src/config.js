@@ -99,6 +99,8 @@ export const config = {
   cloudUrl: setting("CLOUD_URL") || "",
   cloudKey: setting("CLOUD_KEY") || "",
   cloudSpace: setting("CLOUD_SPACE") || "",
+  // MCP gateways that may ask this installation for an MCP access on someone's behalf (one address for Claude and ChatGPT).
+  mcpGateways: (setting("MCP_GATEWAYS") || "https://usecora.space").split(",").map((value) => value.trim()).filter(Boolean),
   // A custom agent preview space (NOT-94): minutes it stays open after the first message; 0 is an ordinary space.
   previewMinutes: Math.max(0, Number(setting("PREVIEW_MINUTES") || 0) || 0),
   // An on-premise install answers on its own domain: the passes are signed for that host.
