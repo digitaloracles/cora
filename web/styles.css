@@ -913,13 +913,14 @@ input.num { width: 92px; text-align: right; font-family: var(--mono); }
   border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--hi) 4%, transparent), 0 18px 40px -28px color-mix(in srgb, var(--shade) 90%, transparent);
 }
-.rail-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 2px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-/* On a desktop Settings fits the screen: the title stays, the list and the page each scroll in their own column, and the margins above and below never scroll away. */
+.rail-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 2px; }
+/* On a desktop Settings fits the screen: the title stays, the list and the page each scroll in their own column, and the margins above and below never scroll away. On a phone the list is part of the page and scrolls with it. */
 @media (min-width: 900px) {
   .mode-rail .content { overflow: hidden; }
   .mode-rail .wrap { height: 100%; padding-bottom: 28px; }
   .mode-rail .rail { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
   .mode-rail .rail-nav { max-height: 100%; align-self: start; }
+  .mode-rail .rail-list { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
   .mode-rail .rail-detail { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 }
 .rail-group:first-child { padding-top: 8px; }
