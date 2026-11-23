@@ -523,7 +523,6 @@ const THEMES = [
   ["giorno", "Giorno", "Tutto chiaro, anche la barra laterale.", "light", ["#fbfaf6", "#f5f3ec", "#264cd6"]],
   ["notte", "Notte", "Blu notte, per quando c'è poca luce.", "dark", ["#121a3a", "#080c1f", "#8fa6ff"]],
   ["studio", "Studio", "Il banco di regia di prima: nero e ambra.", "dark", ["#0f0f0f", "#0a0a0a", "#f2a93b"]],
-  ["dopamina", "Dopamina", "Il navy e il magenta di dopamina.it.", "light", ["#f7f7fc", "#000020", "#e5006e"]],
 ];
 const CUSTOM_PROPS = ["--amber", "--accent-strong", "--on-accent", "--side", "--side-text", "--side-muted", "--side-faint", "--side-line", "--side-raise", "--side-accent", "--side-active", "--side-on-active", "--side-tint"];
 
@@ -7216,6 +7215,13 @@ function renderArtifacts() {
     return panel({ icon: "folder", title: "Nuova cartella", hint: "Gli agenti la trovano nel brain e con artifact_folders: scrivi bene cosa ci va." }, form);
   }
 
+  /** Sets aside every commit the list shows: they leave the reviews, stay in each folder's history, and nobody is told. */
+  async function ignoreAll(shown) {
+    const result = await guard(api("/api/artifacts/reviews/ignore", { method: "POST", body: { ids: shown.map((commit) => commit.id) } }));
+    if (result) toast(result.skipped.length ? tr("Ignorati {done}, {left} non più in attesa", { done: result.ignored.length, left: result.skipped.length }) : tr("Ignorati {done} commit", { done: result.ignored.length }));
+    await load();
+  }
+
   function draw() {
     if (level) {
       foldersPane.replaceChildren(...[data.encryptionRequired && data.legacyFolders ? encryptionWarning() : null, creating ? newFolderForm() : null, h("div", { class: "art-search" }, search), list].filter(Boolean));
@@ -7234,7 +7240,8 @@ function renderArtifacts() {
         statCard({ icon: "radio", value: String(onAir), label: "in onda" }),
         statCard({ icon: "layers", value: raw(fmtBytes(data.quota.used)), label: "spazio", sub: raw(tr("di {limit}", { limit: fmtBytes(data.quota.limit) })), href: data.canManage ? "#/settings/spazio" : null })),
       reviews.length ? h("section", { class: "requests art-reviews", "aria-label": tr("Da rivedere") },
-        h("span", { class: "label" }, tr("Aspettano te"), h("i", { class: "count" }, raw(String(reviews.length)))),
+        h("div", { class: "label" }, h("span", {}, tr("Aspettano te")), h("i", { class: "count" }, raw(String(reviews.length))), h("span", { class: "spacer" }),
+          reviews.length > 1 ? armedButton("Ignora tutti", "Conferma", { icon: "eye", cls: "ghost sm", onconfirm: () => ignoreAll(reviews) }) : null),
         reviews.slice(0, 8).map((commit) => {
           const folder = data.folders.find((item) => item.id === commit.folderId);
           return h("a", { class: "art-review", href: `#/artefatti/${commit.folderId}/c/${commit.id}` },

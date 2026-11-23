@@ -160,35 +160,6 @@
   --side-on-active: #f2a93b;
 }
 
-/* Dopamina: dopamina.it's night navy and magenta, on a lilac-white page. */
-:root[data-theme="dopamina"] {
-  --bg: #f7f7fc;
-  --panel: #ffffff;
-  --panel-2: #f0f0ff;
-  --well: #f1f1fa;
-  --line: #e2e2f0;
-  --line-strong: #cbcbe2;
-  --text: #000020;
-  --text-soft: #1c1c45;
-  --muted: #34345e;
-  --faint: #8484a6;
-  --amber: #e5006e;
-  --accent-strong: #b30056;
-  --on-accent: #ffffff;
-  --tint: #000020;
-  --toast-bg: #000020;
-  --toast-text: #f0f0ff;
-  --side: #000020;
-  --side-text: #f0f0ff;
-  --side-muted: #b6b6d8;
-  --side-faint: #7a7aa6;
-  --side-line: #1a1a42;
-  --side-raise: #10103a;
-  --side-accent: #ff4d9e;
-  --side-active: #ff0079;
-  --side-on-active: #ffffff;
-}
-
 /* Custom colors on dark surfaces: neutral graphite, so any accent and sidebar sit on it. */
 :root[data-theme="custom"][data-mode="dark"] {
   --bg: #0f1012;
@@ -375,7 +346,7 @@ a.stat:hover { border-color: var(--line-strong); }
 .btn.danger { color: var(--err-text); border-color: color-mix(in srgb, var(--red) 45%, transparent); background: transparent; }
 .btn.ghost.danger { border-color: transparent; color: var(--faint); }
 .btn.ghost.danger:hover { color: var(--err-text); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
-.btn.danger.armed { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.danger.armed, .btn.danger.armed:hover { background: var(--red); border-color: var(--red); color: #fff; }
 .btn.toggle { color: var(--faint); }
 .btn.toggle.on { color: var(--green); border-color: var(--ok-line); background: color-mix(in srgb, var(--green) 8%, transparent); }
 .btn[disabled] { opacity: 0.45; cursor: not-allowed; }

@@ -1111,6 +1111,24 @@ export class Artifacts {
     return { ...result, commit: this.commitView(commitId) };
   }
 
+  /**
+   * Ignores, in one go, the pending commits the reviewer saw in their list: only the ids sent, and only those
+   * still waiting on them, so a commit pushed in the meantime stays for them to see.
+   */
+  async ignoreReviews(ids, user) {
+    if (!Array.isArray(ids) || !ids.length) throw new ArtifactError("manca l'elenco dei commit da ignorare");
+    if (ids.length > 200) throw new ArtifactError("al massimo 200 commit alla volta");
+    const pending = new Set(this.reviewsFor(user).map((commit) => commit.id));
+    const ignored = [];
+    const skipped = [];
+    for (const id of [...new Set(ids.map(String))]) {
+      if (!pending.has(id)) { skipped.push({ id, error: "non aspetta più una tua decisione" }); continue; }
+      try { await this.review(id, { decision: "ignore", user }); ignored.push(id); }
+      catch (error) { skipped.push({ id, error: error.message }); }
+    }
+    return { ignored, skipped, left: this.reviewsFor(user).length };
+  }
+
   /** Publishes an older version again as a new commit on top of the current head, after saving the head as a backup. */
   async restore(folderId, commitId, user) {
     this.assertPlaintextAllowed(folderId);

@@ -754,6 +754,39 @@ test("a reviewer can ignore a proposal that is no longer needed: out of the revi
   assert.equal((await call(`/api/artifacts/commits/${first.commit.id}/review`, { method: "POST", body: { decision: "nope" } })).status, 400);
 });
 
+test("Ignora tutti sets aside every proposal the reviewer saw, and only those", async (t) => {
+  const { app, call, agent, put, owner } = await fixture(t);
+  const boss = { kind: "owner", id: "1", name: "Owner" };
+  put("a/index.html", "<h1>a</h1>");
+  put("b/index.html", "<h1>b</h1>");
+  const a1 = await app.artifacts.push({ agent, folder: "progetti/a", path: "/home/agent/work/a", message: "a1", requester: boss, create: { description: "A" } });
+  const b1 = await app.artifacts.push({ agent, folder: "progetti/b", path: "/home/agent/work/b", message: "b1", requester: boss, create: { description: "B" } });
+  put("c/index.html", "<h1>c</h1>");
+  const a2 = await app.artifacts.push({ agent, folder: "progetti/c", path: "/home/agent/work/c", message: "c1", requester: boss, create: { description: "C" } });
+  const notices = [];
+  app.artifacts.notice = (channelId, text) => notices.push(text);
+  const shown = (await call("/api/artifacts")).data.reviews.map((commit) => commit.id);
+  assert.deepEqual(shown.sort(), [a1.commit.id, b1.commit.id, a2.commit.id].sort());
+
+  put("d/index.html", "<h1>d, arrivato dopo</h1>");
+  const late = await app.artifacts.push({ agent, folder: "progetti/d", path: "/home/agent/work/d", message: "d1", requester: boss, create: { description: "D" } });
+  assert.equal((await call("/api/artifacts/reviews/ignore", { method: "POST", body: { ids: [] } })).status, 400);
+
+  const done = await call("/api/artifacts/reviews/ignore", { method: "POST", body: { ids: [...shown, "ac_000000000000"] } });
+  assert.equal(done.status, 200);
+  assert.deepEqual(done.data.ignored.sort(), shown.sort());
+  assert.deepEqual(done.data.skipped.map((item) => item.id), ["ac_000000000000"]);
+  assert.equal(done.data.left, 1, "the commit pushed after the list was drawn still waits");
+  assert.deepEqual((await call("/api/artifacts")).data.reviews.map((commit) => commit.id), [late.commit.id]);
+  for (const id of shown) assert.equal(app.store.artifactCommit(id).status, "ignored", "kept in the history as ignored");
+  assert.equal(app.store.artifactFolder(a1.folder.id).head || "", "", "nothing goes on air");
+  assert.deepEqual(notices, [], "nobody is told");
+
+  const twice = await call("/api/artifacts/reviews/ignore", { method: "POST", body: { ids: shown } });
+  assert.deepEqual([twice.data.ignored.length, twice.data.skipped.length], [0, 3], "a second click changes nothing");
+  void owner;
+});
+
 test("a space on its own address has shares too: the cloud calls it by that address, with the share's host signed", async (t) => {
   const docker = fakeDocker();
   const app = startCora({ home: tempHome(), host: "127.0.0.1", port: 0, insecureCookies: true,
