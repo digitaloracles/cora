@@ -3,6 +3,7 @@ import { generateKeyPairSync, verify } from "node:crypto";
 import { createServer } from "node:http2";
 import { test } from "node:test";
 import { Apns } from "../src/apns.js";
+import { noticeTarget } from "../src/push.js";
 import { QuotaAlerts } from "../src/quota-alerts.js";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
 
@@ -70,11 +71,45 @@ test("an agent's plan turning blocked notifies its owner once, again only after 
   assert.equal(f.sent[0].title, "Planner è bloccato");
   assert.equal(f.sent[0].body, "Release the app · Waiting for the APNs key");
   assert.deepEqual([f.sent[0].data.planId, f.sent[0].data.channelId, f.sent[0].data.kind], [plan.id, channel, "plan-blocked"]);
+  assert.equal(f.sent[0].data.url, `/#/thread/t/${channel}`, "the panel link opens the thread page, not the list");
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "Still waiting" });
   assert.equal(f.sent.length, 1, "a blocker reworded is not a new alert");
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "" });
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "Blocked again" });
   assert.equal(f.sent.length, 2);
+});
+
+test("every notice tells the app what to open: plan, conversation, agent or the panel page", async (t) => {
+  const f = await pushWorld(t);
+  f.app.push.subject = "https://space.example.com";
+  const token = await f.connect(f.alice, "iPhone di Alice");
+  await f.register(token, { token: TOKEN_A, environment: "sandbox" });
+  const agent = f.app.store.createAgent({ name: "Planner", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  const userId = f.alice.user.id, last = () => f.sent[f.sent.length - 1].data;
+
+  await f.app.push.notify({ userId, title: "Thread", url: "/#/thread/t/800000000000000181" });
+  assert.deepEqual(last(), { url: "/#/thread/t/800000000000000181", channelId: "800000000000000181", kind: "thread", space: "https://space.example.com", link: "https://space.example.com/#/thread/t/800000000000000181" });
+  await f.app.push.notify({ userId, title: "Chat", url: `/#/agent/${agent.id}/chat` });
+  assert.deepEqual([last().agentId, last().kind, "channelId" in last()], [agent.id, "agent", false]);
+  await f.app.push.notify({ userId, title: "Secret", url: "/#/artefatti/segreti" });
+  assert.deepEqual([last().kind, last().link, "channelId" in last(), "agentId" in last()], ["panel", "https://space.example.com/#/artefatti/segreti", false, false]);
+  await f.app.push.notify({ userId, title: "Quota", url: "/", data: { kind: "quota", subscriptionId: "sub_1" } });
+  assert.deepEqual([last().kind, last().subscriptionId], ["quota", "sub_1"]);
+
+  const fromThread = await f.app.push.fromAgent(agent, { title: "Done", message: "Released", channelId: "800000000000000182" });
+  assert.equal(fromThread.sent, 1);
+  assert.deepEqual([last().channelId, last().kind, last().url], ["800000000000000182", "thread", "/#/thread/t/800000000000000182"]);
+  f.app.push.sentByAgent.clear();
+  await f.app.push.fromAgent(agent, { message: "From the panel chat", channelId: `web-${agent.id}` });
+  assert.deepEqual([last().agentId, last().kind, "channelId" in last()], [agent.id, "agent", false]);
+});
+
+test("a notice target never invents a space when the public address is not a web origin", () => {
+  const fallback = noticeTarget("/#/thread/123", {}, "https://github.com/digitaloracles/cora");
+  assert.deepEqual(fallback, { url: "/#/thread/123", channelId: "123", kind: "thread" });
+  const bare = noticeTarget("/#/brain", { kind: "" }, "");
+  assert.deepEqual(bare, { url: "/#/brain", kind: "panel" });
+  assert.equal(noticeTarget("/#/thread/t/web", {}, "").kind, "panel", "the salotto is not a thread the app lists");
 });
 
 test("quota alerts fire at 25% and 5% left, once per window period", () => {
