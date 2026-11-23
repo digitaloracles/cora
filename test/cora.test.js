@@ -6148,6 +6148,30 @@ describe("talking with the agents", () => {
     assert.deepEqual([app.orchestrator.choices.get(second.id).answer, app.orchestrator.choices.get(second.id).via], ["No", "discord"]);
     assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === second.id), "pressed on Discord, it leaves the app too");
     await quiet();
+
+    // Cora restarts between the question and the answer: the answer written in the chat still closes it.
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "Rifaccio la copertina?", choices: ["Sì", "No"] }, { channelId: CHANNEL });
+    const third = app.orchestrator.choices.open().find((item) => item.agentId === olga.id);
+    app.orchestrator.state(CHANNEL).request = null;
+    discord.say({ content: "No, lasciala com'è" });
+    await waitFor(() => app.orchestrator.choices.get(third.id).status === "answered", { what: "the written answer closing the question after a restart" });
+    assert.deepEqual([app.orchestrator.choices.get(third.id).answer, app.orchestrator.choices.get(third.id).via], ["No, lasciala com'è", "text"]);
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === third.id), "answered in the chat, it leaves the app");
+    await quiet();
+
+    // Set aside in the app: it leaves every app, the agent hears nothing and the question cannot be answered there any more.
+    app.orchestrator.requestsByAgent.delete(olga.id);
+    await app.orchestrator.askOwner(app.store.agent(olga.id), { question: "Archivio le bozze?", choices: ["Sì", "No"] }, { channelId: CHANNEL });
+    const fourth = (await fromApp("/app/v1/snapshot")).data.requests.find((item) => item.agentId === olga.id && item.question === "Archivio le bozze?");
+    const heard = posts("Olga").length;
+    const dismissed = await fromApp(`/app/v1/choices/${fourth.id}/dismiss`, {});
+    assert.deepEqual([dismissed.status, dismissed.data.status], [200, "dismissed"]);
+    assert.ok(!(await fromApp("/app/v1/snapshot")).data.requests.some((item) => item.id === fourth.id), "dismissed, it leaves the app");
+    assert.equal((await fromApp(`/app/v1/choices/${fourth.id}/dismiss`, {})).status, 409, "only once");
+    assert.equal((await fromApp(`/app/v1/choices/${fourth.id}`, { index: 0 })).status, 409, "and it cannot be answered from the app any more");
+    await quiet();
+    assert.equal(posts("Olga").length, heard, "the agent was not called");
   });
 
   test("Cora harness: a task goes past the old 14 steps, an agent that announces work is sent back to it, and the end is confirmed before posting", async () => {

@@ -32,11 +32,11 @@ export class OpenChoices {
   }
 
   /** Closes the first open question that matches: by id, by the message it went out on, or the latest of an agent in a thread. */
-  resolve(match, { answer = "", by = "", via = "" } = {}) {
+  resolve(match, { answer = "", by = "", via = "", status = "answered" } = {}) {
     const records = this.all();
     const found = records.filter((record) => record.status === "open" && match(record)).at(-1);
     if (!found) return null;
-    Object.assign(found, { status: "answered", answer: String(answer).slice(0, 200), answeredBy: String(by).slice(0, 80), via, answeredAt: new Date(this.now()).toISOString() });
+    Object.assign(found, { status, answer: String(answer).slice(0, 200), answeredBy: String(by).slice(0, 80), via, answeredAt: new Date(this.now()).toISOString() });
     this.store.setValue(KEY, records);
     return found;
   }
