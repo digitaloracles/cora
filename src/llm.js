@@ -781,6 +781,21 @@ export class LLM {
         run?.dispose();
       }
     };
+    let installation;
+    while ((installation = this.harnessInstallation?.(provider))) {
+      if (!runSignal) await installation;
+      else {
+        runSignal.throwIfAborted();
+        let abort;
+        const cancelled = new Promise((_, reject) => {
+          abort = () => reject(runSignal.reason);
+          runSignal.addEventListener("abort", abort, { once: true });
+        });
+        try { await Promise.race([installation, cancelled]); }
+        finally { runSignal.removeEventListener("abort", abort); }
+      }
+    }
+    runSignal?.throwIfAborted();
     this.activeRuns ||= new Map();
     this.activeRuns.set(provider, (this.activeRuns.get(provider) || 0) + 1);
     try {

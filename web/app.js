@@ -515,8 +515,13 @@ function shade(hex) {
 
 /* ---------- data and live events ---------- */
 async function loadState() {
+  const harnessProgress = S.data?.harnessProgress;
   const data = await api("/api/state");
   if (S.revoked) return null;
+  if (S.data?.harnessProgress !== harnessProgress) {
+    data.harnessProgress = S.data.harnessProgress;
+    data.harnesses = S.data.harnesses;
+  }
   S.data = data;
   if (BUILD && data.build && data.build !== BUILD) S.staleBuild = true;
   if (S.quotaPanel?.node.isConnected) S.quotaPanel.apply([...(data.quotaAccounts || data.subscriptions || []), ...(data.providerUsage || [])]);
@@ -548,6 +553,9 @@ function refreshSubscriptionViews() {
 function connectEvents() {
   if (S.events) return;
   S.events = new EventSource("/api/events");
+  S.events.onopen = () => {
+    if (route()[0] === "settings" && route()[1] === "harness") guard(loadState()).then(refreshHarnessPane);
+  };
   S.events.onmessage = (event) => {
     let entry;
     try { entry = JSON.parse(event.data); } catch { return; }
@@ -587,12 +595,16 @@ function connectEvents() {
       if (route()[0] === "thread") S.threadsRefresh?.();
       return;
     }
-    if (entry.type === "harness-versions" || entry.type === "models") {
-      const view = location.hash;
-      guard(loadState()).then(() => {
-        if (location.hash !== view || route()[0] !== "settings" || route()[1] !== "harness") return;
-        if (!document.activeElement?.matches("input, textarea, select")) renderSettings();
-      });
+    if (entry.type === "harness-versions") {
+      if (S.data && Array.isArray(entry.harnesses)) {
+        S.data.harnesses = entry.harnesses;
+        S.data.harnessProgress = entry.progress;
+        refreshHarnessPane();
+      }
+      return;
+    }
+    if (entry.type === "models") {
+      guard(loadState()).then(refreshHarnessPane);
       return;
     }
     if (entry.type === "subscription-usage") {
@@ -9776,14 +9788,34 @@ const HARNESS_STATES = {
   missing: ["Non installato", "", "close"],
   unknown: ["Da controllare", "", "info"],
 };
+const HARNESS_PHASES = {
+  checking: "Controllo delle versioni",
+  waiting: "In attesa della fine dei turni",
+  installing: "Installazione in corso",
+  restarting: "Riavvio dell’harness",
+  verifying: "Ricontrollo della versione",
+};
+
+function refreshHarnessPane() {
+  if (!S.harnessPane?.node.isConnected) return;
+  S.harnessPane.draw();
+  const entry = document.querySelector('.rail-item[data-page="harness"]');
+  if (!entry) return;
+  const [led, line] = harnessState();
+  entry.querySelector(".rail-name small").textContent = line;
+  entry.querySelector(".led").className = "led " + (led || "none");
+}
+
 const HARNESS_METHODS = { mise: "mise", npm: "npm", command: "aggiornamento proprio", self: "si aggiorna da solo", git: "checkout git", manual: "installato a mano" };
 
 /** The Settings line of the Harness entry: how many are behind, or that all are current. */
 function harnessState() {
   const list = (S.data.harnesses || []).filter((item) => item.state && item.state !== "missing");
+  if (S.data.harnessProgress?.active) return ["warn", tr("In aggiornamento")];
   const behind = list.filter((item) => ["outdated", "failed", "deferred"].includes(item.state)).length;
   if (!list.length) return [null, tr("versioni da controllare")];
   if (behind) return ["warn", behind === 1 ? tr("1 da aggiornare") : tr("{count} da aggiornare", { count: behind })];
+  if (list.some((item) => item.state === "unknown")) return [null, tr("versioni da controllare")];
   return ["on", S.data.settings.harnessAutoUpdate === false ? tr("aggiornamento automatico spento") : tr("tutti aggiornati")];
 }
 
@@ -9794,11 +9826,41 @@ function harnessState() {
 function harnessPane() {
   const manage = S.data.access?.canManage !== false;
   const rows = h("div", { class: "harness-list" });
+  const status = h("div", { class: "harness-progress", hidden: true });
+  const stage = h("span", { role: "status" });
+  const bar = h("progress", { "aria-label": tr("Avanzamento aggiornamento harness") });
+  status.append(stage, bar);
+  let submitting = false;
   const draw = () => {
+    const progress = S.data.harnessProgress;
     const list = (S.data.harnesses || []).slice().sort((a, b) => Number(a.state === "missing") - Number(b.state === "missing"));
+    const agentsByHarness = new Map();
+    for (const agent of S.data.agents || []) {
+      if (!agent.enabled) continue;
+      const model = agent.model || S.data.settings.defaultModel || "";
+      const provider = model.includes("/") ? model.split("/", 1)[0] : "ollama";
+      if (!agentsByHarness.has(provider)) agentsByHarness.set(provider, []);
+      agentsByHarness.get(provider).push(agent.name);
+    }
+    const active = progress?.active || submitting;
+    const product = list.find((item) => item.provider === progress?.provider)?.product;
+    const phase = tr(HARNESS_PHASES[progress?.phase] || "Controllo delle versioni");
+    const issues = list.some((item) => ["failed", "deferred", "outdated", "unknown"].includes(item.state));
+    const label = product && active ? product + " · " + phase
+      : active ? phase : tr(issues ? "Controllo concluso, controlla gli stati qui sotto" : "Controllo concluso");
+    status.hidden = !progress && !submitting;
+    if (stage.textContent !== label) stage.textContent = label;
+    bar.hidden = !active;
+    bar.max = progress?.total || 1;
+    bar.value = progress?.active ? progress.done : 0;
+    check.disabled = !manage || Boolean(active);
     rows.replaceChildren(...list.map((item) => {
-      const [label, cls, mark] = HARNESS_STATES[item.state] || HARNESS_STATES.unknown;
-      const behind = item.latest && item.latest !== item.version && ["outdated", "failed", "deferred"].includes(item.state);
+      const running = progress?.active && item.provider === progress.provider;
+      const [label, cls, mark] = running
+        ? [HARNESS_PHASES[progress.phase], "warn", "refresh"]
+        : HARNESS_STATES[item.state] || HARNESS_STATES.unknown;
+      const behind = item.latest && item.latest !== item.version && ["outdated", "failed", "deferred", "updating"].includes(item.state);
+      const names = agentsByHarness.get(item.provider);
       const meta = [
         item.method ? tr(HARNESS_METHODS[item.method] || item.method) : "",
         item.updatedAt && item.previous ? tr("da {previous} il {when}", { previous: item.previous, when: fmtTime(item.updatedAt, true) }) : "",
@@ -9808,13 +9870,16 @@ function harnessPane() {
         h("div", { class: "harness-name" },
           h("b", {}, raw(item.product || item.provider)),
           h("span", { class: "harness-version mono" }, raw(item.version || "—"), behind ? h("span", { class: "harness-next" }, raw(` → ${item.latest}`)) : null),
+          h("span", { class: "harness-agents" }, names?.length
+            ? [h("span", {}, tr("Agenti")), " · ", raw(names.join(", "))]
+            : tr("Nessun agente attivo")),
           meta ? h("small", {}, raw(meta)) : null,
+          item.state === "current" && item.verifiedVersion === item.version ? h("small", { class: "harness-verified" }, tr("Riavvio verificato")) : null,
           item.error ? h("small", { class: "harness-error" }, raw(item.error)) : null,
           item.method === "git" && item.state === "outdated" ? h("small", {}, tr("Non si aggiorna da solo: l'aggiornamento può toccare modifiche locali.")) : null),
         badge(tr(label), cls, mark));
     }));
   };
-  draw();
   const toggle = switchInput("harnessAutoUpdate", "", S.data.settings.harnessAutoUpdate !== false);
   const input = toggle.querySelector("input");
   input.disabled = !manage;
@@ -9824,20 +9889,21 @@ function harnessPane() {
     if (!await saveSettings({ harnessAutoUpdate: input.checked }, autoRow)) input.checked = !input.checked;
     input.disabled = !manage;
   });
-  const check = btn("Controlla ora", { icon: "refresh", cls: "ghost sm", disabled: !manage, onclick: async () => {
-    check.disabled = true;
-    check.lastChild.textContent = tr("Controllo…");
-    const fresh = await guard(api("/api/harnesses/check", { method: "POST" }), "Harness controllati");
-    if (fresh) {
-      S.data.harnesses = fresh;
-      await guard(loadState());
-      draw();
-    }
-    check.lastChild.textContent = tr("Controlla ora");
-    check.disabled = !manage;
+  const check = btn("Controlla e aggiorna", { icon: "refresh", cls: "primary sm", disabled: !manage, onclick: async () => {
+    if (submitting || S.data.harnessProgress?.active) return;
+    submitting = true;
+    const previous = S.data.harnessProgress;
+    draw();
+    const accepted = await guard(api("/api/harnesses/check?background=1", { method: "POST" }));
+    if (accepted?.progress && S.data?.harnessProgress === previous) S.data.harnessProgress = accepted.progress;
+    submitting = false;
+    refreshHarnessPane();
   } });
-  return panel({ icon: "terminal", title: "Harness", hint: "I programmi che fanno lavorare gli agenti su questa macchina. Un harness indietro vede meno modelli.", actions: check },
-    setRows(autoRow), rows);
+  const node = panel({ cls: "harness-panel", icon: "terminal", title: "Harness", hint: "I programmi che fanno lavorare gli agenti su questa macchina. Un harness indietro vede meno modelli.", actions: check },
+    setRows(autoRow), status, rows);
+  S.harnessPane = { node, draw };
+  draw();
+  return node;
 }
 
 function renderSettings() {

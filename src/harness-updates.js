@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
 
 /**
  * Where each harness comes from. A CLI that is behind its provider sees fewer models
@@ -94,7 +95,12 @@ export class HarnessUpdates {
     this.commandTimeoutMs = commandTimeoutMs;
     this.states = { ...(store.value("harnessVersions", {}) || {}) };
     this.timer = null;
+    for (const state of Object.values(this.states)) {
+      if (state.state === "updating") state.state = "unknown";
+    }
     this.running = null;
+    this.progress = null;
+    this.installations = new Map();
   }
 
   enabled() {
@@ -107,6 +113,19 @@ export class HarnessUpdates {
       const { path: _path, ...state } = this.states[provider] || { state: "unknown" };
       return { provider, product: HARNESS_SOURCES[provider].product, ...state };
     });
+  }
+
+  publishProgress(values) {
+    this.progress = { ...this.progress, ...values };
+    this.emit({ type: "harness-versions", harnesses: this.status(), progress: this.progress });
+  }
+
+  phase(provider, phase) {
+    if (this.progress?.provider === provider) this.publishProgress({ phase });
+  }
+
+  installation(provider) {
+    return this.installations.get(provider);
   }
 
   /** One harness's version, for the selectors: empty when it was never read. */
@@ -152,8 +171,8 @@ export class HarnessUpdates {
   }
 
   async readVersion(provider, path) {
-    const { output } = await this.run(path, ["--version"]);
-    return parseVersion(output);
+    const { code, output } = await this.run(path, ["--version"]);
+    return code === 0 ? parseVersion(output) : "";
   }
 
   /** How a CLI was installed, which decides how it is brought up to date. */
@@ -236,7 +255,7 @@ export class HarnessUpdates {
     const path = which(this.bins[provider], this.env.PATH);
     const checkedAt = new Date().toISOString();
     if (!path) {
-      this.set(provider, { state: "missing", version: "", latest: "", method: "", path: "", error: "", checkedAt });
+      this.set(provider, { state: "missing", auto: false, version: "", latest: "", method: "", path: "", error: "", checkedAt });
       return this.states[provider];
     }
     const version = await this.readVersion(provider, path);
@@ -260,7 +279,7 @@ export class HarnessUpdates {
         return this.states[provider];
       }
       if (!version || !latest || compareVersions(version, latest) >= 0) {
-        this.set(provider, { state: version ? "current" : "unknown", latest, error: version ? "" : "versione non letta" });
+        this.set(provider, { state: version && latest ? "current" : "unknown", latest, error: !version ? "versione non letta" : !latest ? "ultima versione non letta" : "" });
         return this.states[provider];
       }
       this.set(provider, { state: "outdated", latest, error: "" });
@@ -275,41 +294,91 @@ export class HarnessUpdates {
       this.set(provider, { state: "deferred", error: "" });
       return this.states[provider];
     }
-    this.set(provider, { state: "updating" });
-    this.emit({ type: "harness-versions" });
-    const result = await this.update(provider, method, latest);
-    if (provider === "grok") this.relinkGrok(version);
-    const now = await this.readVersion(provider, path);
-    const moved = now && now !== version;
-    if (result.code !== 0 && !moved) {
-      this.set(provider, { state: source.package ? "failed" : "current", version: now || version, error: source.package ? (result.output.trim().split("\n").filter(Boolean).pop() || `uscito con ${result.code}`).slice(0, 300) : "", latest: source.package ? latest : "" });
+    let release;
+    if (method.kind !== "mise") this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
+    try {
+      this.set(provider, { state: "updating", error: "" });
+      this.phase(provider, "installing");
+      const result = await this.update(provider, method, latest);
+      this.phase(provider, "restarting");
+      if (provider === "grok") this.relinkGrok(version);
+      // Agents start a fresh CLI for each turn. Launch the installed executable through the
+      // same path before releasing any waiting turns, then check it in a second fresh process.
+      const started = await this.readVersion(provider, path);
+      this.phase(provider, "verifying");
+      const now = started && await this.readVersion(provider, path);
+      const advanced = now && (!version || compareVersions(now, version) > 0);
+      const verified = now && now === started && (!latest || compareVersions(now, latest) >= 0);
+      const noChange = !source.package && result.code === 0 && now === version;
+      if (!verified || (!advanced && !noChange)) {
+        const detail = result.code !== 0
+          ? result.output.trim().split("\n").filter(Boolean).pop() || "uscito con codice " + result.code
+          : "verifica della versione non riuscita (" + (now || started || "versione non leggibile") + ")";
+        this.set(provider, { state: "failed", version: now || version, error: detail.slice(0, 300) });
+        return this.states[provider];
+      }
+      if (advanced) {
+        this.set(provider, { version: now });
+        await this.changed(provider);
+      }
+      const verifiedAt = new Date().toISOString();
+      this.set(provider, {
+        state: "current", error: "", checkedAt: verifiedAt,
+        ...(advanced ? { previous: version, updatedAt: verifiedAt, verifiedVersion: now } : {}),
+      });
       return this.states[provider];
+    } finally {
+      this.installations.delete(provider);
+      release?.();
     }
-    if (!moved) {
-      this.set(provider, source.package
-        ? { state: "failed", error: `dopo l'aggiornamento risponde ancora ${version || "senza versione"}` }
-        : { state: "current", latest: "", error: "" });
-      return this.states[provider];
-    }
-    this.set(provider, { state: latest && compareVersions(now, latest) < 0 ? "outdated" : "current", version: now, previous: version, updatedAt: new Date().toISOString(), error: "" });
-    try { await this.changed(provider); } catch {}
-    return this.states[provider];
   }
 
-  /** Every harness once, one at a time; a check already running is joined, not repeated. */
-  checkAll({ update = this.enabled() } = {}) {
-    if (this.running) return this.running;
-    this.running = (async () => {
-      const out = [];
-      for (const provider of Object.keys(HARNESS_SOURCES)) {
-        try { out.push({ provider, ...await this.checkOne(provider, { update }) }); } catch (error) {
-          this.set(provider, { state: "unknown", error: error.message });
-          out.push({ provider, ...this.states[provider] });
-        }
+  async checkBatch({ update, waitForTurns }) {
+    const providers = Object.keys(HARNESS_SOURCES);
+    const deferred = [];
+    let done = 0;
+    const check = async (provider) => {
+      this.publishProgress({ active: true, provider, phase: "checking", done, total: providers.length });
+      try {
+        return await this.checkOne(provider, { update });
+      } catch (error) {
+        this.set(provider, { state: this.states[provider]?.state === "updating" ? "failed" : "unknown", error: error.message });
+        return this.states[provider];
       }
-      this.emit({ type: "harness-versions" });
-      return out;
-    })().finally(() => { this.running = null; });
+    };
+    for (const provider of providers) {
+      const item = await check(provider);
+      if (waitForTurns && item.state === "deferred") deferred.push(provider);
+      else done++;
+    }
+    const deadline = Date.now() + 120000;
+    for (const provider of deferred) {
+      this.publishProgress({ provider, phase: "waiting", done });
+      while (this.busy(provider) && Date.now() < deadline) await wait(1000, undefined, { ref: false });
+      if (!this.busy(provider)) await check(provider);
+      done++;
+    }
+    return providers.map((provider) => ({ provider, ...this.states[provider] }));
+  }
+
+  /** Join a compatible check. A manual update following a read-only check still installs. */
+  checkAll({ update = this.enabled(), waitForTurns = false } = {}) {
+    if (this.queued) return this.queued;
+    if (this.running) {
+      if ((!update || this.runningUpdate) && (!waitForTurns || this.runningWait)) return this.running;
+      const next = () => {
+        this.queued = null;
+        return this.checkAll({ update, waitForTurns });
+      };
+      this.queued = this.running.then(next, next);
+      return this.queued;
+    }
+    this.runningUpdate = update;
+    this.runningWait = waitForTurns;
+    this.running = this.checkBatch({ update, waitForTurns }).finally(() => {
+      this.running = null;
+      this.publishProgress({ active: Boolean(this.queued), provider: "", phase: "", done: this.progress.total });
+    });
     return this.running;
   }
 }

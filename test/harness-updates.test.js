@@ -163,3 +163,28 @@ test("the panel shows each harness's version and only the owner starts a check",
   assert.equal(off.data.harnessAutoUpdate, false);
   assert.equal(f.app.store.settings.harnessAutoUpdate, false);
 });
+
+test("a manual update queued behind a read-only check still installs once", async () => {
+  const m = machine();
+  const pkg = join(m.root, "node_modules", "@openai", "codex");
+  mkdirSync(pkg, { recursive: true });
+  const cli = join(pkg, "codex");
+  writeFileSync(m.version, "0.164.0");
+  script(cli, 'cat "' + m.version + '"');
+  script(join(m.bin, "npm"), 'echo install >> "' + m.log + '"\necho 0.170.0 > "' + m.version + '"');
+  let release;
+  const pendingRegistry = new Promise((resolve) => { release = resolve; });
+  const updates = new HarnessUpdates({
+    store: memoryStore({ harnessAutoUpdate: false }),
+    bins: { codex: cli },
+    env: m.env,
+    fetchImpl: async (url) => { await pendingRegistry; return m.fetchImpl(url); },
+  });
+  const checkOnly = updates.checkAll();
+  const manual = updates.checkAll({ update: true, waitForTurns: true });
+  assert.equal(updates.checkAll({ update: true, waitForTurns: true }), manual);
+  release();
+  assert.equal((await checkOnly).find((item) => item.provider === "codex").state, "outdated");
+  assert.equal((await manual).find((item) => item.provider === "codex").version, "0.170.0");
+  assert.deepEqual(m.calls(), ["install"]);
+});

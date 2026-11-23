@@ -106,6 +106,7 @@ export function startCora(overrides = {}) {
     emit: (event) => web?.broadcast(event),
   });
   llm.harnessVersion = (provider) => harnessUpdates.version(provider);
+  llm.harnessInstallation = subscriptions.harnessInstallation = (provider) => harnessUpdates.installation?.(provider);
   const credentials = new Credentials({ store, key: cfg.vaultKey || cfg.sessionKey || cfg.adminPassword });
   llm.credentials = credentials;
   subscriptions.usage = new SubscriptionUsage({ store, subscriptions, providerRecords: () => providerUsageRecords(llm),

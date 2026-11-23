@@ -10887,3 +10887,72 @@ test("Firecrawl connector completes the HTTP OAuth callback and exposes only gra
   assert.deepEqual(f.connectors.toolsFor(f.agent), []);
   assert.equal(f.remote.revocations.length, 1);
 });
+
+test("harness panel update runs in the background, restarts, verifies and releases the next turn", async (t) => {
+  const root = tempHome();
+  const binDir = join(root, "bin");
+  const cliDir = join(root, "node_modules", "@deepseek-ai", "dsh");
+  const dsh = join(cliDir, "dsh.cjs");
+  const version = join(root, "version");
+  const log = join(root, "calls");
+  mkdirSync(binDir);
+  mkdirSync(cliDir, { recursive: true });
+  writeFileSync(log, "");
+  writeFileSync(version, "0.2.1");
+  writeFileSync(dsh, [
+    "#!" + process.execPath,
+    'const fs = require("node:fs");',
+    'const version = fs.readFileSync(' + JSON.stringify(version) + ', "utf8").trim();',
+    'const probe = process.argv.includes("--version");',
+    'fs.appendFileSync(' + JSON.stringify(log) + ', (probe ? "probe " : "turn ") + version + "\\n");',
+    'console.log(probe ? version : JSON.stringify({ type: "final", text: version }));',
+  ].join("\n"), { mode: 0o755 });
+  writeFileSync(join(binDir, "npm"), '#!/bin/sh\n' +
+    'echo install >> "' + log + '"\n' +
+    'echo 0.2.2 > "' + version + '"\n', { mode: 0o755 });
+  const f = await knowledgeWorld({ deepseekBin: dsh, deepseekKey: "fixture" });
+  t.after(f.close);
+  const updates = f.app.harnessUpdates;
+  updates.bins = { deepseek: dsh };
+  updates.env = { ...updates.env, PATH: binDir + ":" + updates.env.PATH };
+  updates.fetchImpl = async () => Response.json({ version: "0.2.2" });
+  let releaseInstaller;
+  const installer = new Promise((resolve) => { releaseInstaller = resolve; });
+  t.after(releaseInstaller);
+  const run = updates.run.bind(updates);
+  updates.run = async (...args) => {
+    if (args[0] === "npm") await installer;
+    return run(...args);
+  };
+  const phases = [];
+  const emit = updates.emit;
+  updates.emit = (event) => {
+    if (event.progress?.provider === "deepseek") phases.push(event.progress.phase);
+    emit(event);
+  };
+
+  await f.request(f.admin, "/api/settings", { method: "PUT", body: { harnessAutoUpdate: false } });
+  const url = "/api/harnesses/check?background=1";
+  assert.equal((await f.request(f.alice, url, { method: "POST" })).status, 403);
+  const accepted = await f.request(f.admin, url, { method: "POST" });
+  assert.equal(accepted.status, 202);
+  assert.equal(accepted.data.progress.active, true);
+  await waitFor(() => updates.progress?.phase === "installing", { what: "installer phase" });
+  const during = await f.request(f.admin, "/api/state");
+  assert.equal(during.data.harnessProgress.phase, "installing");
+  assert.equal((await f.request(f.admin, url, { method: "POST" })).status, 202);
+
+  const pendingTurn = f.app.llm.runAgent({ model: "deepseek/deepseek-flash", system: "Fixture", prompt: "Report your version", tools: [], timeoutMs: 2000 });
+  assert.equal(readFileSync(log, "utf8"), "probe 0.2.1\n");
+  releaseInstaller();
+  assert.equal((await pendingTurn).text, "0.2.2");
+  await waitFor(() => !updates.progress.active, { what: "completion of the update" });
+  assert.deepEqual(phases, ["checking", "installing", "restarting", "verifying"]);
+  assert.equal(readFileSync(log, "utf8"), "probe 0.2.1\ninstall\nprobe 0.2.2\nprobe 0.2.2\nturn 0.2.2\n");
+  const finished = (await f.request(f.admin, "/api/state")).data;
+  assert.equal(finished.harnessProgress.done, finished.harnessProgress.total);
+  const deepseek = finished.harnesses.find((item) => item.provider === "deepseek");
+  assert.equal(deepseek.state, "current");
+  assert.equal(deepseek.previous, "0.2.1");
+  assert.equal(deepseek.verifiedVersion, "0.2.2");
+});

@@ -1266,6 +1266,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         models,
         providers: llm.providers(),
         harnesses: harnessUpdates?.status() || [],
+        harnessProgress: harnessUpdates?.progress || null,
         ollamaCloud: llm.cloudAccount || { signedIn: false, signinUrl: "" },
         // Which keys are stored, apart from whether the thing they unlock is reachable some other way.
         keys: { ollama: Boolean(llm.ollamaKey), orcarouter: Boolean(llm.routers.orcarouter.key), typesafe: Boolean(brain.doc?.key), soniox: Boolean(voice?.enabled), deepseek: Boolean(llm.deepseek?.key) },
@@ -1283,6 +1284,12 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     if (path === "/api/harnesses/check" && method === "POST") {
       if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario aggiorna gli harness.");
       if (!harnessUpdates) throw new HttpError(404, "aggiornamento degli harness non disponibile");
+      if (url.searchParams.get("background") === "1") {
+        void harnessUpdates.checkAll({ update: true, waitForTurns: true }).catch((error) => {
+          activity({ type: "error", text: "aggiornamento harness: " + error.message });
+        });
+        return send(res, 202, { progress: harnessUpdates.progress || null });
+      }
       await harnessUpdates.checkAll({ update: true });
       return send(res, 200, harnessUpdates.status());
     }
