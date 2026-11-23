@@ -613,6 +613,8 @@ function appearancePane() {
       const saved = await guard(api("/api/appearance", { method: "PUT", body: changes }));
       if (!saved) return;
       S.data.appearance = saved;
+      const line = document.querySelector('.rail-item[data-page="aspetto"] .rail-name small');
+      if (line) line.textContent = tr(saved.theme === "custom" ? "Personalizzata" : THEMES.find(([id]) => id === saved.theme)?.[1] || "Cora");
       if (row) flashSaved(row);
     }, 250);
   };
