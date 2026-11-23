@@ -679,6 +679,11 @@ input.num { width: 92px; text-align: right; font-family: var(--mono); }
 .set-switches > .switch { padding: 10px 14px; }
 .set-switches > .switch + .switch { border-top: 1px solid var(--line); }
 /* Harness versions: one row per CLI in a well, the version in mono and its state on the right. */
+.harness-progress { display: grid; gap: 8px; margin-top: 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--well); color: var(--text); font: 600 13px/1.4 var(--body); }
+.harness-progress [hidden], .harness-progress[hidden] { display: none; }
+.harness-progress progress { display: block; width: 100%; height: 6px; accent-color: var(--amber); }
+.harness-agents { color: var(--text); font: 400 13px/1.4 var(--body); overflow-wrap: anywhere; }
+.harness-agents > span { color: var(--muted); }
 .harness-list { display: grid; margin-top: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--well); overflow: hidden; }
 .harness-row { display: flex; align-items: center; gap: 14px; padding: 12px 14px; }
 .harness-row + .harness-row { border-top: 1px solid var(--line); }
@@ -688,9 +693,11 @@ input.num { width: 92px; text-align: right; font-family: var(--mono); }
 .harness-version { font: 500 13px/1.3 var(--mono); color: var(--text); }
 .harness-next { color: var(--amber); }
 .harness-name small { color: var(--faint); font: 400 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+.harness-name small.harness-verified { color: var(--green); }
 .harness-name small.harness-error { color: var(--red); }
 .harness-row > .badge { flex: none; }
 @media (max-width: 480px) {
+  .harness-panel > .panel-head .panel-actions { flex-basis: 100%; justify-content: flex-start; padding-left: 40px; }
   .harness-row { flex-wrap: wrap; gap: 8px; }
   .harness-row > .badge { margin-left: 0; }
 }

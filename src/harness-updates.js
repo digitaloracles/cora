@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
 
 /**
  * Where each harness comes from. A CLI that is behind its provider sees fewer models
  * (Codex lists gpt-6.2 only to new clients), so Cora keeps them current by itself:
  * npm packages through whatever installed them, self-updating CLIs through their own
- * command, and a git checkout only reported, because pulling it may carry local changes away.
+ * command, and a git checkout through its own updater, which keeps local edits.
  */
 export const HARNESS_SOURCES = {
   claude: { product: "Claude Code", package: "@anthropic-ai/claude-code" },
@@ -94,7 +95,12 @@ export class HarnessUpdates {
     this.commandTimeoutMs = commandTimeoutMs;
     this.states = { ...(store.value("harnessVersions", {}) || {}) };
     this.timer = null;
+    for (const state of Object.values(this.states)) {
+      if (state.state === "updating") state.state = "unknown";
+    }
     this.running = null;
+    this.progress = null;
+    this.installations = new Map();
   }
 
   enabled() {
@@ -107,6 +113,19 @@ export class HarnessUpdates {
       const { path: _path, ...state } = this.states[provider] || { state: "unknown" };
       return { provider, product: HARNESS_SOURCES[provider].product, ...state };
     });
+  }
+
+  publishProgress(values) {
+    this.progress = { ...this.progress, ...values };
+    this.emit({ type: "harness-versions", harnesses: this.status(), progress: this.progress });
+  }
+
+  phase(provider, phase) {
+    if (this.progress?.provider === provider) this.publishProgress({ phase });
+  }
+
+  installation(provider) {
+    return this.installations.get(provider);
   }
 
   /** One harness's version, for the selectors: empty when it was never read. */
@@ -152,8 +171,12 @@ export class HarnessUpdates {
   }
 
   async readVersion(provider, path) {
-    const { output } = await this.run(path, ["--version"]);
-    return parseVersion(output);
+    const { code, output } = await this.run(path, ["--version"]);
+    if (code !== 0) return "";
+    const version = parseVersion(output);
+    // A checkout keeps its release number between releases: the upstream commit says where it stands.
+    const commit = HARNESS_SOURCES[provider]?.git && /upstream\s+([0-9a-f]{7,})/i.exec(output)?.[1];
+    return version && commit ? `${version} · ${commit.slice(0, 8)}` : version;
   }
 
   /** How a CLI was installed, which decides how it is brought up to date. */
@@ -231,28 +254,78 @@ export class HarnessUpdates {
     this.store.setValue("harnessVersions", this.states);
   }
 
+  /** Where a git checkout stands against its upstream, as `<cli> update --check` tells it. */
+  async checkoutStatus(path) {
+    const { code, output } = await this.run(path, ["update", "--check"], { timeoutMs: 120000 });
+    const available = code === 0 && /update available/i.test(output);
+    const behind = /(\d+)\s+commits?\s+behind/i.exec(output)?.[1];
+    return {
+      code, available,
+      state: available ? "outdated" : code === 0 ? "current" : "unknown",
+      latest: available ? (behind ? `+${behind} commit` : "nuova") : "",
+      error: code === 0 ? "" : output.trim().split("\n").pop()?.slice(0, 200) || "",
+    };
+  }
+
+  /**
+   * A git checkout (Hermes) is brought up to date by its own updater: `update --yes` parks local
+   * edits, pulls, reinstalls its dependencies and puts the edits back. The turns using it wait, as
+   * for any install in place, and the result is checked against the upstream again.
+   */
+  async updateCheckout(provider, path, version, { update }) {
+    const found = await this.checkoutStatus(path);
+    this.set(provider, { state: found.state, latest: found.latest, error: found.error });
+    if (!found.available || !update) return this.states[provider];
+    if (this.busy(provider)) {
+      this.set(provider, { state: "deferred", error: "" });
+      return this.states[provider];
+    }
+    let release;
+    this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
+    try {
+      this.set(provider, { state: "updating", error: "" });
+      this.phase(provider, "installing");
+      const result = await this.run(path, ["update", "--yes"], { timeoutMs: this.commandTimeoutMs });
+      this.phase(provider, "restarting");
+      const started = await this.readVersion(provider, path);
+      this.phase(provider, "verifying");
+      const after = await this.checkoutStatus(path);
+      const now = started && await this.readVersion(provider, path);
+      if (result.code !== 0 || !now || after.code !== 0 || after.available) {
+        const detail = result.code !== 0
+          ? result.output.trim().split("\n").filter(Boolean).pop() || "uscito con codice " + result.code
+          : !now ? "il nuovo eseguibile non risponde"
+            : after.available ? `ancora indietro (${after.latest})` : after.error || "verifica non riuscita";
+        this.set(provider, { state: "failed", version: now || version, latest: after.latest || found.latest, error: detail.slice(0, 300) });
+        return this.states[provider];
+      }
+      this.set(provider, { version: now });
+      await this.changed(provider);
+      const verifiedAt = new Date().toISOString();
+      this.set(provider, { state: "current", latest: "", error: "", checkedAt: verifiedAt, previous: version, updatedAt: verifiedAt, verifiedVersion: now });
+      return this.states[provider];
+    } finally {
+      this.installations.delete(provider);
+      release?.();
+    }
+  }
+
   async checkOne(provider, { update = true } = {}) {
     const source = HARNESS_SOURCES[provider];
     const path = which(this.bins[provider], this.env.PATH);
     const checkedAt = new Date().toISOString();
     if (!path) {
-      this.set(provider, { state: "missing", version: "", latest: "", method: "", path: "", error: "", checkedAt });
+      this.set(provider, { state: "missing", auto: false, version: "", latest: "", method: "", path: "", error: "", checkedAt });
       return this.states[provider];
     }
     const version = await this.readVersion(provider, path);
     const method = await this.method(provider, path);
-    this.set(provider, { path, version, method: method.kind, checkedAt, auto: ["mise", "npm", "command"].includes(method.kind) });
+    this.set(provider, { path, version, method: method.kind, checkedAt, auto: ["mise", "npm", "command", "git"].includes(method.kind) });
     if (method.kind === "self") {
       this.set(provider, { state: "self", latest: "", error: "" });
       return this.states[provider];
     }
-    if (method.kind === "git") {
-      const { code, output } = await this.run(path, ["update", "--check"], { timeoutMs: 120000 });
-      const behind = /(\d+)\s+commits?\s+behind/i.exec(output)?.[1];
-      const available = code === 0 && /update available/i.test(output);
-      this.set(provider, { state: available ? "outdated" : code === 0 ? "current" : "unknown", latest: available ? (behind ? `+${behind} commit` : "nuova") : "", error: code === 0 ? "" : output.trim().split("\n").pop()?.slice(0, 200) || "" });
-      return this.states[provider];
-    }
+    if (method.kind === "git") return this.updateCheckout(provider, path, version, { update });
     let latest = "";
     if (source.package) {
       try { latest = await this.latest(provider); } catch (error) {
@@ -260,7 +333,7 @@ export class HarnessUpdates {
         return this.states[provider];
       }
       if (!version || !latest || compareVersions(version, latest) >= 0) {
-        this.set(provider, { state: version ? "current" : "unknown", latest, error: version ? "" : "versione non letta" });
+        this.set(provider, { state: version && latest ? "current" : "unknown", latest, error: !version ? "versione non letta" : !latest ? "ultima versione non letta" : "" });
         return this.states[provider];
       }
       this.set(provider, { state: "outdated", latest, error: "" });
@@ -275,41 +348,91 @@ export class HarnessUpdates {
       this.set(provider, { state: "deferred", error: "" });
       return this.states[provider];
     }
-    this.set(provider, { state: "updating" });
-    this.emit({ type: "harness-versions" });
-    const result = await this.update(provider, method, latest);
-    if (provider === "grok") this.relinkGrok(version);
-    const now = await this.readVersion(provider, path);
-    const moved = now && now !== version;
-    if (result.code !== 0 && !moved) {
-      this.set(provider, { state: source.package ? "failed" : "current", version: now || version, error: source.package ? (result.output.trim().split("\n").filter(Boolean).pop() || `uscito con ${result.code}`).slice(0, 300) : "", latest: source.package ? latest : "" });
+    let release;
+    if (method.kind !== "mise") this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
+    try {
+      this.set(provider, { state: "updating", error: "" });
+      this.phase(provider, "installing");
+      const result = await this.update(provider, method, latest);
+      this.phase(provider, "restarting");
+      if (provider === "grok") this.relinkGrok(version);
+      // Agents start a fresh CLI for each turn. Launch the installed executable through the
+      // same path before releasing any waiting turns, then check it in a second fresh process.
+      const started = await this.readVersion(provider, path);
+      this.phase(provider, "verifying");
+      const now = started && await this.readVersion(provider, path);
+      const advanced = now && (!version || compareVersions(now, version) > 0);
+      const verified = now && now === started && (!latest || compareVersions(now, latest) >= 0);
+      const noChange = !source.package && result.code === 0 && now === version;
+      if (!verified || (!advanced && !noChange)) {
+        const detail = result.code !== 0
+          ? result.output.trim().split("\n").filter(Boolean).pop() || "uscito con codice " + result.code
+          : "verifica della versione non riuscita (" + (now || started || "versione non leggibile") + ")";
+        this.set(provider, { state: "failed", version: now || version, error: detail.slice(0, 300) });
+        return this.states[provider];
+      }
+      if (advanced) {
+        this.set(provider, { version: now });
+        await this.changed(provider);
+      }
+      const verifiedAt = new Date().toISOString();
+      this.set(provider, {
+        state: "current", error: "", checkedAt: verifiedAt,
+        ...(advanced ? { previous: version, updatedAt: verifiedAt, verifiedVersion: now } : {}),
+      });
       return this.states[provider];
+    } finally {
+      this.installations.delete(provider);
+      release?.();
     }
-    if (!moved) {
-      this.set(provider, source.package
-        ? { state: "failed", error: `dopo l'aggiornamento risponde ancora ${version || "senza versione"}` }
-        : { state: "current", latest: "", error: "" });
-      return this.states[provider];
-    }
-    this.set(provider, { state: latest && compareVersions(now, latest) < 0 ? "outdated" : "current", version: now, previous: version, updatedAt: new Date().toISOString(), error: "" });
-    try { await this.changed(provider); } catch {}
-    return this.states[provider];
   }
 
-  /** Every harness once, one at a time; a check already running is joined, not repeated. */
-  checkAll({ update = this.enabled() } = {}) {
-    if (this.running) return this.running;
-    this.running = (async () => {
-      const out = [];
-      for (const provider of Object.keys(HARNESS_SOURCES)) {
-        try { out.push({ provider, ...await this.checkOne(provider, { update }) }); } catch (error) {
-          this.set(provider, { state: "unknown", error: error.message });
-          out.push({ provider, ...this.states[provider] });
-        }
+  async checkBatch({ update, waitForTurns }) {
+    const providers = Object.keys(HARNESS_SOURCES);
+    const deferred = [];
+    let done = 0;
+    const check = async (provider) => {
+      this.publishProgress({ active: true, provider, phase: "checking", done, total: providers.length });
+      try {
+        return await this.checkOne(provider, { update });
+      } catch (error) {
+        this.set(provider, { state: this.states[provider]?.state === "updating" ? "failed" : "unknown", error: error.message });
+        return this.states[provider];
       }
-      this.emit({ type: "harness-versions" });
-      return out;
-    })().finally(() => { this.running = null; });
+    };
+    for (const provider of providers) {
+      const item = await check(provider);
+      if (waitForTurns && item.state === "deferred") deferred.push(provider);
+      else done++;
+    }
+    const deadline = Date.now() + 120000;
+    for (const provider of deferred) {
+      this.publishProgress({ provider, phase: "waiting", done });
+      while (this.busy(provider) && Date.now() < deadline) await wait(1000, undefined, { ref: false });
+      if (!this.busy(provider)) await check(provider);
+      done++;
+    }
+    return providers.map((provider) => ({ provider, ...this.states[provider] }));
+  }
+
+  /** Join a compatible check. A manual update following a read-only check still installs. */
+  checkAll({ update = this.enabled(), waitForTurns = false } = {}) {
+    if (this.queued) return this.queued;
+    if (this.running) {
+      if ((!update || this.runningUpdate) && (!waitForTurns || this.runningWait)) return this.running;
+      const next = () => {
+        this.queued = null;
+        return this.checkAll({ update, waitForTurns });
+      };
+      this.queued = this.running.then(next, next);
+      return this.queued;
+    }
+    this.runningUpdate = update;
+    this.runningWait = waitForTurns;
+    this.running = this.checkBatch({ update, waitForTurns }).finally(() => {
+      this.running = null;
+      this.publishProgress({ active: Boolean(this.queued), provider: "", phase: "", done: this.progress.total });
+    });
     return this.running;
   }
 }

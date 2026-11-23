@@ -360,7 +360,12 @@ export class Subscriptions {
 
   async start(id, actor = null) {
     await this.stopping.get(id);
-    const record = this.require(id);
+    let record = this.require(id);
+    let installation;
+    while ((installation = this.harnessInstallation?.(record.provider))) {
+      await installation;
+      record = this.require(id);
+    }
     if (record.resident) throw new ValidationError("le subscription residenti si gestiscono sul server");
     if (this.closed) throw new ValidationError("Cora si sta fermando");
     if (!this.installed(record.provider)) {
@@ -903,7 +908,12 @@ export class Subscriptions {
 
   async check(id) {
     await this.stopping.get(id);
-    const record = this.require(id);
+    let record = this.require(id);
+    let installation;
+    while ((installation = this.harnessInstallation?.(record.provider))) {
+      await installation;
+      record = this.require(id);
+    }
     if (this.logins.has(id)) return this.view(id);
     if (this.busy.has(id) || this.running.has(id)) throw new ValidationError("subscription in uso: attendi la fine del lavoro");
     this.busy.add(id);
@@ -927,7 +937,12 @@ export class Subscriptions {
   }
 
   async remove(id) {
-    const record = this.require(id);
+    let record = this.require(id);
+    let installation;
+    while ((installation = this.harnessInstallation?.(record.provider))) {
+      await installation;
+      record = this.require(id);
+    }
     if (record.resident) throw new ValidationError("le subscription residenti si gestiscono sul server");
     if (this.busy.has(id) || this.running.has(id)) throw new ValidationError("subscription in uso: attendi la fine del lavoro");
     if (this.store.agents().some((agent) => agent.subscriptionId === id)) throw new ValidationError("subscription usata da un agente");
