@@ -586,8 +586,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     };
     const places = this.store.recentElsewhere(agent.id, ids.filter(near), Date.now() - ELSEWHERE_MS, { channels: 2, perChannel: 8 }).map((place) => this.knowledge ? { ...place, messages: place.messages.filter((message) => this.knowledge.ownsMessage(agent, message)) } : place).filter((place) => place.messages.length);
     if (!places.length) return "";
-    const map = topics || this.threadMap(agent, channelId);
-    const current = map.current || map.place;
+    const current = topics?.current || this.threadMap(agent, channelId).current;
     const blocks = places.map(({ channelId: id, messages }) => {
       let info = null;
       try { info = this.threadChannel(id); } catch {}
@@ -732,7 +731,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     const topics = { ...this.threadMap(agent, channel.id), asked: issueKeys(routine ? `${routine.name} ${routine.prompt}` : String(trace.prompt || "").split("<chat>\n").pop().split("\n</chat>")[0]) };
     const resumedPlan = requestAuthorized && !routine ? this.store.plans.traceTasks([trace.id]).at(-1)?.planId : null;
     let original = String(trace.prompt || "").replace(new RegExp(`\\n\\n${escapeRegExp(tf(PLAN_CONTEXT))}\\n\\{[^\\n]*\\}$`), "").replace(new RegExp(`^${escapeRegExp(nowMarker())}[^\\n]*\\n\\n`), "").replace(new RegExp(`\\n\\n${escapeRegExp(goalMarker())}[\\s\\S]*$`), "");
-    if (topics.current || topics.place) original = original.replace(/<altrove\b[^>]*>[\s\S]*?<\/altrove>/g, "");
+    if (topics.current) original = original.replace(/<altrove\b[^>]*>[\s\S]*?<\/altrove>/g, "");
     const user = [
       original,
       this.topicNote(topics),

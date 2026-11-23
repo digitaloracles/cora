@@ -210,16 +210,6 @@ test("a plain channel of a server has its own topic, with the issues of its thre
   assert.equal(threadTopics(tiaServer, { id: "dm", name: "dm" }).place, null, "a place outside a server has no channel topic");
 });
 
-test("other conversations shown in a plain channel are pointers, not work to continue", () => {
-  const message = (content) => [{ kind: "agent", agentId: "radix", authorName: "Radix", at: Date.now(), content }];
-  const { brain, agent } = serverBrain([{ channelId: "web-radix", messages: message("Safe MAVE su Sepolia verificato") }]);
-  const byId = new Map(tiaServer.map((item) => [item.id, item]));
-  brain.channels = { ...brain.channels, info: (id) => byId.get(id) || (id.startsWith("web-") ? { id, kind: "web", name: "chat privata" } : null), list: () => tiaServer, listFor: () => tiaServer };
-  const text = brain.elsewhere(agent, TIA, brain.threadMap(agent, TIA));
-  assert.match(text, /altra conversazione, altro tema/);
-  assert.doesNotMatch(text, /Safe MAVE/);
-});
-
 test("a call of a few words is short; a request with its subject or a link is not", () => {
   assert.equal(shortRequest("@Radix che fa sei morto?"), true);
   assert.equal(shortRequest("<@&1570010400936960070> ci sei?"), true);
