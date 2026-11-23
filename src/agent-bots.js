@@ -129,10 +129,13 @@ export class AgentBots {
   }
 
   /** Use a token stored while running (the next start reads it from hush) and wait for the bot to come online. */
-  async attach(agent, token, timeoutMs = 10000) {
+  async attach(agent, token, timeoutMs = 10000, user = null) {
     this.store.setValue(`discordBotDisconnected:${agent.id}`, false);
+    if (user?.id) this.store.setValue(`discordBotUser:${agent.id}`, { id: user.id, username: user.username || "" });
     this.added.set(this.envName(agent), token);
     this.sync();
+    // A switched-off agent keeps its token for when it is turned on: nothing will connect now.
+    if (!this.store.agent(agent.id)?.enabled) return null;
     const deadline = Date.now() + timeoutMs;
     let readyAt = 0;
     while (Date.now() < deadline) {
@@ -148,6 +151,7 @@ export class AgentBots {
 
   detach(agent) {
     this.store.setValue(`discordBotDisconnected:${agent.id}`, true);
+    this.store.setValue(`discordBotUser:${agent.id}`, null);
     this.added.delete(this.envName(agent));
     this.clients.get(agent.id)?.client.stop();
     this.clients.delete(agent.id);
@@ -272,7 +276,20 @@ export class AgentBots {
   status(agent, guildId) {
     const env = this.envName(agent);
     const entry = this.clients.get(agent.id);
-    if (!entry) return { env, configured: false, state: "missing-token" };
+    if (!entry) {
+      if (!this.token(agent)) return { env, configured: false, state: "missing-token" };
+      // Saved but not connected: the agent is off (or still connecting). The app can be invited anyway.
+      const known = this.store.value(`discordBotUser:${agent.id}`);
+      return {
+        env,
+        configured: true,
+        state: agent.enabled ? "idle" : "off",
+        user: null,
+        app: known?.id ? { id: known.id, username: known.username } : null,
+        inviteUrl: known?.id ? inviteUrl(known.id, guildId) : null,
+        inGuild: false,
+      };
+    }
     const user = entry.client.user;
     return {
       env,

@@ -3267,9 +3267,14 @@ function steps(...items) {
 
 function discordAccount(agent) {
   const bot = agent.bot || { configured: false, env: "" };
-  const actions = bot.user ? badge("Account suo", "on", "check") : badge("Via webhook", bot.configured ? "err" : "", "hash");
+  const off = bot.configured && !bot.user && bot.state === "off";
+  const actions = bot.user ? badge("Account suo", "on", "check") : off ? badge("Spento qui", "", "power") : badge("Via webhook", bot.configured ? "err" : "", "hash");
   const rows = [];
-  if (bot.user) {
+  if (off) {
+    rows.push(setRow("Bot suo", h("span", {}, "Token salvato in hush (", h("code", {}, bot.env), bot.app ? h("span", {}, ", bot ", h("b", {}, raw(bot.app.username))) : null,
+      "). ", h("b", {}, raw(agent.name)), " è spento: accendilo e il bot si collega, con il nome e la foto del pannello."),
+      bot.inviteUrl ? btn("Invita nel server", { icon: "external", href: bot.inviteUrl, target: "_blank", cls: "primary" }) : null));
+  } else if (bot.user) {
     rows.push(setRow("Bot suo", h("span", {}, "Collegato come ", h("b", {}, raw(bot.user.username)), ". ", bot.inGuild ? "È nel server." : "Non è ancora nel server."),
       bot.inGuild ? null : btn("Invita nel server", { icon: "external", href: bot.inviteUrl, target: "_blank", cls: "primary" })));
   } else {
