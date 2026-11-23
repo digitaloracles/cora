@@ -2997,6 +2997,19 @@ describe("panel auth", () => {
     assert.equal(reloaded.history.find((item) => item.id === id)?.passive, true);
   });
 
+  test("history read by a listener without Message Content keeps the words from the archive", async (t) => {
+    const CHAN = "1599000000000000871";
+    const earlier = Date.now() - 4 * 24 * 60 * 60 * 1000;
+    const said = { id: "1599000000000000872", at: earlier, kind: "owner", authorId: OWNER, authorName: "Sam", content: "Migra il database di TIA su Postgres." };
+    app.store.appendArchive(CHAN, said);
+    const raw = (id, at, content) => ({ id, type: 0, channel_id: CHAN, guild_id: GUILD, content, timestamp: new Date(at).toISOString(), author: { id: OWNER, username: "sam" }, attachments: [], embeds: [], mentions: [] });
+    discord.state.history.set(CHAN, [raw(said.id, earlier, ""), raw("1599000000000000873", earlier + 1000, "")]);
+    t.after(() => discord.state.history.delete(CHAN));
+    const reloaded = { id: CHAN, history: [], seen: new Set() };
+    await app.orchestrator.ensureHistory(reloaded);
+    assert.deepEqual(reloaded.history.map((item) => [item.id, item.content]), [[said.id, said.content]], "a blank line the archive does not know stays out");
+  });
+
   test("a routine that answers through say then PASS does not answer the human twice", async (t) => {
     const agent = app.store.createAgent({ name: "Solo una risposta", model: "ollama/test-model", tools: false, chattiness: 0 });
     const room = `web-${agent.id}`, state = app.orchestrator.state(room);

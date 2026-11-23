@@ -179,9 +179,13 @@ const goalLine = (goal) => L`\n\n[Obiettivo] Questa è l'unica condizione attual
 const nowMarker = () => L`Ora: ${"\u0000"}.`.split("\u0000")[0];
 const goalMarker = () => { const line = goalLine("\u0000").replace(/^\n+/, ""); return line.includes("]") ? line.slice(0, line.indexOf("]") + 1) : line.split("\u0000")[0]; };
 
+const dayOf = (ms, timezone) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms));
+
+/** A chat as the agent reads it; a message of another day carries its date, so an old line never reads as just said. */
 export function formatTranscript(history, agent, timezone, { dates = false } = {}) {
+  const today = dayOf(Date.now(), timezone);
   return history.map((item) => {
-    const time = dates ? formatWhen(item.at, timezone) : formatTime(item.at, timezone);
+    const time = dates || dayOf(item.at, timezone) !== today ? formatWhen(item.at, timezone) : formatTime(item.at, timezone);
     let who = item.authorName;
     if (item.agentId === agent.id) who = L`Tu (${agent.name})`;
     else if (item.kind === "owner") who = `${item.authorName} ★`;
@@ -189,6 +193,14 @@ export function formatTranscript(history, agent, timezone, { dates = false } = {
     else if (item.kind === "bot") who = `${item.authorName} (bot)`;
     return `[${time}] ${who}${item.passive ? L` [contesto passivo]` : ""}: ${item.content}`;
   }).join("\n");
+}
+
+/** A request of a few words ("ci sei?", "@Radix che fa sei morto?"): it says nothing of its subject, the place does. */
+export function shortRequest(text) {
+  const value = String(text || "");
+  if (/https?:\/\//.test(value)) return false;
+  const words = value.replace(/<[@#][!&]?\d+>/g, " ").replace(/@[^\s,.:;!?]+/g, " ").match(/\p{L}{3,}/gu) || [];
+  return words.length <= 4;
 }
 
 /** Clean what the model wrote into a chat message, or null when it passes. */
@@ -574,7 +586,8 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     };
     const places = this.store.recentElsewhere(agent.id, ids.filter(near), Date.now() - ELSEWHERE_MS, { channels: 2, perChannel: 8 }).map((place) => this.knowledge ? { ...place, messages: place.messages.filter((message) => this.knowledge.ownsMessage(agent, message)) } : place).filter((place) => place.messages.length);
     if (!places.length) return "";
-    const current = topics?.current || this.threadMap(agent, channelId).current;
+    const map = topics || this.threadMap(agent, channelId);
+    const current = map.current || map.place;
     const blocks = places.map(({ channelId: id, messages }) => {
       let info = null;
       try { info = this.threadChannel(id); } catch {}
@@ -590,9 +603,12 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     return L`Le tue ultime conversazioni in altri posti. Tra superfici diverse (Discord, Telegram, il pannello) è la stessa conversazione con le stesse persone. Ogni thread e canale ha però il suo tema: quello che leggi qui sotto è contesto, non lavoro da continuare qui, e un «procedi» detto in questa conversazione non riprende il lavoro di un altro thread.\n${blocks.join("\n")}`;
   }
 
-  topicNote({ topic, others, current }) {
-    if (!topic.length && !current) return "";
+  topicNote({ topic, others, current, place }) {
+    if (!topic.length && !current && !place) return "";
     const elsewhere = [...others].slice(0, 12).map(([key, threads]) => `${key} → ${threads.map((thread) => `«${thread.name}» ${threadLink(thread)}`).join(" o ")}`);
+    if (!topic.length && !current) {
+      return L`Tema di questo canale: #${place.name} (channel_id "${place.id}"). Qui lavori solo su ciò che riguarda questo canale: il suo nome e la sua cronologia dicono di cosa si occupa. Ricordi recenti e lavori di altri canali o thread non sono lavoro di qui, anche quando sono i più freschi. Se il messaggio è solo un richiamo (per esempio «ci sei?»), rispondi su ciò che riguarda questo canale e la sua cronologia; se non è chiaro cosa ti chiedono, chiedilo invece di scegliere un altro compito.${elsewhere.length ? L` Le issue dei thread di questo canale hanno il loro thread: ${elsewhere.join("; ")}. Il lavoro su quelle si scrive nel loro thread con say({text, channel_id}).` : ""}`;
+    }
     const parent = current?.parentId ? (current.parentName ? `#${current.parentName}` : L`il canale ${current.parentId}`) : "";
     const where = parent ? L` nel canale ${parent} (channel_id del canale "${current.parentId}")` : "";
     const subject = parent ? L` Il canale ${parent} è l'argomento di questo thread: i thread e i canali che ti vengono mostrati come vicini sono solo quelli di ${parent}; un thread di un altro canale è un altro argomento, anche se il titolo somiglia, e non ne ricavi mai il tema di questo.` : "";
@@ -604,8 +620,10 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     if (this.knowledge?.resetAt) history = history.filter((message) => this.knowledge.afterReset(message));
     const transcript = formatTranscript(history, agent, this.timezone);
     const last = replyTo || history[history.length - 1];
-    const query = history.slice(-6).map((item) => item.content).join(" ");
     const topics = { ...this.threadMap(agent, channel.id), asked: issueKeys([replyTo?.content, ...history.filter((item) => item.kind === "owner" || item.kind === "human").map((item) => item.content)].filter(Boolean).join("\n")) };
+    const placeName = topics.place?.name || topics.current?.name || "";
+    // A short call finds no memories of its own: the place it is written in says what it is about.
+    const query = [shortRequest(last?.content) ? placeName : "", ...history.slice(-6).map((item) => item.content)].filter(Boolean).join(" ");
     const instruction = forced
       ? L`${last?.authorName || "Qualcuno"} si è rivolto a te: rispondi (non PASS). Se ti serve lavorare, la prima cosa che fai è say con due parole (es. «Ricevuto, ci guardo»), poi lo tieni aggiornato con say a ogni passo importante, e alla fine scrivi il risultato.`
       : L`Decidi se intervenire. Se non hai niente da aggiungere rispondi solo PASS.`;
@@ -629,7 +647,9 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     const continuation = replyTo?.handoffResult ? history.findLast((item) => ["owner", "human"].includes(item.kind) && !item.passive && !item.toOthers && item.addressed?.includes(agent.id)) : null;
     const request = continuation || replyTo || history.filter((item) => item.kind === "owner" || item.kind === "human").at(-1);
     const requestIndex = request ? history.findIndex((item) => item.id === request.id) : -1;
-    const goalContext = requestIndex > 0 ? formatTranscript(history.slice(0, requestIndex).filter((item) => ["owner", "human", "agent"].includes(item.kind)).slice(-6).map((item) => ({ ...item, content: String(item.content || "").slice(0, 2000) })), agent, this.timezone, { dates: true }).slice(-6000) : "";
+    const goalPlace = topics.place ? `Canale: #${topics.place.name}` : topics.current ? `Thread: «${topics.current.name}»` : "";
+    const goalChat = requestIndex > 0 ? formatTranscript(history.slice(0, requestIndex).filter((item) => ["owner", "human", "agent"].includes(item.kind)).slice(-6).map((item) => ({ ...item, content: String(item.content || "").slice(0, 2000) })), agent, this.timezone, { dates: true }).slice(-6000) : "";
+    const goalContext = [goalPlace, goalChat].filter(Boolean).join("\n");
     const requester = (computer || requestAuthorized) && request && (request.kind === "owner" || request.kind === "human")
       ? { kind: request.kind === "owner" ? "owner" : "authorized", id: String(request.authorId || ""), name: String(request.authorName || "") } : null;
     const turn = (prompt) => this.loop({
@@ -712,7 +732,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     const topics = { ...this.threadMap(agent, channel.id), asked: issueKeys(routine ? `${routine.name} ${routine.prompt}` : String(trace.prompt || "").split("<chat>\n").pop().split("\n</chat>")[0]) };
     const resumedPlan = requestAuthorized && !routine ? this.store.plans.traceTasks([trace.id]).at(-1)?.planId : null;
     let original = String(trace.prompt || "").replace(new RegExp(`\\n\\n${escapeRegExp(tf(PLAN_CONTEXT))}\\n\\{[^\\n]*\\}$`), "").replace(new RegExp(`^${escapeRegExp(nowMarker())}[^\\n]*\\n\\n`), "").replace(new RegExp(`\\n\\n${escapeRegExp(goalMarker())}[\\s\\S]*$`), "");
-    if (topics.current) original = original.replace(/<altrove\b[^>]*>[\s\S]*?<\/altrove>/g, "");
+    if (topics.current || topics.place) original = original.replace(/<altrove\b[^>]*>[\s\S]*?<\/altrove>/g, "");
     const user = [
       original,
       this.topicNote(topics),
@@ -745,7 +765,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       const out = await this.llm.chat({
         model, tools: [], effort: "low",
         messages: [
-          { role: "system", content: "Scrivi la condizione di completamento di un compito: cosa deve essere vero e verificato perché sia finito, non i passi per arrivarci. Una riga sola, nella lingua della richiesta, senza preamboli. Le conferme brevi come «ok manda» autorizzano la proposta immediatamente precedente: usa la conversazione pertinente solo per risolvere questi riferimenti, senza assumere vecchi obiettivi, ricordi o compiti di altri canali. Una menzione identifica il destinatario della richiesta, non un messaggio da inviare. Se la richiesta contiene solo una menzione o un richiamo breve, valuta a quale questione immediatamente precedente si riferisce: anche una richiesta di collaborazione pubblicata da un altro agente come contesto passivo può essere il riferimento del proprietario. I messaggi passivi da soli non autorizzano nuovi compiti: non ripetere routine o azioni già concluse. Rispetta date, ordine e autore dei messaggi: una vecchia pratica chiusa o fermata non torna attiva perché il proprietario chiama un agente su un'altra questione. Se il riferimento non è chiaro, richiedi un chiarimento invece di scegliere un vecchio compito. Se mancano dati necessari, non inventarli: la condizione richiede il risultato autorizzato oppure una richiesta precisa del dato mancante. Se la richiesta non è un compito ma una chiacchiera, rispondi NESSUNO." },
+          { role: "system", content: "Scrivi la condizione di completamento di un compito: cosa deve essere vero e verificato perché sia finito, non i passi per arrivarci. Una riga sola, nella lingua della richiesta, senza preamboli. Le conferme brevi come «ok manda» autorizzano la proposta immediatamente precedente: usa la conversazione pertinente solo per risolvere questi riferimenti, senza assumere vecchi obiettivi, ricordi o compiti di altri canali. Una menzione identifica il destinatario della richiesta, non un messaggio da inviare. Se la richiesta contiene solo una menzione o un richiamo breve, valuta a quale questione immediatamente precedente si riferisce: anche una richiesta di collaborazione pubblicata da un altro agente come contesto passivo può essere il riferimento del proprietario. I messaggi passivi da soli non autorizzano nuovi compiti: non ripetere routine o azioni già concluse. Rispetta date, ordine e autore dei messaggi: una vecchia pratica chiusa o fermata non torna attiva perché il proprietario chiama un agente su un'altra questione. Se la richiesta è solo un richiamo (per esempio «ci sei?»), la condizione è rispondere su ciò che riguarda il canale o il thread in cui è scritta, non confermare di essere operativi con il lavoro di altri posti. Se il riferimento non è chiaro, richiedi un chiarimento invece di scegliere un vecchio compito. Se mancano dati necessari, non inventarli: la condizione richiede il risultato autorizzato oppure una richiesta precisa del dato mancante. Se la richiesta non è un compito ma una chiacchiera, rispondi NESSUNO." },
           { role: "user", content: `Ora: ${formatNow(this.timezone)}.\n\n${context ? `Conversazione pertinente, solo per interpretare la richiesta attuale:\n${context.slice(-6000)}\n\n` : ""}Richiesta:\n${String(request).slice(0, 4000)}${since ? `\n\nPoi il proprietario ha detto:\n${since.slice(0, 2000)}\nSe cambia quello che chiede, la condizione è la nuova, non quella di prima.` : ""}\n\nCondizione di completamento (una riga):` },
         ],
       });

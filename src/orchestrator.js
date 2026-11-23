@@ -182,7 +182,7 @@ function choiceSlackButtons(agent, choices) {
 function discordConversationMessage(raw, archived = null) {
   return (raw.type === undefined || raw.type === 0 || raw.type === 19)
     && Boolean(raw.content?.trim() || raw.attachments?.length || raw.embeds?.length || raw.sticker_items?.length
-      || (archived?.voice || archived?.voiceOnly) && archived.content?.trim());
+      || Boolean(archived?.content?.trim()));
 }
 
 function describeMessage(raw, nameFor = () => null) {
@@ -494,14 +494,19 @@ export class Orchestrator {
           const archived = new Map(this.store.recentMessages(state.id, this.store.settings.historySize).map((item) => [item.id, item]));
           // A voice message comes back as the words it was heard as, not as its attachment.
           const items = [];
+          let blank = 0;
           for (const raw of messages) {
             const kept = archived.get(raw.id);
             if (!discordConversationMessage(raw, kept)) continue;
             if (raw.id === exclude || this.arriving.has(raw.id)) continue;
-            const item = { ...this.toItem(raw), ...(kept?.passive ? { passive: true } : {}), ...(kept?.voice || kept?.voiceOnly ? kept : {}) };
+            // A bot without Message Content reads other people's messages as empty: the archive keeps their words.
+            const unread = !raw.content?.trim() && Boolean(kept?.content?.trim());
+            if (unread) blank += 1;
+            const item = { ...this.toItem(raw), ...(kept?.passive ? { passive: true } : {}), ...(kept?.voice || kept?.voiceOnly ? kept : {}), ...(unread ? { content: kept.content } : {}) };
             if (!kept && Date.now() - item.at < CATCH_UP_MS) await this.arrive(raw.id, () => this.hearDiscord(state, item, raw));
             items.push(item);
           }
+          if (blank) this.log({ type: "warning", channelId: state.id, text: `cronologia: Discord ha dato ${blank} messaggi senza testo, le parole vengono dall'archivio` });
           const existing = state.history;
           state.history = [];
           state.seen = new Set();
