@@ -186,6 +186,9 @@ const ICONS = {
   pause: '<path d="M8 5v14M16 5v14"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
   refresh: '<path d="M20 11.5A8 8 0 1 0 17.7 17M20 4.5v7h-7"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="15.5" cy="8" r="1"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17.5 5-4.5 4 3.5 2.5-2 4.5 3.5"/>',
   moon: '<path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a6.5 6.5 0 0 0 10 10z"/>',
   github: '<path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/>',
   slack: '<path d="M3.5 9.8h6.3"/><path d="M14.2 3.5v6.3"/><path d="M20.5 14.2h-6.3"/><path d="M9.8 20.5v-6.3"/>',
@@ -513,6 +516,194 @@ function shade(hex) {
   return `rgb(${Math.round(((value >> 16) & 255) * 0.55)}, ${Math.round(((value >> 8) & 255) * 0.55)}, ${Math.round((value & 255) * 0.55)})`;
 }
 
+/* ---------- appearance ---------- */
+/** The ready-made combinations (DESIGN.md › Themes): id, name, one line, light or dark, and page/sidebar/accent for the preview. */
+const THEMES = [
+  ["cora", "Cora", "Carta, barra navy e cobalto: il brand di Cora.", "light", ["#fbfaf6", "#121a3a", "#264cd6"]],
+  ["giorno", "Giorno", "Tutto chiaro, anche la barra laterale.", "light", ["#fbfaf6", "#f5f3ec", "#264cd6"]],
+  ["notte", "Notte", "Blu notte, per quando c'è poca luce.", "dark", ["#121a3a", "#080c1f", "#8fa6ff"]],
+  ["studio", "Studio", "Il banco di regia di prima: nero e ambra.", "dark", ["#0f0f0f", "#0a0a0a", "#f2a93b"]],
+  ["dopamina", "Dopamina", "Il navy e il magenta di dopamina.it.", "light", ["#f7f7fc", "#000020", "#e5006e"]],
+];
+const CUSTOM_PROPS = ["--amber", "--accent-strong", "--on-accent", "--side", "--side-text", "--side-muted", "--side-faint", "--side-line", "--side-raise", "--side-accent", "--side-active", "--side-on-active", "--side-tint"];
+
+const hexRgb = (hex) => { const value = parseInt(hex.slice(1), 16); return [(value >> 16) & 255, (value >> 8) & 255, value & 255]; };
+const rgbHex = (rgb) => `#${rgb.map((part) => Math.round(Math.min(255, Math.max(0, part))).toString(16).padStart(2, "0")).join("")}`;
+/** `a` moved toward `b` by `t` (0 keeps a, 1 is b). */
+const mixHex = (a, b, t) => { const [x, y] = [hexRgb(a), hexRgb(b)]; return rgbHex(x.map((part, index) => part + (y[index] - part) * t)); };
+function luminance(hex) {
+  const [r, g, b] = hexRgb(hex).map((part) => { const c = part / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+/** The color itself when it reads on `bg`, otherwise moved toward `toward` until it does. */
+function readable(color, bg, ratio, toward) {
+  for (let t = 0; t <= 1; t += 0.05) { const candidate = mixHex(color, toward, t); if (contrast(candidate, bg) >= ratio) return candidate; }
+  return toward;
+}
+
+/** A custom theme is three choices, like Slack's: light or dark, the accent and the sidebar. Everything else follows. */
+function customColors({ mode = "light", accent = "#264cd6", sidebar = "#121a3a" }) {
+  const dark = mode === "dark";
+  const surface = dark ? "#17181b" : "#ffffff";
+  const main = readable(accent, surface, 3, dark ? "#ffffff" : "#000000");
+  const onAccent = contrast(main, "#ffffff") >= contrast(main, "#0f1a3d") ? "#ffffff" : "#0f1a3d";
+  const darkSide = luminance(sidebar) < 0.2;
+  const sideText = darkSide ? "#f2f4fb" : "#0f1a3d";
+  const sideActive = darkSide ? accent : mixHex(accent, sidebar, 0.84);
+  return {
+    "--amber": main,
+    "--accent-strong": mixHex(main, dark ? "#ffffff" : "#000000", 0.3),
+    "--on-accent": onAccent,
+    "--side": sidebar,
+    "--side-text": sideText,
+    "--side-muted": mixHex(sideText, sidebar, 0.28),
+    "--side-faint": mixHex(sideText, sidebar, 0.48),
+    "--side-line": mixHex(sideText, sidebar, 0.86),
+    "--side-raise": darkSide ? mixHex(sideText, sidebar, 0.92) : mixHex("#ffffff", sidebar, 0.25),
+    "--side-accent": readable(accent, sidebar, 3, darkSide ? "#ffffff" : "#000000"),
+    "--side-active": sideActive,
+    "--side-on-active": contrast(sideActive, "#ffffff") >= 3 ? "#ffffff" : readable(accent, sideActive, 4.5, "#000000"),
+    "--side-tint": darkSide ? "#ffffff" : "#0f1a3d",
+  };
+}
+
+/** Puts the space's look on the page, and remembers it so the next visit opens in it before the state arrives. */
+function applyAppearance(appearance = {}) {
+  const root = document.documentElement;
+  const preset = THEMES.find(([id]) => id === appearance.theme);
+  const theme = preset ? preset[0] : appearance.theme === "custom" ? "custom" : "cora";
+  const mode = preset ? preset[3] : theme === "custom" && appearance.mode === "dark" ? "dark" : "light";
+  root.setAttribute("data-theme", theme);
+  root.setAttribute("data-mode", mode);
+  for (const prop of CUSTOM_PROPS) root.style.removeProperty?.(prop);
+  const hex = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || "") ? value.toLowerCase() : fallback;
+  if (theme === "custom") for (const [prop, value] of Object.entries(customColors({ mode, accent: hex(appearance.accent, "#264cd6"), sidebar: hex(appearance.sidebar, "#121a3a") }))) root.style.setProperty(prop, value);
+  if (typeof getComputedStyle === "function") {
+    const bg = getComputedStyle(root).getPropertyValue("--bg").trim();
+    document.head?.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg || "#fbfaf6");
+  }
+  try { localStorage.setItem("cora.appearance", JSON.stringify({ theme, mode, accent: appearance.accent, sidebar: appearance.sidebar })); } catch {}
+}
+
+{
+  let remembered = {};
+  try { remembered = JSON.parse(localStorage.getItem("cora.appearance") || "{}") || {}; } catch {}
+  applyAppearance(typeof remembered === "object" ? remembered : {});
+}
+
+/** The space's logo, or the Cora mark. */
+function brandMark(cls = "") {
+  const logo = S.data?.appearance?.logo;
+  return h("img", { class: cls || null, src: logo ? `/api/appearance/logo?v=${logo}` : panelAsset("cora-mark.svg"), alt: "" });
+}
+
+/** Settings › Aspetto: the theme, or the owner's own colors, and the logo and name in the sidebar. */
+function appearancePane() {
+  const owner = S.data.currentUser?.role !== "member";
+  let current = { ...(S.data.appearance || { theme: "cora" }) };
+  const root = h("div", { class: "stack" });
+  let pending;
+  const save = (changes, row) => {
+    current = { ...current, ...changes };
+    applyAppearance(current);
+    draw();
+    clearTimeout(pending);
+    pending = setTimeout(async () => {
+      const saved = await guard(api("/api/appearance", { method: "PUT", body: changes }));
+      if (!saved) return;
+      S.data.appearance = saved;
+      if (row) flashSaved(row);
+    }, 250);
+  };
+  const preview = ([bg, side, accent], mode) => h("span", { class: "theme-preview", "aria-hidden": "true", vars: { "--p-bg": bg, "--p-side": side, "--p-accent": accent, "--p-line": mode === "dark" ? "rgba(255,255,255,.14)" : "rgba(15,26,61,.12)" } },
+    h("i", { class: "p-side" }, h("b"), h("b"), h("b")), h("i", { class: "p-main" }, h("b"), h("b"), h("u")));
+  const card = (id, name, hint, mode, swatch) => {
+    const on = current.theme === id;
+    return h("button", { type: "button", class: `theme-card${on ? " on" : ""}`, role: "radio", "aria-checked": String(on), disabled: !owner, onclick: () => {
+      if (current.theme === id) return;
+      const changes = { theme: id };
+      // Custom colors start from the combination in use, so the first edit is a small step.
+      if (id === "custom" && !S.data.appearance?.accent) Object.assign(changes, { mode: "light", accent: "#264cd6", sidebar: "#121a3a" });
+      if (id === "custom") { const from = THEMES.find(([key]) => key === current.theme); if (from) Object.assign(changes, { mode: from[3], sidebar: from[4][1], accent: from[4][2] }); }
+      save(changes, themeRow);
+    } }, preview(swatch, mode), h("span", { class: "theme-name" }, h("b", {}, name), h("small", {}, hint)), on ? icon("check", "theme-check") : null);
+  };
+  const themeRow = h("div", { class: "set-row stack" });
+  const customRow = h("div", { class: "set-rows theme-custom" });
+  const colorField = (label, key) => {
+    const picker = h("input", { type: "color", value: current[key] || "#264cd6", "aria-label": label, disabled: !owner });
+    const text = h("input", { class: "mono", value: current[key] || "", maxlength: "7", spellcheck: "false", "aria-label": label, disabled: !owner });
+    const row = setRow(label, key === "accent" ? "Pulsanti, link, schede attive e la voce scelta nella barra." : "Il fondo della barra laterale: il testo diventa chiaro o scuro da solo.", h("span", { class: "color-field" }, picker, text));
+    picker.addEventListener("input", () => { text.value = picker.value; save({ [key]: picker.value }, row); });
+    text.addEventListener("change", () => {
+      const value = text.value.trim().toLowerCase().replace(/^([0-9a-f]{6})$/, "#$1");
+      if (!/^#[0-9a-f]{6}$/.test(value)) { toast("Usa un colore esadecimale, per esempio #264cd6", true); text.value = current[key]; return; }
+      picker.value = value;
+      save({ [key]: value }, row);
+    });
+    return row;
+  };
+  const modeRow = () => setRow("Superfici", "Le pagine chiare o scure.", h("span", { class: "chips", role: "radiogroup" },
+    [["light", "Chiaro", "sun"], ["dark", "Scuro", "moon"]].map(([mode, label, name]) => h("button", { type: "button", role: "radio", "aria-checked": String(current.mode === mode), class: `chip${current.mode === mode ? " on" : ""}`, disabled: !owner, onclick: () => save({ mode }) }, icon(name), label))));
+
+  const logoInput = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: true });
+  logoInput.addEventListener("change", async () => {
+    const file = logoInput.files?.[0];
+    logoInput.value = "";
+    if (!file) return;
+    if (file.size > 512 * 1024) { toast("Il logo supera 512 KB", true); return; }
+    const image = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+    const saved = await guard(api("/api/appearance/logo", { method: "PUT", body: { image } }), "Logo caricato");
+    if (saved) { S.data.appearance = saved; current.logo = saved.logo; draw(); refreshBrand(); }
+  });
+  const nameInput = h("input", { value: current.name || "", maxlength: "40", placeholder: "Cora", "aria-label": tr("Nome dello spazio"), disabled: !owner });
+  const nameRow = setRow("Nome", "Il nome nella barra laterale. Vuoto, resta Cora.", nameInput);
+  nameInput.addEventListener("change", async () => {
+    const saved = await guard(api("/api/appearance", { method: "PUT", body: { name: nameInput.value } }));
+    if (!saved) { nameInput.value = current.name || ""; return; }
+    S.data.appearance = saved;
+    current.name = saved.name;
+    nameInput.value = saved.name;
+    flashSaved(nameRow);
+    refreshBrand();
+  });
+  const logoRow = h("div", { class: "set-row" });
+
+  function draw() {
+    themeRow.replaceChildren(h("div", { class: "set-text" }, h("b", {}, "Combinazione", h("span", { class: "set-saved", "aria-live": "polite" })), h("small", {}, owner ? "Vale per tutte le persone dello spazio." : "La sceglie il proprietario dello spazio.")),
+      h("div", { class: "theme-grid", role: "radiogroup", "aria-label": tr("Combinazione") },
+        THEMES.map(([id, name, hint, mode, swatch]) => card(id, name, hint, mode, swatch)),
+        card("custom", "Personalizzata", "I tuoi colori: accento, barra, chiaro o scuro.", current.mode, [current.mode === "dark" ? "#121a3a" : "#fbfaf6", current.sidebar || "#121a3a", current.accent || "#264cd6"])));
+    customRow.hidden = current.theme !== "custom";
+    customRow.replaceChildren(modeRow(), colorField("Accento", "accent"), colorField("Barra laterale", "sidebar"));
+    const logo = current.logo;
+    logoRow.replaceChildren(h("div", { class: "set-text" }, h("b", {}, "Logo", h("span", { class: "set-saved", "aria-live": "polite" })), h("small", {}, "PNG, JPEG o WebP fino a 512 KB, meglio quadrato. Prende il posto del pianeta di Cora.")),
+      h("div", { class: "set-control logo-control" }, h("span", { class: "logo-tile" }, brandMark()),
+        btn(logo ? "Cambia logo" : "Carica logo", { icon: "upload", cls: "sm", disabled: !owner, onclick: () => logoInput.click() }),
+        logo ? btn("Rimuovi", { icon: "trash", cls: "sm ghost", disabled: !owner, onclick: async () => {
+          const saved = await guard(api("/api/appearance/logo", { method: "DELETE" }), "Logo rimosso");
+          if (saved) { S.data.appearance = saved; current.logo = ""; draw(); refreshBrand(); }
+        } }) : null));
+  }
+  draw();
+  root.append(
+    panel({ icon: "palette", title: "Colori", hint: "Una combinazione pronta, o i tuoi colori come su Slack." }, setRows(themeRow), customRow),
+    panel({ icon: "image", title: "Logo e nome", hint: "Come si presenta il tuo spazio in cima alla barra laterale." }, setRows(logoRow, nameRow)),
+    logoInput);
+  return root;
+}
+
+/** The sidebar and the phone bar pick up a new logo or name without redrawing the page. */
+function refreshBrand() {
+  const appearance = S.data?.appearance || {};
+  for (const img of document.querySelectorAll(".brand img, .appbar-brand img")) img.src = appearance.logo ? `/api/appearance/logo?v=${appearance.logo}` : panelAsset("cora-mark.svg");
+  const name = document.querySelector(".brand b");
+  if (name) name.textContent = appearance.name || "Cora";
+  const tagline = document.querySelector(".brand small");
+  if (tagline) tagline.textContent = tr(appearance.name ? "su Cora" : "agenti residenti");
+}
+
 /* ---------- data and live events ---------- */
 async function loadState() {
   const harnessProgress = S.data?.harnessProgress;
@@ -523,6 +714,7 @@ async function loadState() {
     data.harnesses = S.data.harnesses;
   }
   S.data = data;
+  if (data.appearance) applyAppearance(data.appearance);
   if (BUILD && data.build && data.build !== BUILD) S.staleBuild = true;
   if (S.quotaPanel?.node.isConnected) S.quotaPanel.apply([...(data.quotaAccounts || data.subscriptions || []), ...(data.providerUsage || [])]);
   updateLamp();
@@ -712,7 +904,7 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
   const info = S.data ? transportInfo() : { icon: "radio", label: "Cora", where: tr("Caricamento…") };
   app.replaceChildren(h("div", { class: `app${mode ? ` mode-${mode}` : ""}` },
     h("aside", { class: "sidebar" },
-      h("a", { class: "brand", href: "#/" }, h("img", { src: panelAsset("icon-192.png"), alt: "" }), h("span", {}, h("b", {}, "Cora"), h("small", {}, "agenti residenti"))),
+      h("a", { class: "brand", href: "#/" }, brandMark(), h("span", {}, h("b", {}, raw(S.data?.appearance?.name || "Cora")), h("small", {}, S.data?.appearance?.name ? "su Cora" : "agenti residenti"))),
       h("a", { class: "onair-card", href: "#/settings" },
         h("span", { class: "panel-ico" }, icon(info.icon)),
         h("span", { class: "grow" }, h("b", {}, S.data ? platformsOn().map((kind) => TRANSPORTS[kind].label).join(" · ") : info.label), h("small", {}, info.where)),
@@ -724,7 +916,7 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
         h("a", { href: "#/new", class: section === "new" ? "active" : "" }, h("span", { class: "avatar xs add" }, icon("plus")), h("span", { class: "grow" }, "Nuovo agente"))),
       h("div", { class: "side-account" }, accountButton("side"))),
     h("header", { class: "appbar" },
-      back ? h("a", { class: "icon-btn", href: back, "aria-label": "Indietro" }, icon("back")) : h("a", { class: "appbar-brand", href: "#/" }, h("img", { src: panelAsset("icon-192.png"), alt: "Cora" })),
+      back ? h("a", { class: "icon-btn", href: back, "aria-label": "Indietro" }, icon("back")) : h("a", { class: "appbar-brand", href: "#/", "aria-label": S.data?.appearance?.name || "Cora" }, brandMark()),
       h("h1", {}, title),
       accountButton("bar")),
     h("main", { class: "content" }, h("div", { class: "wrap" }, S.data?.preview ? h("div", { class: "banners" }, previewBanner(S.data.preview)) : null, S.data?.encryptionRequired && (["brain", "thread", "salotto", "contesto"].includes(section) || section === "agent" && ["chat", "memoria", "ragionamento"].includes(route()[2])) ? encryptionWarning("Lo storico precedente all’attivazione può contenere dati in chiaro e resta accessibile.") : null, content)),
@@ -9583,6 +9775,16 @@ function artifactSpacePanel() {
   return h("div", { class: "stack" }, panel({ icon: "layers", title: "Spazio", hint: "Lo spazio che usano gli artefatti su questa macchina." }, box, setRows(row)));
 }
 
+/** The row's «salvato» for a moment. */
+function flashSaved(row) {
+  const mark = row?.querySelector(".set-saved");
+  if (!mark) return;
+  mark.textContent = tr("salvato");
+  mark.classList.add("on");
+  clearTimeout(mark.timer);
+  mark.timer = setTimeout(() => { mark.classList.remove("on"); mark.textContent = ""; }, 1800);
+}
+
 async function saveSettings(changes, row = null) {
   try {
     S.data.settings = await api("/api/settings", { method: "PUT", body: changes });
@@ -9927,7 +10129,7 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", ...ACCOUNT_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", "aspetto", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
@@ -10316,6 +10518,7 @@ function renderSettings() {
   page("cifratura", h("div", { class: "stack" }, encryptedSetting(encryptedUI()), encryptedPasskeySettings(encryptedUI())));
   page("controlli", docChecksPane());
   page("preferenze", languagePanel(), notificationsPanel());
+  page("aspetto", appearancePane());
 
   /* ---------- the list ---------- */
   const doc = S.data.doc || {};
@@ -10345,6 +10548,7 @@ function renderSettings() {
     } }] : []),
     { id: "cifratura", group: "Generale", label: "Spazio cifrato", mark: "lock", state: () => [null, tr("Passkeys e cartelle cifrate")] },
     { id: "controlli", group: "Generale", label: "Controlli di doc", mark: "shield", state: () => [doc.installed ? "on" : "off", doc.installed ? tr("doc attivo") : tr("doc non installato")] },
+    { id: "aspetto", group: "Generale", label: "Aspetto", mark: "palette", state: () => [null, tr(S.data.appearance?.theme === "custom" ? "Personalizzata" : THEMES.find(([id]) => id === (S.data.appearance?.theme || "cora"))?.[1] || "Cora")] },
     { id: "preferenze", group: "Generale", label: "Lingua e notifiche", mark: "globe", state: () => [null, LANGS[LANG]] },
   ];
   function drawNav() {

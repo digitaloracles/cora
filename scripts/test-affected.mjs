@@ -24,7 +24,7 @@ const FULL = [
 const NONE = [/^docs\//, /\.md$/, /^LICENSE$/, /^\.gitignore$/, /^deploy\//, /^bin\/(icons|login-link|cli-smoke|hermes-smoke)\.mjs$/, /^web\/.*\.(png|svg|webmanifest)$/, /^scripts\/test-affected\.mjs$/, /^node_modules$/];
 
 const PANEL = {
-  files: ["connections", "key-connectors", "hermes-keys", "access", "permissions"],
+  files: ["connections", "key-connectors", "hermes-keys", "access", "permissions", "appearance"],
   cora: ["agent remote access", "security seal autosaves", "external configuration MCP", "shared owner controls", "panel auth", "routine workspaces", "subscription preparation", "manual subscription codes", "connector setup", "Linear workspace", "Claude OAuth", "device-code"],
 };
 
@@ -32,6 +32,7 @@ const PANEL = {
 const AREAS = [
   { name: "Firecrawl connector", paths: [/^src\/connectors\/firecrawl\//, /^src\/connectors\/remote-mcp\.js$/, /^test\/firecrawl-fixtures\.js$/, /^test\/connector-firecrawl\.test\.js$/], files: ["connector-firecrawl", "connector-lovable", "key-connectors"], cora: ["Firecrawl connector"] },
   { name: "tool budget", paths: [/^src\/tool-budget\.js$/, /^test\/tool-budget\.test\.js$/], files: ["tool-budget"], cora: ["a Gemini subscription"] },
+  { name: "appearance", paths: [/^src\/appearance\.js$/, /^test\/appearance\.test\.js$/], files: ["appearance"], cora: [] },
   { name: "panel assets", paths: [/^src\/panel-assets\.js$/], files: [], cora: ["panel auth", "agents in Discord"] },
   { name: "agent progress", paths: [/^src\/agent-progress\.js$/], files: ["agent-progress"], cora: ["talking with the agents"] },
   { name: "thread topics", paths: [/^src\/thread-topics\.js$/], files: ["thread-topics"], cora: ["talking with the agents"] },

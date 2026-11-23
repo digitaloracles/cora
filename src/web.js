@@ -40,6 +40,7 @@ import { brainsInUse, testRule } from "./rule-test.js";
 import { connectorCatalog, KEY_SERVICES } from "./connectors/index.js";
 import { KeyConnectorError } from "./connectors/key-connectors.js";
 import { runsOnAccount } from "./subscription-usage.js";
+import { readAppearance, readLogo, removeLogo, saveAppearance, saveLogo } from "./appearance.js";
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 const COOKIE = "cora_session";
@@ -57,6 +58,7 @@ const STATIC = {
   "/assets/i18n.js": ["i18n.js", "text/javascript; charset=utf-8"],
   "/assets/styles.css": ["styles.css", "text/css; charset=utf-8"],
   "/assets/favicon.svg": ["favicon.svg", "image/svg+xml"],
+  "/assets/cora-mark.svg": ["cora-mark.svg", "image/svg+xml"],
   "/assets/manifest.webmanifest": ["manifest.webmanifest", "application/manifest+json"],
   "/manifest.webmanifest": ["manifest.webmanifest", "application/manifest+json"],
   "/assets/icon-192.png": ["icon-192.png", "image/png"],
@@ -1245,6 +1247,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       ]);
       return send(res, 200, {
         settings: store.settings,
+        appearance: readAppearance(store),
         preview: previewWindow.state(user),
         encryptionRequired: encrypted.enabled,
         build: assets.build(),
@@ -1484,6 +1487,27 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       await subscriptions.discoverResidents();
       return send(res, 200, subscriptions.list().filter((record) => record.resident));
     }
+    /* How the space looks: everyone reads it, only the space owner changes it (DESIGN.md › Themes). */
+    if (path === "/api/appearance" && method === "GET") return send(res, 200, readAppearance(store));
+    if (path === "/api/appearance/logo" && method === "GET") {
+      const logo = readLogo(store);
+      if (!logo) throw new HttpError(404, "nessun logo");
+      const pinned = url.searchParams.get("v") === logo.hash;
+      return send(res, 200, logo.data, { "Content-Type": logo.mime, "Cache-Control": pinned ? "private, max-age=31536000, immutable" : "private, no-cache", "Content-Security-Policy": "default-src 'none'; sandbox" });
+    }
+    if (path.startsWith("/api/appearance") && method !== "GET" && user.role !== "owner") throw new HttpError(403, "Solo il proprietario sceglie l'aspetto dello spazio.");
+    if (path === "/api/appearance" && method === "PUT") {
+      const appearance = saveAppearance(store, await readJson(req, 4096));
+      activity({ type: "settings", text: "aspetto dello spazio aggiornato" });
+      return send(res, 200, appearance);
+    }
+    if (path === "/api/appearance/logo" && method === "PUT") {
+      const body = await readJson(req, 800 * 1024);
+      const appearance = saveLogo(store, body.image);
+      activity({ type: "settings", text: "logo dello spazio aggiornato" });
+      return send(res, 200, appearance);
+    }
+    if (path === "/api/appearance/logo" && method === "DELETE") return send(res, 200, removeLogo(store));
     if (path === "/api/settings" && method === "PUT") {
       if (knowledge?.ownerMemory && user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce le impostazioni dello spazio.");
       const before = channels.active;
