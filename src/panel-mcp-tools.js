@@ -363,9 +363,14 @@ export function toolSchema(tool) {
   return { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: Boolean(tool.passthrough) };
 }
 
-const ANNOTATION = (tool) => tool.method === "GET"
-  ? { readOnlyHint: true, openWorldHint: false }
-  : { readOnlyHint: false, destructiveHint: tool.method === "DELETE" || /delete|remove|disconnect|revoke|forget|archive|reset/.test(tool.name), idempotentHint: tool.method === "PUT" || tool.method === "DELETE", openWorldHint: false };
+const OPEN_WORLD_AREAS = new Set(["agent-communication", "connectors", "transports", "email"]);
+/** Explicit hints for every tool: reads change nothing; a write that replaces (PUT) or removes something is destructive. */
+const ANNOTATION = (tool) => {
+  const openWorldHint = OPEN_WORLD_AREAS.has(tool.area) || /_share|_send/.test(tool.name);
+  if (tool.method === "GET") return { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint };
+  const destructiveHint = tool.method === "DELETE" || tool.method === "PUT" || /delete|remove|disconnect|revoke|forget|archive|reset|restore|purge/.test(tool.name);
+  return { readOnlyHint: false, destructiveHint, idempotentHint: tool.method === "PUT" || tool.method === "DELETE", openWorldHint };
+};
 
 export function toolDefinition(tool) {
   return { name: tool.name, title: tool.title, description: tool.description, inputSchema: toolSchema(tool), annotations: { title: tool.title, ...ANNOTATION(tool) } };

@@ -14,6 +14,7 @@ import { SecretNotices } from "./secret-notices.js";
 import { PACKAGE_MAX_BYTES } from "./agent-transfer.js";
 import { AppAccess } from "./app-access.js";
 import { PanelMcp } from "./panel-mcp.js";
+import { McpGrants } from "./panel-mcp-grant.js";
 import { drawnAvatar } from "./avatar.js";
 import { passLedger, verifyPass } from "./pass.js";
 import { shareHosts } from "./share-host.js";
@@ -186,6 +187,17 @@ export function cleanDocRule(input, taken = new Set()) {
     threshold: threshold >= 0.5 && threshold <= 0.95 ? threshold : 0.8,
     enabled: input?.enabled !== false,
   };
+}
+
+async function readBody(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new HttpError(413, "body too large");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(req, limit = 256 * 1024) {
@@ -486,6 +498,14 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     store, dispatch: (req, res, url, user) => api(req, res, url, user),
     publicOrigin: config.publicHost ? `https://${config.publicHost}` : cloud ? `https://${cloud.audience}` : "",
     insecure: config.insecureCookies === true,
+    // The usecora.space MCP gateway (one address for Claude and ChatGPT) vouches for the caller with a pass per request.
+    gateway: cloud ? (pass) => {
+      const fields = verifyPass(cloud.key, pass, { audience: `mcp:${cloud.audience}` });
+      const identity = fields?.sub ? cloudIdentity(fields) : null;
+      if (!identity || !store.allowsPanelUser(identity) || !firstUse(fields)) return null;
+      const known = store.panelUser(identity.id);
+      return known && known.role === identity.role && known.email === identity.email.toLowerCase() ? known : store.registerPanelUser(identity);
+    } : null,
     authorize: (user, method, url) => {
       const agentId = /^\/api\/agents\/([\w-]+)(?:\/|$)/.exec(url.pathname)?.[1];
       if (agentId && !knowledge?.canManage(store.agent(agentId), user) && !ownerTransport(user, url.pathname)) throw new HttpError(403, "Agente privato.");
@@ -496,6 +516,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     },
   });
 
+  const mcpGrants = sessionKey ? new McpGrants({ store, panelMcp, gateways: config.mcpGateways || [], key: sessionKey, insecure: config.insecureCookies === true }) : null;
   const appAccess = new AppAccess({ store });
   if (push) { push.appTargets = () => appAccess.pushTargets(); push.dropAppToken = (token) => appAccess.dropPush(token); }
   const threadScopeFor = (user) => {
@@ -2503,6 +2524,21 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     return send(res, 200, { ok: true });
   }
 
+  /** An MCP gateway asks for an access on the signed-in person's behalf: the consent page and its answer. */
+  async function mcpGrant(req, res, url) {
+    moveLegacyCookie(req, res);
+    const user = sessionUser(req);
+    let page;
+    if (req.method === "GET") page = mcpGrants.show(user, url, cloud?.login || "");
+    else if (req.method === "POST") {
+      const expected = `${config.insecureCookies ? "http" : "https"}://${req.headers.host}`;
+      if (req.headers.origin && req.headers.origin !== expected && !(config.publicHost && req.headers.origin === `https://${config.publicHost}`)) throw new HttpError(403, "cross-origin request");
+      page = mcpGrants.answer(user, Object.fromEntries(new URLSearchParams((await readBody(req, 8192)).toString("utf8"))));
+    } else throw new HttpError(405, "method not allowed");
+    res.writeHead(page.status, page.headers);
+    return res.end(page.html);
+  }
+
   /** A pass from usecora.space, or a one-time link made on the host, becomes this panel's usual session. */
   function signInFrom(req, res, url) {
     let ok = false;
@@ -2678,6 +2714,11 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       }
 
       if (url.pathname === "/mcp") return await panelMcp.handle(req, res, readJson);
+      if (url.pathname === "/mcp/authorize" && mcpGrants) return await mcpGrant(req, res, url);
+      if (url.pathname === "/mcp/token" && mcpGrants && req.method === "POST") {
+        try { return send(res, 200, mcpGrants.exchange(await readJson(req, 8192))); }
+        catch (error) { return send(res, 400, { error: error.message === "invalid_grant" ? "invalid_grant" : "invalid_request" }); }
+      }
       if (req.method !== "GET" && req.method !== "HEAD") {
         if (req.headers["x-cora"] !== "1") throw new HttpError(403, "missing X-Cora header");
         const origin = req.headers.origin;
