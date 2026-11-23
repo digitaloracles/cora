@@ -2121,7 +2121,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       const user = await bots.verify(agent, token, { mainUserId: bots.listener() ? null : discord.user?.id });
       await storeSecret(bots.envName(agent), token);
       activity({ type: "discord", agentId: agent.id, text: `token del bot salvato in hush (${user.username})` });
-      await bots.attach(agent, token);
+      await bots.attach(agent, token, undefined, user);
       return send(res, 200, await publicAgent(store.agent(agent.id)));
     }
 

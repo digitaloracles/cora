@@ -4169,7 +4169,7 @@ describe("agents in Discord", () => {
     const directory = tempHome();
     const token = (tail) => `MTQ2NzEyMzQ1Njc4OTAxMjM0NQ.Gabcde.${tail.padEnd(27, "x")}`;
     const tokens = { CORA_BOT_UNLINK: token("unlink"), CORA_BOT_KEEP: token("keep") };
-    for (const [tail, id] of [["unlink", "600000000000000061"], ["keep", "600000000000000062"], ["replacement", "600000000000000063"], ["reused", "600000000000000064"]]) {
+    for (const [tail, id] of [["unlink", "600000000000000061"], ["keep", "600000000000000062"], ["replacement", "600000000000000063"], ["reused", "600000000000000064"], ["sleepy", "600000000000000065"]]) {
       discord.state.botUsers.set(token(tail), { id, username: tail });
     }
     const seed = new Store(directory);
@@ -4217,6 +4217,31 @@ describe("agents in Discord", () => {
     assert.equal(tokens.CORA_BOT_UNLINK, token("unlink"), "a new agent cannot overwrite the renamed agent's credential");
     assert.equal(tokens[reused.bot.env], token("reused"));
     await request(`/api/agents/${reused.id}`, { method: "DELETE" });
+
+    const sleepy = await (await request("/api/agents", { method: "POST", body: JSON.stringify({ name: "Sleepy", model: "ollama/test-model", tools: false, chattiness: 0 }) })).json();
+    assert.equal((await request(`/api/agents/${sleepy.id}`, { method: "PUT", body: JSON.stringify({ enabled: false }) })).status, 200);
+    const pastedAt = Date.now();
+    const asleep = await request(`/api/agents/${sleepy.id}/bot`, { method: "PUT", body: JSON.stringify({ token: token("sleepy") }) });
+    assert.equal(asleep.status, 200);
+    assert.ok(Date.now() - pastedAt < 5000, "a switched-off agent does not wait for a bot that cannot connect");
+    const asleepBot = (await asleep.json()).bot;
+    assert.equal(asleepBot.configured, true, "the saved token is reported, not the empty setup");
+    assert.equal(asleepBot.state, "off");
+    assert.equal(asleepBot.user, null);
+    assert.equal(asleepBot.app.id, "600000000000000065");
+    assert.match(asleepBot.inviteUrl, /client_id=600000000000000065/, "the app can be invited while its agent is off");
+    assert.equal(instance.bots.client(sleepy.id), null);
+    const sleepyPanel = panelHarness({ language: "it", hash: `#/agent/${sleepy.id}/impostazioni/discord`, fetch: (url, options) => request(url, options) });
+    await sleepyPanel.run("boot()");
+    await waitFor(() => sleepyPanel.app.textContent.includes("Sleepy è spento: accendilo"), { what: "switched-off bot notice" });
+    assert.ok(sleepyPanel.app.querySelectorAll("a").some((node) => node.textContent === "Invita nel server" && node.attributes.href === asleepBot.inviteUrl));
+    assert.ok(!sleepyPanel.app.querySelectorAll("input").some((node) => node.attributes.placeholder === "Token del bot Discord"), "no empty token form after saving");
+    assert.equal((await request(`/api/agents/${sleepy.id}`, { method: "PUT", body: JSON.stringify({ enabled: true }) })).status, 200);
+    await waitFor(() => instance.bots.client(sleepy.id)?.user.id === "600000000000000065", { what: "bot connects once its agent is on" });
+    await waitFor(() => discord.state.profilePatches.some((patch) => patch.token === token("sleepy") && patch.username === "Sleepy"), { what: "bot takes the panel name" });
+    await request(`/api/agents/${sleepy.id}/bot`, { method: "DELETE" });
+    await request(`/api/agents/${sleepy.id}`, { method: "DELETE" });
+
     assert.equal((await fetch(`${root}${path}`, { method: "DELETE", headers: { "X-Cora": "1" } })).status, 401);
     assert.equal((await fetch(`${root}${path}`, { method: "DELETE", headers: { Cookie: session } })).status, 403);
     assert.equal((await request("/api/agents/ag_missing/bot", { method: "DELETE" })).status, 404);
