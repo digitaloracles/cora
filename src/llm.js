@@ -10,6 +10,7 @@ import { DEEPSEEK_CATALOG, HERMES_ENDS, hermesKeyBackend, hermesRemoteModel } fr
 import { imageMime } from "./images.js";
 import { routerUsage } from "./usage.js";
 
+const RESTART_NOTE = "[Cora] Your previous attempt at this turn was stopped halfway to update the harness you run on. Check what you already did (messages, files, tool results) before repeating any action, then continue from where you were.";
 const REQUEST_TIMEOUT_MS = 240000;
 
 /**
@@ -716,7 +717,7 @@ export class LLM {
     // A failed attempt is only retried when the agent had not started working: re-running a
     // turn that already used a tool would do its side effects twice.
     let used = 0;
-    const once = async () => {
+    const once = async (turnSignal) => {
       // A runner that reads the CLI's steps from its own records syncs them before each tool runs.
       const beforeTool = { run: null };
       const watched = async (toolName, args) => {
@@ -730,7 +731,7 @@ export class LLM {
         : null;
       const run = tools.length || relay ? this.bridge.register({ tools, execute: watched, ttlMs: timeoutMs + 60000, relay }) : null;
       const options = {
-        model: name, system, prompt, mcp: run, toolNames: tools.map((tool) => tool.name), workDir: this.cliWorkDir, timeoutMs, onStep, onUsage, effort, goal, signal: runSignal, beforeTool,
+        model: name, system, prompt: restarted ? `${RESTART_NOTE}\n\n${prompt}` : prompt, mcp: run, toolNames: tools.map((tool) => tool.name), workDir: this.cliWorkDir, timeoutMs, onStep, onUsage, effort, goal, signal: turnSignal, beforeTool,
       };
       try {
         if (isSubscriptionProvider(provider) && provider !== "pi") {
@@ -744,20 +745,20 @@ export class LLM {
           }[provider];
           const invoke = (authEnv, residentAuth) => cli.run({ bin: cli.bin, ...options, authEnv, residentAuth, home: this.grokHome,
             workDir: authEnv ? join(this.cliWorkDir, subscriptionId) : this.cliWorkDir });
-          return await this.subscriptions.run(subscriptionId, provider, runSignal, invoke);
+          return await this.subscriptions.run(subscriptionId, provider, turnSignal, invoke);
         }
         const kimiRelay = relay ? { url: run.relayUrl, token: run.token } : null;
         if (provider === "hermes" && relay) {
           // Hermes on Kimi's subscription: the relay's address is its endpoint and the run's token its key.
           const remote = name.split("/").slice(1).join("/");
-          return await this.subscriptions.run(subscriptionId, "kimi", runSignal, () => runHermes({ bin: this.hermes.bin, ...options, home: `${this.hermes.home}-kimi-${createHash("sha256").update(`${remote}:${Boolean(vision)}`).digest("hex").slice(0, 12)}`, baseUrl: `${kimiRelay.url}/v1`, model: remote, apiKey: kimiRelay.token, vision }));
+          return await this.subscriptions.run(subscriptionId, "kimi", turnSignal, () => runHermes({ bin: this.hermes.bin, ...options, home: `${this.hermes.home}-kimi-${createHash("sha256").update(`${remote}:${Boolean(vision)}`).digest("hex").slice(0, 12)}`, baseUrl: `${kimiRelay.url}/v1`, model: remote, apiKey: kimiRelay.token, vision }));
         }
         if (provider === "pi") {
           const backend = name.split("/")[0];
           const piOptions = { bin: this.piBin, ...options, vision, ollamaUrl: this.hermesEnds.ollama.baseUrl };
-          if (relay) return await this.subscriptions.run(subscriptionId, "kimi", runSignal, () => runPi({ ...piOptions, relay: kimiRelay }));
+          if (relay) return await this.subscriptions.run(subscriptionId, "kimi", turnSignal, () => runPi({ ...piOptions, relay: kimiRelay }));
           if (account === "pi") {
-            return await this.subscriptions.run(subscriptionId, "pi", runSignal, (authEnv) => runPi({ ...piOptions, agentDir: authEnv.PI_CODING_AGENT_DIR }));
+            return await this.subscriptions.run(subscriptionId, "pi", turnSignal, (authEnv) => runPi({ ...piOptions, agentDir: authEnv.PI_CODING_AGENT_DIR }));
           }
           const apiKey = credentialId ? (this.credentials?.secret(credentialId) || "") : backend === "ollama" ? this.ollamaKey : this.deepseek.key;
           if (!apiKey) throw new Error(credentialId ? "chiave API non trovata" : `manca la chiave ${backend === "ollama" ? "Ollama" : "DeepSeek"} dello space`);
@@ -781,35 +782,54 @@ export class LLM {
         run?.dispose();
       }
     };
-    let installation;
-    while ((installation = this.harnessInstallation?.(provider))) {
-      if (!runSignal) await installation;
-      else {
-        runSignal.throwIfAborted();
-        let abort;
-        const cancelled = new Promise((_, reject) => {
-          abort = () => reject(runSignal.reason);
-          runSignal.addEventListener("abort", abort, { once: true });
-        });
-        try { await Promise.race([installation, cancelled]); }
-        finally { runSignal.removeEventListener("abort", abort); }
-      }
-    }
-    runSignal?.throwIfAborted();
+    // An update from the panel stops the turns on the harness it rewrites: each one waits for the
+    // new version and starts again on it, told that it was stopped halfway.
+    let restarted = false;
     this.activeRuns ||= new Map();
-    this.activeRuns.set(provider, (this.activeRuns.get(provider) || 0) + 1);
-    try {
-      return await this.retried(once, { runSignal, onStep, usedCount: () => used });
-    } finally {
-      const left = (this.activeRuns.get(provider) || 1) - 1;
-      if (left) this.activeRuns.set(provider, left);
-      else this.activeRuns.delete(provider);
+    for (;;) {
+      let installation;
+      while ((installation = this.harnessInstallation?.(provider))) {
+        if (!runSignal) await installation;
+        else {
+          runSignal.throwIfAborted();
+          let abort;
+          const cancelled = new Promise((_, reject) => {
+            abort = () => reject(runSignal.reason);
+            runSignal.addEventListener("abort", abort, { once: true });
+          });
+          try { await Promise.race([installation, cancelled]); }
+          finally { runSignal.removeEventListener("abort", abort); }
+        }
+      }
+      runSignal?.throwIfAborted();
+      const stop = new AbortController();
+      const turnSignal = runSignal ? AbortSignal.any([runSignal, stop.signal]) : stop.signal;
+      const running = this.activeRuns.get(provider) || new Set();
+      running.add(stop);
+      this.activeRuns.set(provider, running);
+      try {
+        return await this.retried(() => once(turnSignal), { runSignal: turnSignal, onStep, usedCount: () => used });
+      } catch (error) {
+        if (!stop.signal.aborted || runSignal?.aborted) throw error;
+        restarted = true;
+        onStep?.({ type: "note", text: "Aggiornamento dell'harness: turno fermato, riparte sulla nuova versione." });
+      } finally {
+        running.delete(stop);
+        if (!running.size && this.activeRuns.get(provider) === running) this.activeRuns.delete(provider);
+      }
     }
   }
 
   /** Whether a turn is running on this harness right now. */
   harnessBusy(provider) {
-    return Boolean(this.activeRuns?.get(provider));
+    return Boolean(this.activeRuns?.get(provider)?.size);
+  }
+
+  /** Stops the turns running on a harness about to be rewritten; they start again once it is in place. */
+  interruptHarness(provider) {
+    const running = [...(this.activeRuns?.get(provider) || [])];
+    for (const stop of running) stop.abort(new Error(`${provider}: turno fermato per l'aggiornamento`));
+    return running.length;
   }
 
   /** The model list is asked again on the next look: a new CLI may list new models. */

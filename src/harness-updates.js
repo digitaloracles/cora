@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { processesWithEnv, stopProcesses } from "./process-scan.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -77,13 +78,19 @@ function head(file) {
 export class HarnessUpdates {
   /**
    * `bins` maps a harness to the command Cora runs it with; `busy(provider)` says whether a turn
-   * is using it now; `changed(provider)` is told after a new version is in place, so the model
-   * catalogs are read again with it.
+   * is using it now; `interrupt(provider)` stops the turns running on it, which start again once
+   * the new version is in place; `homes` maps a harness to the home prefix of the processes Cora
+   * runs it with, which are stopped before it is rewritten; `changed(provider)` is told after a
+   * new version is in place, so the model catalogs are read again with it.
    */
-  constructor({ store, bins, busy = () => false, changed = () => {}, emit = () => {}, fetchImpl = fetch, registry = "https://registry.npmjs.org", env = process.env, grokHome = "", checkMs = CHECK_MS, retryMs = RETRY_MS, commandTimeoutMs = 10 * 60 * 1000 }) {
+  constructor({ store, bins, busy = () => false, interrupt = () => 0, homes = {}, changed = () => {}, emit = () => {}, fetchImpl = fetch, registry = "https://registry.npmjs.org", env = process.env, grokHome = "", checkMs = CHECK_MS, retryMs = RETRY_MS, commandTimeoutMs = 10 * 60 * 1000, stopMs = 30000, procRoot = "/proc" }) {
     this.store = store;
     this.bins = bins;
     this.busy = busy;
+    this.interruptTurns = interrupt;
+    this.homes = homes;
+    this.stopMs = stopMs;
+    this.procRoot = procRoot;
     this.changed = changed;
     this.emit = emit;
     this.fetchImpl = fetchImpl;
@@ -249,6 +256,42 @@ export class HarnessUpdates {
     } catch {}
   }
 
+  /**
+   * Holds a harness for an install in place: new turns wait from here on. With `interrupt` (the
+   * panel's button) the turns running on it are stopped instead of waited for, since a busy harness
+   * may never be idle; without it a busy harness is left alone. The processes Cora left running
+   * from it are stopped too, so nothing keeps the old code loaded. Answers the release, or null.
+   */
+  async hold(provider, { interrupt = false } = {}) {
+    let release;
+    this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
+    const free = () => {
+      this.installations.delete(provider);
+      release();
+    };
+    if (this.busy(provider)) {
+      if (!interrupt) { free(); return null; }
+      this.phase(provider, "stopping");
+      this.interruptTurns(provider);
+      const deadline = Date.now() + this.stopMs;
+      while (this.busy(provider) && Date.now() < deadline) await wait(200, undefined, { ref: false });
+      if (this.busy(provider)) { free(); return null; }
+    }
+    await this.stopProcesses(provider);
+    return free;
+  }
+
+  /** The processes run with this harness's home that are still alive (Linux, same user). */
+  leftovers(provider) {
+    const home = this.homes[provider];
+    if (!home) return [];
+    return processesWithEnv("HERMES_HOME", (value) => value === home || value.startsWith(`${home}-`) || value.startsWith(`${home}/`), { procRoot: this.procRoot });
+  }
+
+  async stopProcesses(provider) {
+    return stopProcesses(this.leftovers(provider));
+  }
+
   set(provider, values) {
     this.states[provider] = { ...(this.states[provider] || {}), ...values };
     this.store.setValue("harnessVersions", this.states);
@@ -272,16 +315,15 @@ export class HarnessUpdates {
    * edits, pulls, reinstalls its dependencies and puts the edits back. The turns using it wait, as
    * for any install in place, and the result is checked against the upstream again.
    */
-  async updateCheckout(provider, path, version, { update }) {
+  async updateCheckout(provider, path, version, { update, interrupt }) {
     const found = await this.checkoutStatus(path);
     this.set(provider, { state: found.state, latest: found.latest, error: found.error });
     if (!found.available || !update) return this.states[provider];
-    if (this.busy(provider)) {
+    const release = await this.hold(provider, { interrupt });
+    if (!release) {
       this.set(provider, { state: "deferred", error: "" });
       return this.states[provider];
     }
-    let release;
-    this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
     try {
       this.set(provider, { state: "updating", error: "" });
       this.phase(provider, "installing");
@@ -305,12 +347,11 @@ export class HarnessUpdates {
       this.set(provider, { state: "current", latest: "", error: "", checkedAt: verifiedAt, previous: version, updatedAt: verifiedAt, verifiedVersion: now });
       return this.states[provider];
     } finally {
-      this.installations.delete(provider);
-      release?.();
+      release();
     }
   }
 
-  async checkOne(provider, { update = true } = {}) {
+  async checkOne(provider, { update = true, interrupt = false } = {}) {
     const source = HARNESS_SOURCES[provider];
     const path = which(this.bins[provider], this.env.PATH);
     const checkedAt = new Date().toISOString();
@@ -325,7 +366,7 @@ export class HarnessUpdates {
       this.set(provider, { state: "self", latest: "", error: "" });
       return this.states[provider];
     }
-    if (method.kind === "git") return this.updateCheckout(provider, path, version, { update });
+    if (method.kind === "git") return this.updateCheckout(provider, path, version, { update, interrupt });
     let latest = "";
     if (source.package) {
       try { latest = await this.latest(provider); } catch (error) {
@@ -343,13 +384,12 @@ export class HarnessUpdates {
       if (!source.package) this.set(provider, { state: "unknown", latest: "" });
       return this.states[provider];
     }
-    // A versioned install (mise) leaves the running turns on their own copy; anything rewritten in place waits for them.
-    if (method.kind !== "mise" && this.busy(provider)) {
+    // A versioned install (mise) leaves the running turns on their own copy; anything rewritten in place holds them.
+    const release = method.kind === "mise" ? () => {} : await this.hold(provider, { interrupt });
+    if (!release) {
       this.set(provider, { state: "deferred", error: "" });
       return this.states[provider];
     }
-    let release;
-    if (method.kind !== "mise") this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
     try {
       this.set(provider, { state: "updating", error: "" });
       this.phase(provider, "installing");
@@ -382,8 +422,7 @@ export class HarnessUpdates {
       });
       return this.states[provider];
     } finally {
-      this.installations.delete(provider);
-      release?.();
+      release();
     }
   }
 
@@ -394,7 +433,7 @@ export class HarnessUpdates {
     const check = async (provider) => {
       this.publishProgress({ active: true, provider, phase: "checking", done, total: providers.length });
       try {
-        return await this.checkOne(provider, { update });
+        return await this.checkOne(provider, { update, interrupt: waitForTurns });
       } catch (error) {
         this.set(provider, { state: this.states[provider]?.state === "updating" ? "failed" : "unknown", error: error.message });
         return this.states[provider];

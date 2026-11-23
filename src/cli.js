@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { noteChildPid } from "./thread-sessions.js";
+import { processesWithEnv, stopProcesses } from "./process-scan.js";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -420,6 +421,11 @@ function hermesSteps({ home, input, since, onStep }) {
  * toolset: no terminal, files or computer use on the host), no personal rules
  * or memory of the owner's Hermes, the answer on stdout. Its thoughts and steps
  * come from the session it records.
+ *
+ * Since 0.23 a one-shot run goes through a gateway that Hermes starts for its home and leaves
+ * running, with the environment of the turn that started it: a later turn on the same home would
+ * call Cora's tools with that first turn's token. So `home` holds the configuration and each turn
+ * runs on a copy of it of its own, whose gateway (and lock root) ends with the turn.
  */
 export async function runHermes({ bin, model, system, prompt, mcp, toolNames, workDir, timeoutMs, home, baseUrl, apiKey = "", vision = false, onStep, beforeTool, signal }) {
   mkdirSync(workDir, { recursive: true, mode: 0o700 });
@@ -442,6 +448,7 @@ export async function runHermes({ bin, model, system, prompt, mcp, toolNames, wo
   const settled = (text) => text.replace(/^\s+default(_model)?:.*$/gm, "");
   if (settled(current) !== settled(config)) writeFileSync(configFile, config, { mode: 0o600 });
   const tools = mcp && toolNames.length;
+  const turnHome = hermesTurnHome(home);
   const input = `${system}\n\n---\n\n${prompt}`;
   const usageFile = join(workDir, `hermes-usage-${randomBytes(6).toString("hex")}.json`);
   // In one-shot mode an MCP server's toolset is named after the server, and -t is the complete list.
@@ -449,8 +456,8 @@ export async function runHermes({ bin, model, system, prompt, mcp, toolNames, wo
   const args = () => streamed
     ? ["chat", "--query-file", "-", "--quiet", "--oneshot", "-m", model, "--provider", "cora-endpoint", "--ignore-rules", "-t", tools ? "cora" : "clarify"]
     : ["-z", input, "-m", model, "--provider", "cora-endpoint", "--ignore-rules", "-t", tools ? "cora" : "clarify", "--usage-file", usageFile];
-  const env = { HERMES_HOME: home, CORA_MODEL_VISION: vision ? "1" : "0", ...(apiKey ? { CORA_ENDPOINT_KEY: apiKey } : {}), ...(tools ? { CORA_BRIDGE_URL: mcp.url, CORA_BRIDGE_TOKEN: mcp.token } : {}) };
-  const steps = hermesSteps({ home, input, since: Date.now() / 1000 - 5, onStep });
+  const env = { HERMES_HOME: turnHome, HERMES_GATEWAY_LOCK_DIR: join(turnHome, "gateway-locks"), CORA_MODEL_VISION: vision ? "1" : "0", ...(apiKey ? { CORA_ENDPOINT_KEY: apiKey } : {}), ...(tools ? { CORA_BRIDGE_URL: mcp.url, CORA_BRIDGE_TOKEN: mcp.token } : {}) };
+  const steps = hermesSteps({ home: turnHome, input, since: Date.now() / 1000 - 5, onStep });
   const poll = onStep ? setInterval(() => steps.read(), 1000) : null;
   poll?.unref?.();
   // Hermes records the turn that calls a tool before running it: its thought comes before the tool.
@@ -493,7 +500,36 @@ export async function runHermes({ bin, model, system, prompt, mcp, toolNames, wo
     if (beforeTool) beforeTool.run = null;
     steps.finish("", "");
     rmSync(usageFile, { force: true });
+    await endHermesTurn(turnHome);
   }
+}
+
+/** A turn's own home: the configuration, Cora's plugin and the catalogs Hermes keeps, copied from `home`. */
+function hermesTurnHome(home) {
+  const turns = join(home, "turns");
+  mkdirSync(turns, { recursive: true, mode: 0o700 });
+  // A turn Cora could not close (it stopped halfway) is cleared the next day.
+  for (const entry of readdirSync(turns)) {
+    const started = parseInt(entry.split("-")[0], 36);
+    if (Number.isFinite(started) && Date.now() - started > 24 * 3600 * 1000) {
+      try { rmSync(join(turns, entry), { recursive: true, force: true }); } catch {}
+    }
+  }
+  const turnHome = join(turns, `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`);
+  mkdirSync(join(turnHome, "plugins", "cora-tools"), { recursive: true, mode: 0o700 });
+  for (const file of ["plugin.yaml", "__init__.py"]) copyFileSync(join(home, "plugins", "cora-tools", file), join(turnHome, "plugins", "cora-tools", file));
+  for (const file of readdirSync(home)) {
+    if (file === "config.yaml" || /_cache\.(json|yaml|etag)$/.test(file)) {
+      try { copyFileSync(join(home, file), join(turnHome, file)); } catch {}
+    }
+  }
+  return turnHome;
+}
+
+/** Stops what the turn left running from its home (its gateway) and removes the home. */
+async function endHermesTurn(turnHome) {
+  try { await stopProcesses(processesWithEnv("HERMES_HOME", (value) => value === turnHome)); } catch {}
+  try { rmSync(turnHome, { recursive: true, force: true }); } catch {}
 }
 
 /**
