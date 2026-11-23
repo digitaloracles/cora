@@ -1,55 +1,65 @@
 # Cora — Design System
 
-The admin panel is a **radio studio mixing desk**. Each agent is a channel strip on the desk: LEDs for its state, a small monitor showing its desktop. Discord is the "ON AIR" lamp. The live activity feed is a teletype strip. Dark and tactile: one amber light on near-pure black, never brown.
+The admin panel follows the Cora brand of usecora.space (since 23/11/2026): the landing's daylight — paper, hairlines, navy ink and one cobalt action color — with the sidebar as the one bold surface, navy like the landing's night band. The radio-desk vocabulary stays in the components (channel strips, LEDs, the ON AIR lamp, the teletype), drawn in the theme's colors. The night desk itself is still there as the *Studio* theme.
+
+## Themes (`web/styles.css` › Themes, `applyAppearance()` in `web/app.js`)
+
+Like Slack, a space has a look of its own. The space owner sets it in **Settings › Aspetto**; it applies to everyone in the space and is stored server-side (`src/appearance.js`, `GET|PUT /api/appearance`, `GET|PUT|DELETE /api/appearance/logo`, also in `/api/state` as `appearance`).
+
+- **Ready combinations** (`THEMES`): **Cora** (default: paper page, navy `#121a3a` sidebar, cobalt `#264cd6`), **Giorno** (all daylight, mist sidebar), **Notte** (night navy surfaces, periwinkle accent `#8fa6ff`), **Studio** (the pre-November panel: near-black and amber `#f2a93b`), **Dopamina** (dopamina.it: navy `#000020` sidebar, magenta accent `#e5006e`, lilac-white page).
+- **Custom** (`theme: "custom"`): three choices, as on Slack — light or dark surfaces, the accent and the sidebar color. `customColors()` derives the rest: the accent is pushed until it reads 3:1 on the surface, text on the accent is white or navy by contrast, the sidebar's text, muted, faint, hairline, raised and active colors follow its luminance. Custom dark surfaces are neutral graphite so any accent sits on them.
+- **How it is drawn:** `:root` holds Cora; `:root[data-mode="dark"]` the dark base; `:root[data-theme="…"]` each combination's differences; a custom theme sets the same properties inline on `<html>`. Derived tokens (`--amber-glow/-line/-wash`, `--err-line`, `--ok-line`, `--shadow`) are declared on `:root, .sidebar`, so they follow whatever accent is in force there. The sidebar re-maps the usual names (`--text`, `--muted`, `--line`, `--panel`, `--amber`…) to its `--side-*` tokens, so every component inside it takes the sidebar's colors without its own rules. The last look is kept in `localStorage` (`cora.appearance`) and applied before the state arrives; `meta[name=theme-color]` follows `--bg`.
+- **Logo and name:** a PNG, JPEG or WebP up to 512 KB (never SVG: it could carry a script), recognized by its bytes, served to signed-in people only at `/api/appearance/logo?v=<hash>` (immutable when pinned) with `nosniff` and a sandbox CSP. It replaces the planet in the sidebar and the phone bar, on a white tile; the name (up to 40 characters) replaces *Cora*, and the tagline becomes *su Cora*. Without them the planet and *Cora* stay.
+- **The pane:** a grid of theme cards (role radio), each a small drawing of the panel in that theme (sidebar with its chosen row, page lines, an accent button), its name and one line; the chosen one has an accent border, a wash ring and a check. *Personalizzata* opens rows for Superfici (Chiaro/Scuro chips), Accento and Barra laterale (native color picker plus a mono hex field). A second panel holds the logo (white tile, *Carica logo* / *Cambia logo*, *Rimuovi*) and the name. A choice applies at once and saves after 250 ms; members see the same pane disabled, with *La sceglie il proprietario dello spazio*.
 
 ## Colors (CSS custom properties in `web/styles.css`)
 
-| Token | Value | Use |
-|---|---|---|
-| `--bg` | `#050505` | page background (near-pure black) |
-| `--bg-grain` | radial gradients + SVG noise | atmosphere on `body` |
-| `--panel` | `#0f0f0f` | cards, strips, panels |
-| `--panel-2` | `#171717` | inputs, nested surfaces, hover |
-| `--well` | `#000000` | wells: chat log, code, tracks |
-| `--line` | `#232323` | hairlines, borders |
-| `--line-strong` | `#353535` | focused borders, dividers on hover |
-| `--text` | `#f5f5f3` | primary text |
-| `--muted` | `#8f8f8a` | secondary text, labels |
-| `--faint` | `#5c5c58` | placeholders, disabled |
-| `--amber` | `#f2a93b` | primary accent: active tab, primary button |
-| `--amber-glow` | `rgba(242,169,59,.35)` | lamp/LED glow, focus ring |
-| `--amber-line` / `--amber-wash` | amber at 38% / 8% | borders and fills of amber things (owner bubbles, requests, answers, switches) |
-| `--red` | `#e5533d` | ON AIR lamp lit, destructive actions, errors |
-| `--green` | `#8cc56a` | LED: desktop running / ok |
-| `--blue` | `#6fa8dc` | tool calls in the feed |
-| `--paper` | `#e9dfcc` | teletype strip background |
-| `--ink` | `#1d1b18` | teletype text, text on amber buttons |
-| `--kind-client` … `--kind-topic` | amber `#f2a93b`, blue `#6fa8dc`, green `#8cc56a`, rose `#e0789a`, lavender `#b39ddb`, teal `#5cbfb0` | the six kinds of brain page (client, project, person, decision, procedure, topic): the nodes of the brain map and their legend |
+Values are Cora's; the other themes change them as above. `--amber` is the accent's historical name: in every theme it holds the theme's accent (cobalt in Cora), and so do the "amber" mentions in the components below.
 
-Each agent also has its own `color` (stored on the agent, default `#e8a33d`), used for its picture and its name in the feed. Cora draws each agent's picture like the mark: a circle and a ring as lines in the agent's color on `#070707`, the ring's far half faint, two big eyes; the seed varies where the ring sits (visor, cap, collar), its tilt and the eyes. A drawn picture carries its own circle, so it shows with no ring around it (`.avatar.drawn`); an uploaded one gets the color ring.
+| Token | Cora | Use |
+|---|---|---|
+| `--bg` | `#fbfaf6` | page (paper) |
+| `--panel` | `#ffffff` | cards, strips, panels |
+| `--panel-2` | `#f5f3ec` | inputs, nested surfaces, hover (mist) |
+| `--well` | `#f3f1ea` | wells: chat log, code, tracks |
+| `--line` / `--line-strong` | `#e4e1d6` / `#cfd4e0` | hairlines; focused borders |
+| `--text` / `--text-soft` | `#0f1a3d` / `#2b3556` | navy ink; code and long reads |
+| `--muted` / `--faint` | `#4a5270` / `#858aa0` | slate secondary text; placeholders, disabled |
+| `--amber` (accent) / `--accent-strong` / `--on-accent` | `#264cd6` / `#022782` / `#ffffff` | the one action color, its hover, text on it |
+| `--amber-glow` / `--amber-line` / `--amber-wash` | accent at 32% / 38% / 8% | focus rings, borders and fills of accent things |
+| `--red` / `--err-text` / `--err-soft` / `--err-bg` | `#c8402c` / `#b3361f` / `#fff1ee` / `#8a2a1a` | ON AIR lamp lit, destructive actions, errors |
+| `--green` / `--ok-text` | `#2e9d5a` / `#24764a` | LEDs on, ok |
+| `--blue` | `#2f6fb7` | tool calls |
+| `--led-off`, `--tint`, `--hi`, `--shade`, `--scrim` | | an LED off; the foreground for hover tints; the inset highlight; shadow color; dialog scrim |
+| `--screen` | `#0b1027` | desktop monitors stay a dark screen in every theme |
+| `--paper` / `--ink` | `#efe9da` / `#1d1b18` | the teletype strip |
+| `--toast-bg` / `--toast-text` / `--toast-ok` | navy / `#e6e9f5` / `#6fd39a` | toasts |
+| `--side`, `--side-text`, `--side-muted`, `--side-faint`, `--side-line`, `--side-raise`, `--side-accent`, `--side-active`, `--side-on-active`, `--side-tint` | `#121a3a` … | the sidebar's own colors; the current section is `--side-active` (cobalt) with `--side-on-active` text |
+| `--kind-client` … `--kind-topic` | `#d48a1a`, `#2f6fb7`, `#2e9d5a`, `#cc4f7a`, `#7e63c4`, `#1f9384` | the six kinds of brain page (dark themes use the lighter originals) |
+
+Each agent also has its own `color` (stored on the agent, default `#e8a33d`), used for its picture and its name in the feed. Cora draws each agent's picture like the mark: a circle and a ring as lines in the agent's color on `#070707`, the ring's far half faint, two big eyes; the seed varies where the ring sits (visor, cap, collar), its tilt and the eyes. A drawn picture carries its own dark circle in every theme, so it shows with no ring around it (`.avatar.drawn`); an uploaded one gets the color ring.
 
 ## Typography
 
-Loaded from Google Fonts.
+Loaded from Google Fonts, as on usecora.space.
 
-- **Display — Outfit** (600): logo, page titles, panel titles, agent names on strips. Rounded geometric, sentence case, tight tracking (`-0.02em` small, `-0.04em` large).
-- **Body — Manrope** (400/500/600): forms, paragraphs, buttons.
-- **Mono — DM Mono** (400/500): cron expressions, ids, timestamps, the teletype feed, small hardware-style labels (`font-size: 10–11px`, uppercase, `letter-spacing: .12em`).
-
-Scale: 11 / 13 / 15 (base) / 17 / 20 / 38 / 44 / 56px.
+- **Display — Unbounded** (600): the wordmark, page titles, panel titles and every heading of 18px and up; tight tracking, sentence case.
+- **Body — Schibsted Grotesk** (400–700): everything people read and click, small labels included, and titles under 18px (700).
+- **Code — the system monospace stack** (`ui-monospace, "SF Mono", Menlo, Consolas, monospace`): ids, model names, cron, hashes, timestamps in technical rows, the teletype, code.
+- No all-caps labels and no mono labels: what used to be hardware-style labels (`.label`, tabs, buttons, rail groups, badges) is Schibsted Grotesk 600 in sentence case, 11–13px.
 
 ## Spacing & shape
 
 - Spacing unit 4px; common steps 8, 12, 16, 24, 32, 48.
 - Radii: `--r-sm 6px` (inputs, chips), `--r-md 10px` (cards), `--r-lg 16px` (strips, panels). LEDs and avatars are circles.
-- Borders are 1px `--line`; panels add an inner top highlight `inset 0 1px 0 rgba(255,255,255,.04)` and a soft drop shadow, like brushed hardware.
+- Borders are 1px `--line`; panels add an inner top highlight in `--hi` and a soft drop shadow in `--shade`.
 - Content max width 1280px, 16px side gutter on phones.
 
 ## Brand
 
-- **Name:** Cora — Computer-Operating Resident Agents. Wordmark "Cora" in Outfit 600.
-- **Mark:** a sphere in outline on black: a thin amber rim and one equator tilted −24°, its far half at 38% opacity for depth. No fill, no glow. Drawn by `bin/icons.mjs` (PNG app icons, supersampled) and `web/favicon.svg`.
-- **Login:** the mark, the wordmark, the tagline, then the password card; nothing animated around it.
+- **Name:** Cora — Computer-Operating Resident Agents. Wordmark "Cora" in Unbounded.
+- **Mark:** the halftone planet of the Digital Oracles brand system, the same files as usecora.space: `web/cora-mark.svg` (white tile, sidebar and phone bar), `web/favicon.svg`, and the PNG app icons `icon-192.png`, `icon-512.png`, `apple-touch-icon.png` (copied from cora-website `cloud/web/cora-app-icon-*`). `bin/icons.mjs` draws the old amber sphere and is no longer used for the panel's icons.
+- **Login:** the app icon, the wordmark, the tagline, then the password card on the paper page; nothing animated around it.
 
 ## App shell
 
