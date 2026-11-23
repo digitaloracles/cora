@@ -22,7 +22,7 @@ test("the space owner sets the panel's look for everyone; members only read it",
   assert.equal(custom.status, 200);
   assert.deepEqual({ ...custom.data, logo: undefined }, { theme: "custom", mode: "dark", accent: "#1db954", sidebar: "#191414", name: "Acme Studio", logo: undefined });
 
-  for (const body of [{ theme: "neon" }, { mode: "sepia" }, { accent: "green" }, { sidebar: "#12345" }, { name: "<b>Acme</b>" }, { name: "x".repeat(41) }, []]) {
+  for (const body of [{ theme: "neon" }, { theme: "dopamina" }, { mode: "sepia" }, { accent: "green" }, { sidebar: "#12345" }, { name: "<b>Acme</b>" }, { name: "x".repeat(41) }, []]) {
     const bad = await f.request(owner, "/api/appearance", { method: "PUT", body });
     assert.equal(bad.status, 400, JSON.stringify(body));
   }
@@ -30,9 +30,13 @@ test("the space owner sets the panel's look for everyone; members only read it",
   assert.equal(kept.status, 200);
   assert.deepEqual({ theme: kept.data.appearance.theme, accent: kept.data.appearance.accent, name: kept.data.appearance.name }, { theme: "custom", accent: "#1db954", name: "Acme Studio" }, "refused changes leave the saved look as it was, and members see it in the state");
 
-  const partial = await f.request(owner, "/api/appearance", { method: "PUT", body: { theme: "dopamina" } });
-  assert.equal(partial.data.theme, "dopamina");
+  const partial = await f.request(owner, "/api/appearance", { method: "PUT", body: { theme: "studio" } });
+  assert.equal(partial.data.theme, "studio");
   assert.equal(partial.data.accent, "#1db954", "fields left out stay as they are");
+
+  f.app.store.setValue("appearance", { theme: "dopamina", mode: "light", accent: "#264cd6", sidebar: "#121a3a", name: "Dopamina" });
+  const retired = await f.request(owner, "/api/appearance");
+  assert.deepEqual([retired.data.theme, retired.data.name], ["cora", "Dopamina"], "a saved theme that is gone reads as Cora, keeping the rest");
 });
 
 test("the space logo is an image read by its bytes, served only to signed-in people", async (t) => {
@@ -70,5 +74,5 @@ test("the panel MCP offers the appearance as specific tools", () => {
   const byName = Object.fromEntries(TOOLS.map((tool) => [tool.name, tool]));
   assert.deepEqual(["cora_appearance_get", "cora_appearance_set", "cora_appearance_logo_set", "cora_appearance_logo_remove"].map((name) => [byName[name]?.method, byName[name]?.path]),
     [["GET", "/api/appearance"], ["PUT", "/api/appearance"], ["PUT", "/api/appearance/logo"], ["DELETE", "/api/appearance/logo"]]);
-  assert.deepEqual(byName.cora_appearance_set.body.theme.enum, ["cora", "giorno", "notte", "studio", "dopamina", "custom"]);
+  assert.deepEqual(byName.cora_appearance_set.body.theme.enum, ["cora", "giorno", "notte", "studio", "custom"]);
 });

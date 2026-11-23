@@ -2251,6 +2251,10 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         levelShares: store.artifactShares().filter((share) => share.prefix && share.status === "active").reduce((out, share) => ({ ...out, [share.prefix]: (out[share.prefix] || 0) + 1 }), {}),
       });
     }
+    if (path === "/api/artifacts/reviews/ignore" && method === "POST") {
+      const body = await readJson(req, 16384);
+      return send(res, 200, await artifacts.ignoreReviews(body.ids, user));
+    }
     if (path === "/api/artifacts/folders" && method === "POST") {
       const body = await readJson(req, 16384);
       const owner = knowledge?.ownerMemory || user.role === "owner";

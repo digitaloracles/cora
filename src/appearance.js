@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { imageMime } from "./images.js";
 
 /** The ready-made themes the panel draws (web/styles.css › Themes); "custom" takes the owner's own colors. */
-export const THEMES = ["cora", "giorno", "notte", "studio", "dopamina", "custom"];
+export const THEMES = ["cora", "giorno", "notte", "studio", "custom"];
 export const LOGO_LIMIT = 512 * 1024;
 const LOGO_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const HEX = /^#[0-9a-f]{6}$/;
@@ -17,7 +17,10 @@ const DEFAULT = { theme: "cora", mode: "light", accent: "#264cd6", sidebar: "#12
 export function readAppearance(store) {
   const saved = store.value("appearance", {}) || {};
   const logo = store.value("appearanceLogo", null);
-  return { ...DEFAULT, ...saved, logo: logo?.hash || "" };
+  const look = { ...DEFAULT, ...saved, logo: logo?.hash || "" };
+  // A theme no longer in the list falls back to Cora rather than to colors the panel cannot draw.
+  if (!THEMES.includes(look.theme)) look.theme = DEFAULT.theme;
+  return look;
 }
 
 export function cleanAppearance(input, previous = DEFAULT) {
