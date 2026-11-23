@@ -645,12 +645,12 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       try { return send(res, 200, { ...appAccess.setPush(device.id, body), enabled: Boolean(push?.enabled && push.apns) }); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
-    const choice = /^\/app\/v1\/choices\/(ch_[a-f0-9]{12})$/.exec(path);
+    const choice = /^\/app\/v1\/choices\/(ch_[a-f0-9]{12})(\/dismiss)?$/.exec(path);
     if (choice && method === "POST") {
       const body = await readJson(req, 4096);
       const record = orchestrator.choices.get(choice[1]);
       if (!record || !quotaAgentsFor(user).some((agent) => agent.id === record.agentId) || !mayAnswer(user, record)) throw new HttpError(404, "Domanda non trovata.");
-      try { return send(res, 200, await orchestrator.answerChoice(record.id, body.index, { user })); }
+      try { return send(res, 200, choice[2] ? orchestrator.dismissChoice(record.id, { user }) : await orchestrator.answerChoice(record.id, body.index, { user })); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
     if (method !== "GET") throw new HttpError(405, "L’app risponde solo alle scelte degli agenti.");

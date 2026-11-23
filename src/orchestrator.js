@@ -696,6 +696,11 @@ export class Orchestrator {
     const declined = decision === null && !exits.length && state.focus?.remindedAt && idleDecline(item.content) ? (named.length ? named : previous).filter((id) => previous.includes(id)) : [];
     const leaving = exits.length ? exits : declined;
     // The answer to an agent's question comes from whoever it asked: the owner, or the person the agent belongs to.
+    // After a restart the question still open in this thread says who is waiting.
+    if (!state.request) {
+      const open = this.choices.open().findLast((record) => record.channelId === state.id);
+      if (open) state.request = { agentId: open.agentId, at: Date.parse(open.askedAt) };
+    }
     const askedBy = state.request ? this.store.agent(state.request.agentId) : null;
     const asked = state.request && !item.others?.length && (item.kind === "owner" || this.ownsAgent(item, askedBy, state)) ? state.request : null;
     if (asked) {
@@ -2443,6 +2448,15 @@ export class Orchestrator {
     const record = this.choices.resolve(match, answer);
     if (record) this.emit({ type: "choice", agentId: record.agentId, channelId: record.channelId, id: record.id, status: record.status });
     return record;
+  }
+
+  /** The person sets a question aside in the native app: it leaves every app, and the agent hears nothing. */
+  dismissChoice(id, { user, authorName = "" } = {}) {
+    const english = this.store.settings.language === "en";
+    const by = String(authorName || user?.name || user?.email || this.store.ownerName() || "").slice(0, 80);
+    const record = this.closeChoice((entry) => entry.id === String(id || ""), { by, via: "app", status: "dismissed" });
+    if (!record) throw Object.assign(new Error(english ? "This question is closed." : "Questa domanda è chiusa."), { status: 409 });
+    return { id: record.id, status: record.status };
   }
 
   /**
