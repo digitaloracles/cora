@@ -80,14 +80,17 @@ export function threadLink(thread) {
  * `others`: the threads of the same channel only, the ones an agent is shown as its neighbours.
  * `owners`: every thread of the server by its issue key, used only to send work on an exact key to
  * the thread of that issue, never as context.
+ * `place`: `here` when it is a plain channel of a server (no thread): the channel itself is the topic.
  * `threads`: every known channel ({ id, name, guildId, thread, parentId }); `here` may carry `parentName`.
  */
 export function threadTopics(threads, here) {
   const current = here?.thread || here?.parentId ? { id: here.id, name: here.name, parentId: here.parentId || "", parentName: here.parentName || "" } : null;
+  // A channel of a server is a subject too, even without threads: its name is its topic.
+  const place = !current && here?.guildId && here.name && here.name !== here.id ? { id: here.id, name: here.name, guildId: here.guildId } : null;
   const topic = current ? issueKeys(here.name) : [];
   const others = new Map();
   const owners = new Map();
-  if (!here?.guildId) return { topic, others, owners, current };
+  if (!here?.guildId) return { topic, others, owners, current, place };
   const seen = new Set();
   for (const thread of threads) {
     if (!thread?.id || seen.has(thread.id) || thread.id === here.id || thread.guildId !== here.guildId || !(thread.thread || thread.parentId)) continue;
@@ -100,7 +103,7 @@ export function threadTopics(threads, here) {
       if (near) others.set(key, [...(others.get(key) || []), entry]);
     }
   }
-  return { topic, others, owners, current };
+  return { topic, others, owners, current, place };
 }
 
 /**

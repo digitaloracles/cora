@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Brain } from "../src/brain.js";
+import { Brain, shortRequest } from "../src/brain.js";
 import { issueKeys, sameChannel, threadLeak, threadTopics, sharesTopic, topicPlace } from "../src/thread-topics.js";
 
 const G = "1521874685690642564";
@@ -188,4 +188,31 @@ test("words never pick a thread of another channel, even with the same title", (
   ];
   assert.equal(topicPlace(places, places[0], "Aggiorna la documentazione del rilascio")?.id, "c");
   assert.equal(topicPlace(places.slice(0, 2), places[0], "Aggiorna la documentazione del rilascio"), null);
+});
+
+// NOT-101: a call in a plain channel («@Radix che fa sei morto?» in #theindipendentai) had no topic, so the freshest memories (MAVE) won.
+const TIA = "1565642601611141261";
+const tiaServer = [
+  ...server,
+  { id: TIA, name: "theindipendentai", guildId: G, thread: false },
+  { id: "1565642601611141300", name: "TIA-4 briefing vuoti", guildId: G, thread: true, parentId: TIA },
+];
+
+test("a plain channel of a server has its own topic, with the issues of its threads only", () => {
+  const map = threadTopics(tiaServer, tiaServer.find((item) => item.id === TIA));
+  assert.equal(map.current, null);
+  assert.deepEqual(map.place, { id: TIA, name: "theindipendentai", guildId: G });
+  const note = Object.create(Brain.prototype).topicNote(map);
+  assert.match(note, /Tema di questo canale: #theindipendentai \(channel_id "1565642601611141261"\)/);
+  assert.match(note, /Se il messaggio è solo un richiamo/);
+  assert.match(note, /TIA-4 → «TIA-4 briefing vuoti»/);
+  assert.doesNotMatch(note, /NOT-14|MTR-1400/);
+  assert.equal(threadTopics(tiaServer, { id: "dm", name: "dm" }).place, null, "a place outside a server has no channel topic");
+});
+
+test("a call of a few words is short; a request with its subject or a link is not", () => {
+  assert.equal(shortRequest("@Radix che fa sei morto?"), true);
+  assert.equal(shortRequest("<@&1570010400936960070> ci sei?"), true);
+  assert.equal(shortRequest("Controlla perché il briefing Anthropic non ha fonti e sistema il feed"), false);
+  assert.equal(shortRequest("https://theindependentai.com/briefing/x controlla"), false);
 });
