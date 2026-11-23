@@ -8,7 +8,7 @@ import { setTimeout as wait } from "node:timers/promises";
  * Where each harness comes from. A CLI that is behind its provider sees fewer models
  * (Codex lists gpt-6.2 only to new clients), so Cora keeps them current by itself:
  * npm packages through whatever installed them, self-updating CLIs through their own
- * command, and a git checkout only reported, because pulling it may carry local changes away.
+ * command, and a git checkout through its own updater, which keeps local edits.
  */
 export const HARNESS_SOURCES = {
   claude: { product: "Claude Code", package: "@anthropic-ai/claude-code" },
@@ -172,7 +172,11 @@ export class HarnessUpdates {
 
   async readVersion(provider, path) {
     const { code, output } = await this.run(path, ["--version"]);
-    return code === 0 ? parseVersion(output) : "";
+    if (code !== 0) return "";
+    const version = parseVersion(output);
+    // A checkout keeps its release number between releases: the upstream commit says where it stands.
+    const commit = HARNESS_SOURCES[provider]?.git && /upstream\s+([0-9a-f]{7,})/i.exec(output)?.[1];
+    return version && commit ? `${version} · ${commit.slice(0, 8)}` : version;
   }
 
   /** How a CLI was installed, which decides how it is brought up to date. */
@@ -250,6 +254,62 @@ export class HarnessUpdates {
     this.store.setValue("harnessVersions", this.states);
   }
 
+  /** Where a git checkout stands against its upstream, as `<cli> update --check` tells it. */
+  async checkoutStatus(path) {
+    const { code, output } = await this.run(path, ["update", "--check"], { timeoutMs: 120000 });
+    const available = code === 0 && /update available/i.test(output);
+    const behind = /(\d+)\s+commits?\s+behind/i.exec(output)?.[1];
+    return {
+      code, available,
+      state: available ? "outdated" : code === 0 ? "current" : "unknown",
+      latest: available ? (behind ? `+${behind} commit` : "nuova") : "",
+      error: code === 0 ? "" : output.trim().split("\n").pop()?.slice(0, 200) || "",
+    };
+  }
+
+  /**
+   * A git checkout (Hermes) is brought up to date by its own updater: `update --yes` parks local
+   * edits, pulls, reinstalls its dependencies and puts the edits back. The turns using it wait, as
+   * for any install in place, and the result is checked against the upstream again.
+   */
+  async updateCheckout(provider, path, version, { update }) {
+    const found = await this.checkoutStatus(path);
+    this.set(provider, { state: found.state, latest: found.latest, error: found.error });
+    if (!found.available || !update) return this.states[provider];
+    if (this.busy(provider)) {
+      this.set(provider, { state: "deferred", error: "" });
+      return this.states[provider];
+    }
+    let release;
+    this.installations.set(provider, new Promise((resolve) => { release = resolve; }));
+    try {
+      this.set(provider, { state: "updating", error: "" });
+      this.phase(provider, "installing");
+      const result = await this.run(path, ["update", "--yes"], { timeoutMs: this.commandTimeoutMs });
+      this.phase(provider, "restarting");
+      const started = await this.readVersion(provider, path);
+      this.phase(provider, "verifying");
+      const after = await this.checkoutStatus(path);
+      const now = started && await this.readVersion(provider, path);
+      if (result.code !== 0 || !now || after.code !== 0 || after.available) {
+        const detail = result.code !== 0
+          ? result.output.trim().split("\n").filter(Boolean).pop() || "uscito con codice " + result.code
+          : !now ? "il nuovo eseguibile non risponde"
+            : after.available ? `ancora indietro (${after.latest})` : after.error || "verifica non riuscita";
+        this.set(provider, { state: "failed", version: now || version, latest: after.latest || found.latest, error: detail.slice(0, 300) });
+        return this.states[provider];
+      }
+      this.set(provider, { version: now });
+      await this.changed(provider);
+      const verifiedAt = new Date().toISOString();
+      this.set(provider, { state: "current", latest: "", error: "", checkedAt: verifiedAt, previous: version, updatedAt: verifiedAt, verifiedVersion: now });
+      return this.states[provider];
+    } finally {
+      this.installations.delete(provider);
+      release?.();
+    }
+  }
+
   async checkOne(provider, { update = true } = {}) {
     const source = HARNESS_SOURCES[provider];
     const path = which(this.bins[provider], this.env.PATH);
@@ -260,18 +320,12 @@ export class HarnessUpdates {
     }
     const version = await this.readVersion(provider, path);
     const method = await this.method(provider, path);
-    this.set(provider, { path, version, method: method.kind, checkedAt, auto: ["mise", "npm", "command"].includes(method.kind) });
+    this.set(provider, { path, version, method: method.kind, checkedAt, auto: ["mise", "npm", "command", "git"].includes(method.kind) });
     if (method.kind === "self") {
       this.set(provider, { state: "self", latest: "", error: "" });
       return this.states[provider];
     }
-    if (method.kind === "git") {
-      const { code, output } = await this.run(path, ["update", "--check"], { timeoutMs: 120000 });
-      const behind = /(\d+)\s+commits?\s+behind/i.exec(output)?.[1];
-      const available = code === 0 && /update available/i.test(output);
-      this.set(provider, { state: available ? "outdated" : code === 0 ? "current" : "unknown", latest: available ? (behind ? `+${behind} commit` : "nuova") : "", error: code === 0 ? "" : output.trim().split("\n").pop()?.slice(0, 200) || "" });
-      return this.states[provider];
-    }
+    if (method.kind === "git") return this.updateCheckout(provider, path, version, { update });
     let latest = "";
     if (source.package) {
       try { latest = await this.latest(provider); } catch (error) {

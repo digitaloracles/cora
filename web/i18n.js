@@ -23,7 +23,6 @@ export const EN = {
   "Stato dell’app non valido.": "Invalid app state.",
   "Dispositivo non trovato.": "Device not found.",
   "Questo account non entra più in questo spazio.": "This account no longer has access to this space.",
-  "Non si aggiorna da solo: l'aggiornamento può toccare modifiche locali.": "Not updated automatically: the update may touch local changes.",
   "In aggiornamento": "Updating",
   "Aspetta la fine dei turni": "Waits for running turns",
   "Aggiornamento non riuscito": "Update failed",

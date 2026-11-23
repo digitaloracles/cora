@@ -9875,8 +9875,7 @@ function harnessPane() {
             : tr("Nessun agente attivo")),
           meta ? h("small", {}, raw(meta)) : null,
           item.state === "current" && item.verifiedVersion === item.version ? h("small", { class: "harness-verified" }, tr("Riavvio verificato")) : null,
-          item.error ? h("small", { class: "harness-error" }, raw(item.error)) : null,
-          item.method === "git" && item.state === "outdated" ? h("small", {}, tr("Non si aggiorna da solo: l'aggiornamento può toccare modifiche locali.")) : null),
+          item.error ? h("small", { class: "harness-error" }, raw(item.error)) : null),
         badge(tr(label), cls, mark));
     }));
   };

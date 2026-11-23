@@ -188,3 +188,52 @@ test("a manual update queued behind a read-only check still installs once", asyn
   assert.equal((await manual).find((item) => item.provider === "codex").version, "0.170.0");
   assert.deepEqual(m.calls(), ["install"]);
 });
+
+test("a git checkout like Hermes is updated by its own updater, waits for its turns and is checked against upstream again", async () => {
+  const m = machine();
+  const head = join(m.root, "head");
+  writeFileSync(head, "29112bef09");
+  script(join(m.bin, "hermes"), [
+    `echo "hermes $*" >> ${m.log}`,
+    `if [ "$1" = "--version" ]; then echo "Hermes Agent v0.21.0 (2026.8.31) · upstream $(cat ${head})"; exit 0; fi`,
+    `if [ "$1" = "update" ] && [ "$2" = "--check" ]; then if [ "$(cat ${head})" = "249dc60308" ]; then echo "Already up to date."; else echo "Update available: 49393 commits behind origin/main."; fi; exit 0; fi`,
+    `if [ "$1" = "update" ] && [ "$2" = "--yes" ]; then echo 249dc60308 > ${head}; exit 0; fi`,
+    "exit 2",
+  ].join("\n"));
+  const changed = [];
+  let busy = true;
+  const updates = new HarnessUpdates({ store: memoryStore(), bins: { hermes: "hermes" }, env: m.env, busy: (provider) => provider === "hermes" && busy, changed: (provider) => changed.push(provider) });
+  const waiting = await updates.checkOne("hermes");
+  assert.equal(waiting.state, "deferred");
+  assert.equal(waiting.latest, "+49393 commit");
+  assert.equal(waiting.auto, true);
+  assert.ok(!m.calls().includes("hermes update --yes"));
+  busy = false;
+  const done = await updates.checkOne("hermes");
+  assert.equal(done.state, "current");
+  assert.equal(done.version, "0.21.0 · 249dc603");
+  assert.equal(done.previous, "0.21.0 · 29112bef");
+  assert.equal(done.verifiedVersion, "0.21.0 · 249dc603");
+  assert.equal(done.latest, "");
+  assert.deepEqual(changed, ["hermes"]);
+  assert.equal(m.calls().filter((call) => call === "hermes update --yes").length, 1);
+  assert.equal(updates.installation("hermes"), undefined);
+});
+
+test("a Hermes update that leaves it behind is reported as failed, and with automatic updates off it is only checked", async () => {
+  const m = machine();
+  script(join(m.bin, "hermes"), [
+    `echo "hermes $*" >> ${m.log}`,
+    `if [ "$1" = "--version" ]; then echo "Hermes Agent v0.21.0 (2026.8.31) · upstream 29112bef09"; exit 0; fi`,
+    `if [ "$1" = "update" ] && [ "$2" = "--check" ]; then echo "Update available: 3 commits behind origin/main."; exit 0; fi`,
+    `if [ "$1" = "update" ]; then echo "error: could not apply local changes"; exit 1; fi`,
+  ].join("\n"));
+  const updates = new HarnessUpdates({ store: memoryStore(), bins: { hermes: "hermes" }, env: m.env });
+  const checked = await updates.checkOne("hermes", { update: false });
+  assert.equal(checked.state, "outdated");
+  assert.ok(!m.calls().includes("hermes update --yes"));
+  const failed = await updates.checkOne("hermes");
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.version, "0.21.0 · 29112bef");
+  assert.match(failed.error, /could not apply local changes/);
+});
