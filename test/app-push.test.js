@@ -137,6 +137,44 @@ test("quota alerts fire at 25% and 5% left, once per window period", () => {
   usage.stale = true; set(99, "2026-11-20T18:00:00.000Z"); alerts.check(); assert.equal(notices.length, 3, "a stale reading does not alert");
 });
 
+test("a quota alert is not repeated by failed readings, a reconnection or a reset time that drifts", () => {
+  const values = {}, notices = [];
+  let now = Date.parse("2026-11-23T05:00:00Z");
+  const usage = { state: "ready", stale: false, windows: [] };
+  const record = { id: "sub_grok", provider: "grok", label: "Grok", status: "ready", connectedBy: { id: "owner" } };
+  const store = { settings: { language: "it" }, value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; } };
+  const subscriptions = { list: () => [record], usage: { get: () => usage } };
+  const alerts = new QuotaAlerts({ store, subscriptions, notify: (notice) => { notices.push(notice); return Promise.resolve(); }, ownerOf: () => "owner", now: () => now });
+  const set = (used, resetsAt) => { usage.windows = [{ id: "weekly", kind: "weekly", group: "", usedPercent: used, resetsAt }]; };
+
+  set(100, "2026-11-24T14:55:36.510Z"); alerts.check();
+  assert.equal(notices.length, 1);
+  usage.state = "unavailable"; alerts.check();
+  usage.state = "ready"; alerts.check();
+  assert.equal(notices.length, 1, "a failed reading in between does not re-arm it");
+  record.status = "reconnecting"; alerts.check();
+  record.status = "ready"; alerts.check();
+  assert.equal(notices.length, 1, "a subscription reconnecting does not re-arm it");
+  set(100, "2026-11-24T15:00:01.000Z"); alerts.check();
+  set(100, "2026-11-24T16:20:00.000Z"); alerts.check();
+  assert.equal(notices.length, 1, "a reset time that moves across the hour is the same period");
+  now = Date.parse("2026-11-24T16:30:00Z"); set(2, "2026-12-01T16:30:00.000Z"); alerts.check();
+  set(80, "2026-12-01T16:30:00.000Z"); alerts.check();
+  assert.equal(notices.length, 2, "after a real reset the next fall alerts again");
+  assert.equal(notices[1].data.threshold, 25);
+});
+
+test("quota alerts sent before the update are remembered, by the hour of their reset", () => {
+  const values = { quotaAlertsSent: { "sub_grok|weekly|2026-11-24T14": 5, "sub_claude|seven_day|2026-11-24T13": 25, "sub_old|weekly|2026-11-20T10": 5 } }, notices = [];
+  const now = Date.parse("2026-11-23T08:00:00Z");
+  const usages = { sub_grok: [{ id: "weekly", kind: "weekly", group: "", usedPercent: 100, resetsAt: "2026-11-24T14:55:36.510Z" }], sub_claude: [{ id: "seven_day", kind: "weekly", group: "", usedPercent: 75, resetsAt: "2026-11-24T13:00:00.294Z" }] };
+  const store = { settings: { language: "it" }, value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; } };
+  const subscriptions = { list: () => Object.keys(usages).map((id) => ({ id, provider: id.slice(4), label: "", status: "ready" })), usage: { get: (id) => ({ state: "ready", stale: false, windows: usages[id] }) } };
+  const alerts = new QuotaAlerts({ store, subscriptions, notify: (notice) => { notices.push(notice); return Promise.resolve(); }, now: () => now });
+  assert.equal(alerts.check(), 0, "what was already sent is not sent again after the update");
+  assert.deepEqual(Object.keys(values.quotaAlertsSent).sort(), ["sub_claude|seven_day", "sub_grok|weekly"], "an expired period is forgotten");
+});
+
 test("Apns signs an ES256 token and posts the alert over HTTP/2 with topic, collapse id and payload", async (t) => {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const seen = [];
