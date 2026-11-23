@@ -3,6 +3,7 @@ import { generateKeyPairSync, verify } from "node:crypto";
 import { createServer } from "node:http2";
 import { test } from "node:test";
 import { Apns } from "../src/apns.js";
+import { noticeTarget } from "../src/push.js";
 import { QuotaAlerts } from "../src/quota-alerts.js";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
 
@@ -70,11 +71,45 @@ test("an agent's plan turning blocked notifies its owner once, again only after 
   assert.equal(f.sent[0].title, "Planner è bloccato");
   assert.equal(f.sent[0].body, "Release the app · Waiting for the APNs key");
   assert.deepEqual([f.sent[0].data.planId, f.sent[0].data.channelId, f.sent[0].data.kind], [plan.id, channel, "plan-blocked"]);
+  assert.equal(f.sent[0].data.url, `/#/thread/t/${channel}`, "the panel link opens the thread page, not the list");
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "Still waiting" });
   assert.equal(f.sent.length, 1, "a blocker reworded is not a new alert");
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "" });
   plan = plans.change(channel, agent.id, "update", { ...plan, blocked_reason: "Blocked again" });
   assert.equal(f.sent.length, 2);
+});
+
+test("every notice tells the app what to open: plan, conversation, agent or the panel page", async (t) => {
+  const f = await pushWorld(t);
+  f.app.push.subject = "https://space.example.com";
+  const token = await f.connect(f.alice, "iPhone di Alice");
+  await f.register(token, { token: TOKEN_A, environment: "sandbox" });
+  const agent = f.app.store.createAgent({ name: "Planner", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  const userId = f.alice.user.id, last = () => f.sent[f.sent.length - 1].data;
+
+  await f.app.push.notify({ userId, title: "Thread", url: "/#/thread/t/800000000000000181" });
+  assert.deepEqual(last(), { url: "/#/thread/t/800000000000000181", channelId: "800000000000000181", kind: "thread", space: "https://space.example.com", link: "https://space.example.com/#/thread/t/800000000000000181" });
+  await f.app.push.notify({ userId, title: "Chat", url: `/#/agent/${agent.id}/chat` });
+  assert.deepEqual([last().agentId, last().kind, "channelId" in last()], [agent.id, "agent", false]);
+  await f.app.push.notify({ userId, title: "Secret", url: "/#/artefatti/segreti" });
+  assert.deepEqual([last().kind, last().link, "channelId" in last(), "agentId" in last()], ["panel", "https://space.example.com/#/artefatti/segreti", false, false]);
+  await f.app.push.notify({ userId, title: "Quota", url: "/", data: { kind: "quota", subscriptionId: "sub_1" } });
+  assert.deepEqual([last().kind, last().subscriptionId], ["quota", "sub_1"]);
+
+  const fromThread = await f.app.push.fromAgent(agent, { title: "Done", message: "Released", channelId: "800000000000000182" });
+  assert.equal(fromThread.sent, 1);
+  assert.deepEqual([last().channelId, last().kind, last().url], ["800000000000000182", "thread", "/#/thread/t/800000000000000182"]);
+  f.app.push.sentByAgent.clear();
+  await f.app.push.fromAgent(agent, { message: "From the panel chat", channelId: `web-${agent.id}` });
+  assert.deepEqual([last().agentId, last().kind, "channelId" in last()], [agent.id, "agent", false]);
+});
+
+test("a notice target never invents a space when the public address is not a web origin", () => {
+  const fallback = noticeTarget("/#/thread/123", {}, "https://github.com/digitaloracles/cora");
+  assert.deepEqual(fallback, { url: "/#/thread/123", channelId: "123", kind: "thread" });
+  const bare = noticeTarget("/#/brain", { kind: "" }, "");
+  assert.deepEqual(bare, { url: "/#/brain", kind: "panel" });
+  assert.equal(noticeTarget("/#/thread/t/web", {}, "").kind, "panel", "the salotto is not a thread the app lists");
 });
 
 test("quota alerts fire at 25% and 5% left, once per window period", () => {
@@ -100,6 +135,44 @@ test("quota alerts fire at 25% and 5% left, once per window period", () => {
   assert.equal(notices[2].data.threshold, 5);
   set(99, "2026-11-19T18:00:00.000Z", { group: "Fable" }); alerts.check(); assert.equal(notices.length, 3, "model-scoped windows do not alert");
   usage.stale = true; set(99, "2026-11-20T18:00:00.000Z"); alerts.check(); assert.equal(notices.length, 3, "a stale reading does not alert");
+});
+
+test("a quota alert is not repeated by failed readings, a reconnection or a reset time that drifts", () => {
+  const values = {}, notices = [];
+  let now = Date.parse("2026-11-23T05:00:00Z");
+  const usage = { state: "ready", stale: false, windows: [] };
+  const record = { id: "sub_grok", provider: "grok", label: "Grok", status: "ready", connectedBy: { id: "owner" } };
+  const store = { settings: { language: "it" }, value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; } };
+  const subscriptions = { list: () => [record], usage: { get: () => usage } };
+  const alerts = new QuotaAlerts({ store, subscriptions, notify: (notice) => { notices.push(notice); return Promise.resolve(); }, ownerOf: () => "owner", now: () => now });
+  const set = (used, resetsAt) => { usage.windows = [{ id: "weekly", kind: "weekly", group: "", usedPercent: used, resetsAt }]; };
+
+  set(100, "2026-11-24T14:55:36.510Z"); alerts.check();
+  assert.equal(notices.length, 1);
+  usage.state = "unavailable"; alerts.check();
+  usage.state = "ready"; alerts.check();
+  assert.equal(notices.length, 1, "a failed reading in between does not re-arm it");
+  record.status = "reconnecting"; alerts.check();
+  record.status = "ready"; alerts.check();
+  assert.equal(notices.length, 1, "a subscription reconnecting does not re-arm it");
+  set(100, "2026-11-24T15:00:01.000Z"); alerts.check();
+  set(100, "2026-11-24T16:20:00.000Z"); alerts.check();
+  assert.equal(notices.length, 1, "a reset time that moves across the hour is the same period");
+  now = Date.parse("2026-11-24T16:30:00Z"); set(2, "2026-12-01T16:30:00.000Z"); alerts.check();
+  set(80, "2026-12-01T16:30:00.000Z"); alerts.check();
+  assert.equal(notices.length, 2, "after a real reset the next fall alerts again");
+  assert.equal(notices[1].data.threshold, 25);
+});
+
+test("quota alerts sent before the update are remembered, by the hour of their reset", () => {
+  const values = { quotaAlertsSent: { "sub_grok|weekly|2026-11-24T14": 5, "sub_claude|seven_day|2026-11-24T13": 25, "sub_old|weekly|2026-11-20T10": 5 } }, notices = [];
+  const now = Date.parse("2026-11-23T08:00:00Z");
+  const usages = { sub_grok: [{ id: "weekly", kind: "weekly", group: "", usedPercent: 100, resetsAt: "2026-11-24T14:55:36.510Z" }], sub_claude: [{ id: "seven_day", kind: "weekly", group: "", usedPercent: 75, resetsAt: "2026-11-24T13:00:00.294Z" }] };
+  const store = { settings: { language: "it" }, value: (key, fallback) => values[key] ?? fallback, setValue: (key, value) => { values[key] = value; } };
+  const subscriptions = { list: () => Object.keys(usages).map((id) => ({ id, provider: id.slice(4), label: "", status: "ready" })), usage: { get: (id) => ({ state: "ready", stale: false, windows: usages[id] }) } };
+  const alerts = new QuotaAlerts({ store, subscriptions, notify: (notice) => { notices.push(notice); return Promise.resolve(); }, now: () => now });
+  assert.equal(alerts.check(), 0, "what was already sent is not sent again after the update");
+  assert.deepEqual(Object.keys(values.quotaAlertsSent).sort(), ["sub_claude|seven_day", "sub_grok|weekly"], "an expired period is forgotten");
 });
 
 test("Apns signs an ES256 token and posts the alert over HTTP/2 with topic, collapse id and payload", async (t) => {

@@ -2637,7 +2637,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     const agent = store.agent(plan.agentId);
     const english = store.settings.language === "en";
     push?.notify({ userId: knowledge?.ownerMemory ? knowledge.ownerId(agent) || "unavailable" : "", title: english ? `${agent?.name || "An agent"} is blocked` : `${agent?.name || "Un agente"} è bloccato`,
-      body: `${plan.name}${plan.blockedReason ? ` · ${plan.blockedReason}` : ""}`, url: `/#/thread/${encodeURIComponent(plan.channelId)}`, tag: `plan-${plan.id}`,
+      body: `${plan.name}${plan.blockedReason ? ` · ${plan.blockedReason}` : ""}`, url: `/#/thread/t/${encodeURIComponent(plan.channelId)}`, tag: `plan-${plan.id}`,
       data: { planId: plan.id, channelId: plan.channelId, kind: "plan-blocked" } })?.catch?.(() => {});
   };
 

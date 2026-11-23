@@ -718,7 +718,7 @@ export async function executeTool(call, ctx) {
         const message = String(args.message || "").trim();
         if (!message) return { text: "error: empty message" };
         if (!ctx.push) return { text: "error: notifications are not available" };
-        const result = await ctx.push.fromAgent(agent, { title: String(args.title || "").trim(), message });
+        const result = await ctx.push.fromAgent(agent, { title: String(args.title || "").trim(), message, channelId: ctx.channelId || "" });
         if (result.error) return { text: `error: ${result.error}` };
         ctx.log?.({ type: "notify", agentId: agent.id, text: message.slice(0, 200) });
         return { text: `notification sent to ${result.sent} device(s)` };

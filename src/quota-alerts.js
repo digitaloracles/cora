@@ -16,24 +16,40 @@ export class QuotaAlerts {
 
   sent() { return this.store.value("quotaAlertsSent", {}); }
 
+  /**
+   * What was already said, by `subscription|window`: the lowest threshold sent and the reset it belongs to.
+   * An alert re-arms only when the quota climbs back above the thresholds or its reset passes: a failed reading,
+   * a subscription reconnecting or a reset time that drifts by a few seconds never repeat it.
+   */
+  remembered() {
+    const now = this.now(), kept = {};
+    for (const [key, entry] of Object.entries(this.sent())) {
+      // Earlier versions keyed each period by the hour of its reset: `subscription|window|2026-11-24T13` → threshold.
+      const legacy = typeof entry === "number" && key.match(/^(.+\|[^|]+)\|(\d{4}-\d{2}-\d{2}T\d{2})$/);
+      const value = legacy ? { threshold: entry, resetsAt: `${legacy[2]}:59:59.999Z` } : entry;
+      const id = legacy ? legacy[1] : key;
+      if (value && typeof value === "object" && Number.isFinite(value.threshold) && Date.parse(value.resetsAt) > now && !(kept[id]?.threshold <= value.threshold)) kept[id] = value;
+    }
+    return kept;
+  }
+
   check() {
-    const sent = this.sent(), keep = {}, due = [];
+    const kept = this.remembered(), due = [];
     for (const record of this.subscriptions.list().filter((item) => item.status === "ready")) {
       const usage = this.subscriptions.usage?.get(record.id);
       if (!usage || usage.state !== "ready" || usage.stale) continue;
       for (const window of usage.windows || []) {
         if (window.group || !window.resetsAt || Date.parse(window.resetsAt) <= this.now()) continue;
-        const left = 100 - window.usedPercent;
-        const period = `${record.id}|${window.id}|${window.resetsAt.slice(0, 13)}`;
-        const reached = this.thresholds.filter((threshold) => left <= threshold);
-        const previous = sent[period] ?? 101;
-        if (reached.length) keep[period] = Math.min(previous, reached.at(-1));
-        else if (sent[period] !== undefined) keep[period] = previous;
-        const lowest = reached.at(-1);
-        if (lowest !== undefined && lowest < previous) due.push({ record, window, left, threshold: lowest });
+        const key = `${record.id}|${window.id}`, left = 100 - window.usedPercent;
+        const lowest = this.thresholds.filter((threshold) => left <= threshold).at(-1);
+        if (lowest === undefined) { delete kept[key]; continue; }
+        const previous = kept[key]?.threshold ?? 101;
+        if (lowest >= previous) continue;
+        kept[key] = { threshold: lowest, resetsAt: kept[key]?.resetsAt || window.resetsAt };
+        due.push({ record, window, left, threshold: lowest });
       }
     }
-    this.store.setValue("quotaAlertsSent", keep);
+    this.store.setValue("quotaAlertsSent", kept);
     for (const alert of due) this.send(alert);
     return due.length;
   }

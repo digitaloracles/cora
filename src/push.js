@@ -1,5 +1,6 @@
 import { createECDH, createHash, createCipheriv, createPrivateKey, hkdfSync, randomBytes, sign } from "node:crypto";
 import { goneToken } from "./apns.js";
+import { isWebRoom, roomAgentId } from "./rooms.js";
 
 const RECORD_SIZE = 4096;
 const AGENT_GAP_MS = 60 * 1000;
@@ -57,6 +58,28 @@ function vapidHeader(endpoint, keys, subject) {
 }
 
 /** Notifications to the owner's devices that installed the panel and allowed them. */
+const hashParts = (url) => String(url || "").split("#")[1]?.replace(/^\//, "").split("/").map((part) => { try { return decodeURIComponent(part); } catch { return part; } }) || [];
+
+/** What a tapped notice opens in the iOS app: the plan, conversation or agent its panel link names, the space it comes from and that link whole. */
+export function noticeTarget(url = "/", data = {}, origin = "") {
+  const target = { ...data, url };
+  const [page, first, second] = hashParts(url);
+  if (!target.channelId && page === "thread" && first) target.channelId = first === "t" ? second || "" : first;
+  if (!target.agentId && page === "agent" && first) target.agentId = first;
+  if (target.channelId && isWebRoom(target.channelId)) {
+    if (!target.agentId && roomAgentId(target.channelId)) target.agentId = roomAgentId(target.channelId);
+    delete target.channelId;
+  }
+  for (const key of ["planId", "channelId", "agentId"]) if (!target[key]) delete target[key];
+  target.kind ||= target.planId ? "plan" : target.channelId ? "thread" : target.agentId ? "agent" : "panel";
+  try {
+    const base = new URL(origin);
+    // Without PUBLIC_URL the VAPID subject falls back to the project page, which is no space.
+    if (/^https?:$/.test(base.protocol) && base.hostname !== "github.com") { target.space = base.origin; target.link = new URL(url || "/", base.origin).href; }
+  } catch {}
+  return target;
+}
+
 export class Push {
   constructor({ store, secret = "", subject = "https://github.com/digitaloracles/cora", log, apns = null }) {
     this.store = store;
@@ -122,7 +145,7 @@ export class Push {
     const targets = this.targets(userId);
     if (!targets.length) return 0;
     const results = await Promise.all(targets.map(async (target) => {
-      const result = await this.apns.send(target.token, { title, body, tag, data: { url, ...data } }, { environment: target.environment }).catch((error) => ({ status: 0, reason: error.message }));
+      const result = await this.apns.send(target.token, { title, body, tag, data: noticeTarget(url, data, this.subject) }, { environment: target.environment }).catch((error) => ({ status: 0, reason: error.message }));
       if (goneToken(result)) this.dropAppToken(target.token);
       else if (result.status !== 200) this.log?.({ type: "warning", text: `notifica iOS: APNs risponde ${result.status || "senza risposta"}${result.reason ? ` (${result.reason})` : ""}` });
       return result.status === 200 ? 1 : 0;
@@ -131,7 +154,7 @@ export class Push {
   }
 
   /** An agent asking to notify the owner: at most one a minute and twenty a day each. */
-  async fromAgent(agent, { title, message, url }) {
+  async fromAgent(agent, { title, message, url, channelId = "" }) {
     if (!this.enabled) return { error: "notifications are not set up" };
     if (!this.store.pushSubscriptions().length && !this.targets().length) return { error: "the owner has not turned notifications on in the panel" };
     const now = Date.now();
@@ -140,7 +163,7 @@ export class Push {
     if (recent.length >= AGENT_DAILY) return { error: "daily notification limit reached" };
     recent.push(now);
     this.sentByAgent.set(agent.id, recent);
-    const result = await this.notify({ userId: this.ownerForAgent?.(agent) || "", title: title ? `${agent.name}: ${title}` : agent.name, body: message, url: url || `/#/agent/${agent.id}/chat`, tag: `agent-${agent.id}-${now}` });
+    const result = await this.notify({ userId: this.ownerForAgent?.(agent) || "", title: title ? `${agent.name}: ${title}` : agent.name, body: message, url: url || (channelId && !isWebRoom(channelId) ? `/#/thread/t/${encodeURIComponent(channelId)}` : `/#/agent/${agent.id}/chat`), tag: `agent-${agent.id}-${now}` });
     return result.sent ? { sent: result.sent } : { error: "no device accepted the notification" };
   }
 }
