@@ -97,6 +97,8 @@ export function startCora(overrides = {}) {
     store,
     bins: { claude: cfg.claudeBin, codex: cfg.codexBin, grok: cfg.grokBin, gemini: cfg.geminiBin, muse: cfg.museBin, kimi: cfg.kimiBin, pi: cfg.piBin, hermes: cfg.hermesBin, deepseek: cfg.deepseekBin },
     busy: (provider) => llm.harnessBusy(provider) || subscriptions.store.subscriptions().some((record) => record.provider === provider && (subscriptions.logins.has(record.id) || subscriptions.busy.has(record.id))),
+    interrupt: (provider) => llm.interruptHarness(provider),
+    homes: { hermes: cfg.hermesHome },
     changed: async (provider) => {
       subscriptions.forgetCatalog(provider);
       llm.forgetModels();

@@ -9791,6 +9791,7 @@ const HARNESS_STATES = {
 const HARNESS_PHASES = {
   checking: "Controllo delle versioni",
   waiting: "In attesa della fine dei turni",
+  stopping: "Fermo i turni in corso",
   installing: "Installazione in corso",
   restarting: "Riavvio dell’harness",
   verifying: "Ricontrollo della versione",
@@ -9882,7 +9883,7 @@ function harnessPane() {
   const toggle = switchInput("harnessAutoUpdate", "", S.data.settings.harnessAutoUpdate !== false);
   const input = toggle.querySelector("input");
   input.disabled = !manage;
-  const autoRow = setRow("Aggiornamento automatico", "Ogni 6 ore Cora porta gli harness all'ultima versione. Chi è installato in place aspetta la fine dei turni in corso.", toggle);
+  const autoRow = setRow("Aggiornamento automatico", "Ogni 6 ore Cora porta gli harness all'ultima versione. Chi è installato in place aspetta la fine dei turni in corso; con Controlla e aggiorna i turni si fermano e ripartono sulla nuova versione.", toggle);
   input.addEventListener("change", async () => {
     input.disabled = true;
     if (!await saveSettings({ harnessAutoUpdate: input.checked }, autoRow)) input.checked = !input.checked;

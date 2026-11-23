@@ -6728,7 +6728,7 @@ describe("talking with the agents", () => {
     assert.match(run.hermesConfig, /api_key: "\$\{CORA_ENDPOINT_KEY\}"/, "the file names the key, it does not hold it");
     assert.ok(!run.hermesConfig.includes("sk-orca-test"), "the key value never lands in Hermes' config");
     assert.equal(run.endpointKey, "set", "the run itself is handed the key");
-    assert.match(run.hermesHome, /-orcarouter-[a-f0-9]{12}$/, "a router's turns keep their own Hermes home, so parallel turns never rewrite each other's config");
+    assert.match(run.hermesHome, /-orcarouter-[a-f0-9]{12}\/turns\/[0-9a-z]+-[a-f0-9]{12}$/, "a router's turns keep their own Hermes home, so parallel turns never rewrite each other's config");
   });
 
   test("when a provider refuses Hermes and Hermes still exits 0, the refusal is a failed turn and never the agent's words", async (t) => {
@@ -7897,7 +7897,7 @@ describe("what runs the models", () => {
     const run = cli.calls().slice(before).find((item) => item.flavor === "hermes");
     assert.ok(run, "Hermes ran");
     assert.ok(run.hermesConfig.includes(`base_url: "${card.url}/v1"`), "Hermes is pointed at the Ollama of the agent's card");
-    assert.match(run.hermesHome, /-127-0-0-1-\d+-[a-f0-9]{12}$/, "a card's turns keep their own Hermes home");
+    assert.match(run.hermesHome, /-127-0-0-1-\d+-[a-f0-9]{12}\/turns\/[0-9a-z]+-[a-f0-9]{12}$/, "a card's turns keep their own Hermes home");
 
     await call(`/api/agents/${agent.id}`, { method: "PUT", body: { ollamaHost: old.url } });
     const count = cli.calls().length;
