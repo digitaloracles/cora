@@ -1,0 +1,77 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { knowledgeWorld } from "./knowledge-fixtures.js";
+import { fakeSoniox } from "./helpers.js";
+import { Voice } from "../src/voice.js";
+import { captionTurns } from "../src/meet.js";
+import { privateRoom } from "../src/rooms.js";
+
+test("Meet actions enforce agent and folder access and deliver a reviewed transcript to private chat", async (t) => {
+  const f = await knowledgeWorld();
+  t.after(f.close);
+  const { meet, boxes, store, artifacts, orchestrator } = f.app;
+  const agent = store.createAgent({ name: "Meeting assistant", brainOwnerId: f.alice.user.id, tools: true, enabled: true, model: "ollama/test-model" });
+  const path = "/api/agents/" + agent.id + "/meet";
+  const call = (action, body = {}, actor = f.alice, method = "POST") => f.request(actor, path + action, { method, body });
+  const target = artifacts.createFolder({ path: "meetings/qa", createdBy: { kind: "user", id: f.alice.user.id } });
+  artifacts.createFolder({ path: "meetings/foreign", createdBy: { kind: "user", id: f.bob.user.id } });
+  assert.equal((await f.request(f.bob, path)).status, 403);
+  const settings = await call("", { enabled: true }, f.alice, "PUT");
+  assert.equal(settings.status, 200);
+  assert.deepEqual(settings.data.folders.map((item) => item.id), [target.id]);
+  const commands = [];
+  let email = "", state, transcript, now = Date.now();
+  boxes.ensure = async () => {};
+  boxes.meet = async (id, [command]) => {
+    assert.equal(id, agent.id);
+    commands.push(command);
+    if (command === "account") return { email };
+    if (command === "state") return state;
+    if (command === "captions") return { captions: [{ at: 0, speaker: "QA host", text: "First sentence.", block: 1 }, { at: 25, speaker: "QA host", text: "Second sentence.", block: 2 }] };
+    return {};
+  };
+  boxes.writeFile = async (_agent, _path, bytes) => { transcript = bytes; };
+  boxes.artifactManifest = async () => ({ root: "call", files: [{ path: "transcript.md", size: transcript.length, sha256: createHash("sha256").update(transcript).digest("hex") }], refused: [], skipped: [] });
+  boxes.artifactSend = async (_agent, _root, _files, open) => { const writer = open(0); writer.write(transcript); writer.end(); };
+  const input = { link: "https://meet.google.com/abc-defg-hij", folder: target.path, channelId: "attacker", memberUserId: f.bob.user.id };
+  assert.equal((await call("/signin")).status, 200);
+  assert.equal((await call("/join", input)).status, 409);
+  email = "agent@example.test";
+  assert.equal((await call("/account")).data.account.email, email);
+  assert.equal((await call("/join", { ...input, folder: "meetings/foreign" })).status, 404);
+  const responses = await Promise.all([call("/join", input), call("/join", input)]);
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(commands.filter((cmd) => cmd === "start").length, 1);
+  assert.equal((await call("/signout")).status, 409);
+  state = { phase: "joined", alive: true, joinedAt: now, recordingAt: now, people: 2, names: ["QA host"] };
+  await meet.poll();
+  assert.equal((await call("/leave")).status, 200);
+  state = { ...state, phase: "ended", endedAt: now + 30000, reason: "stopped", audioBytes: 30000 };
+  await meet.poll();
+  const recent = (await f.request(f.alice, path)).data.recent[0];
+  assert.equal(recent.error, "");
+  assert.equal(recent.transcript.status, "proposed");
+  assert.ok(recent.transcript.url.startsWith(f.base + "/#/artefatti/"));
+  const file = artifacts.treeOf(recent.transcript.commit).get(recent.transcript.path);
+  assert.match((await artifacts.readFile(file)).toString(), /QA host[\s\S]*First sentence\.[\s\S]*0:25[\s\S]*Second sentence\./);
+  const notices = orchestrator.state(privateRoom(agent.id)).history.filter((item) => item.kind === "bot");
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].content.includes(recent.transcript.url));
+  assert.equal((await call("/signout")).data.account, null);
+});
+
+test("updated Meet captions produce one timed turn per block", () => {
+  const partial = { at: 2, block: 4, speaker: "Host", text: "Hello" };
+  assert.deepEqual(captionTurns([partial, { ...partial, at: 30, text: "Hello. Goodbye." }]), [{ name: "Host", start: 2, text: "Hello" }, { name: "Host", start: 30, text: "Goodbye." }]);
+  assert.deepEqual(captionTurns([partial, { ...partial, at: 3, text: "Hello there" }]), [{ name: "Host", start: 2, text: "Hello there" }]);
+});
+
+test("Soniox call transcription requests diarization and retains the timed tokens", async (t) => {
+  const f = await fakeSoniox();
+  t.after(f.close);
+  const voice = new Voice({ key: f.key, api: f.url });
+  const transcript = await voice.transcribeCall(Buffer.from("audio"), { pollMs: 1 });
+  assert.equal(f.state.transcriptions[0].enable_speaker_diarization, true);
+  assert.equal(transcript.tokens[0].text, f.state.text);
+});

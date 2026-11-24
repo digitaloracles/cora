@@ -154,6 +154,8 @@ export const TOOL_DEFS = [
     description: "Tell the librarian something the whole company should know: a decision, a client's preference, who does what, a deadline. It queues immediate consolidation into the company brain, with you as its source. Your own memory stays remember.",
     parameters: { type: "object", properties: { text: { type: "string", description: "the fact, short and specific, with who decided and when if you know" } }, required: ["text"] },
   },
+  { name: "meet_join", description: "When the person asks you to attend and transcribe a Google Meet, join their link on your signed-in desktop. Use the meetings/project folder they selected. The transcript is sent back to this conversation.", parameters: { type: "object", properties: { link: { type: "string" }, folder: { type: "string" } }, required: ["link", "folder"] } },
+  { name: "meet_leave", description: "Leave the Google Meet call you are attending when asked and finish the transcript.", parameters: { type: "object", properties: {} } },
   {
     name: "voice_join",
     description: "Join a Discord voice channel with your own bot and talk there live: you hear the people in it and answer with your own voice, in real time. Without channel_id you join the voice channel the person asking is in. Use it when someone asks you to come into a voice call; leave with voice_leave when asked or when the call is over.",
@@ -852,6 +854,12 @@ export async function executeTool(call, ctx) {
         if (sent?.voice || args.voice === true) receipt.voice = sent?.voice?.messages ? "sent" : `not sent: ${sent?.voice?.error || "unavailable"}`;
         const status = target === channelId ? "posted in this conversation. Your final reply is posted here too: if there is work left, keep working and write only what is new; if this message already says it all, end with just PASS" : `posted directly to ${target}; do not duplicate this report in your final reply`;
         return { text: `${status}\nCora delivery receipt: ${JSON.stringify(receipt)}` };
+      }
+      case "meet_join":
+      case "meet_leave": {
+        const action = call.name === "meet_join" ? ctx.meetJoin : ctx.meetLeave;
+        if (!action) return { text: "error: Google Meet is unavailable for this request" };
+        return { text: JSON.stringify(await action(args)) };
       }
       case "voice_join": {
         if (!ctx.voiceJoin) return { text: "error: voice calls are not available here" };

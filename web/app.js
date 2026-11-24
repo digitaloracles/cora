@@ -3147,6 +3147,7 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
   const savebar = form.lastElementChild;
   form.classList.add("agent-settings-save");
   form.replaceChildren(savebar);
+  const meetPane = agentMeetPane(agent);
   const exportPane = agentExportPane(agent);
   const duplicatePane = agentDuplicatePane(agent);
   const entries = [
@@ -3157,14 +3158,87 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
     ["sicurezza", "Sicurezza", "lock", "Isolamento e protezione", [agentSecurityPane(agent, knowledge), agentRemoteAccessPane(agent)]],
     ["autorizzazioni", "Autorizzazioni", "shield", "Chi può farlo lavorare", [agentPermissionsPane(agent), owner].filter(Boolean)],
     ...platformsOn().map((kind) => [kind, TRANSPORTS[kind].label, TRANSPORTS[kind].icon, "Account e collegamento", [kind === "slack" ? slackAccount(agent) : kind === "telegram" ? telegramAccount(agent) : discordAccount(agent)]]),
+    ["meet", "Google Meet", "mic", "Account e riunioni", [meetPane]],
     ["github", "GitHub", "github", "App e repository", [githubAccount(agent)]],
     ["duplica", "Duplica", "copy", "Una copia in questo spazio", [duplicatePane]],
     ["esporta", "Esporta", "download", "File o link per un altro spazio", [exportPane, exportPane.filePanel, exportPane.linkPanel]],
   ];
   controls = sectionWorkspace({ title: "Impostazioni", base: `#/agent/${agent.id}/impostazioni`, current: route()[3], entries,
-    onSelect: (id) => { form.hidden = !["identita", "carattere", "ascolto", "voce"].includes(id); if (id === "esporta") void exportPane.load(); if (id === "duplica") void duplicatePane.load(); } });
+    onSelect: (id) => { form.hidden = !["identita", "carattere", "ascolto", "voce"].includes(id); if (id === "meet") void meetPane.load(); if (id === "esporta") void exportPane.load(); if (id === "duplica") void duplicatePane.load(); } });
   controls.querySelector(".email-workspace-detail").append(form);
   return controls;
+}
+
+function agentMeetPane(agent) {
+  const endpoint = `/api/agents/${agent.id}/meet`;
+  const body = h("div", { class: "stack" });
+  const message = h("p", { class: "muted", role: "status", "aria-live": "polite" });
+  const node = panel({ icon: "mic", title: "Google Meet" }, body, message);
+  let busy = false, showDesktop = false, timer, linkValue = "", folderValue = "", languageValue = "";
+  const phases = { starting: "Ingresso in corso", waiting: "In attesa di ammissione", joined: "In riunione", transcribing: "Trascrizione in corso", ended: "Riunione conclusa", failed: "Ingresso non riuscito" };
+  async function request(action = "", payload, method = "POST") {
+    if (busy) return;
+    busy = true;
+    clearTimeout(timer);
+    body.inert = true;
+    message.textContent = tr("Caricamento…");
+    try {
+      const data = await api(endpoint + action, { method, body: payload });
+      if (action === "/signin") showDesktop = true;
+      if (action === "/account" && data.account || action === "/signout") showDesktop = false;
+      if (action === "/join") linkValue = "";
+      render(data);
+      message.textContent = "";
+    } catch (error) {
+      message.textContent = error.message;
+      if (!body.childElementCount) body.append(btn("Riprova", { onclick: node.load }));
+    } finally { busy = false; body.inert = false; }
+  }
+  function render(data) {
+    const enable = switchInput("meet-enabled", "Attiva Google Meet", data.enabled, "L’agente entra con microfono e videocamera spenti.");
+    const toggle = enable.querySelector("input");
+    toggle.disabled = Boolean(data.active) || !data.desktop || !data.onAir;
+    toggle.onchange = () => { const enabled = toggle.checked; toggle.checked = !enabled; void request("", { enabled }, "PUT"); };
+    body.replaceChildren(enable);
+    if (!data.desktop || !data.onAir) body.append(h("p", { class: "muted" }, "Accendi l’agente e il suo computer per usare Google Meet."));
+    if (!data.enabled) return;
+    const account = data.account?.email;
+    const actions = h("div", { class: "actions" });
+    if (!data.active) {
+      actions.append(btn(account ? "Scollega account" : "Accedi a Google", { cls: account ? "sm ghost" : "sm primary", onclick: () => request(account ? "/signout" : "/signin", {}) }),
+        btn("Verifica account", { cls: "sm", icon: "refresh", onclick: () => request("/account", {}) }));
+    }
+    body.append(h("div", { class: "stack" }, h("strong", {}, account || "Account Google da collegare"), actions));
+    if (showDesktop) body.append(h("p", { class: "muted" }, "Completa l’accesso sul desktop dell’agente, poi scegli Verifica account."),
+      h("div", { class: "screen" }, h("iframe", { title: "Accesso Google sul desktop", src: `/box/${agent.id}/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=box/${agent.id}/websockify` })));
+    if (data.active) {
+      body.append(h("strong", { role: "status" }, phases[data.active.phase]), h("span", {}, data.active.link));
+      if (data.active.phase !== "transcribing") body.append(btn("Esci dalla riunione", { onclick: () => request("/leave", {}) }));
+      timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
+    } else if (account) {
+      const link = h("input", { type: "url", required: true, value: linkValue, placeholder: "https://meet.google.com/abc-defg-hij", oninput: (event) => { linkValue = event.target.value; } });
+      const folder = h("select", { required: true, onchange: (event) => { folderValue = event.target.value; } }, h("option", { value: "" }, "Scegli una cartella"),
+        data.folders.map((item) => h("option", { value: item.path }, item.path)));
+      folder.value = folderValue;
+      const language = h("select", { onchange: (event) => { languageValue = event.target.value; } },
+        Object.entries(VOICE_LANGUAGE_NAMES).map(([value, label]) => h("option", { value }, label)));
+      language.value = languageValue || data.language;
+      body.append(h("form", { class: "stack", onsubmit: (event) => { event.preventDefault(); void request("/join", { link: link.value, folder: folder.value, language: language.value }); } },
+        field("Link della riunione", link, "Invita l’account dell’agente o ammettilo quando bussa."),
+        field("Lingua parlata", language),
+        field("Cartella della trascrizione", folder, data.folders.length ? "Riceverai il link nella chat dell’agente." : "Crea una cartella meetings/progetto negli Artefatti e concedi all’agente il permesso di caricare."),
+        btn("Entra in riunione", { type: "submit", cls: "primary", disabled: !data.folders.length })));
+    }
+    for (const call of data.recent) {
+      const row = h("div", { class: "stack" }, h("strong", {}, phases[call.phase]), h("span", {}, call.link));
+      if (call.transcript?.url) row.append(btn("Apri trascrizione", { href: call.transcript.url, cls: "sm" }));
+      if (call.error) row.append(h("p", { class: "err-text" }, call.error), btn("Riprova trascrizione", { disabled: Boolean(data.active), onclick: () => request("/retry", { id: call.id }) }));
+      else if (call.why) row.append(h("small", {}, call.why));
+      body.append(row);
+    }
+  }
+  node.load = () => request("", undefined, "GET");
+  return node;
 }
 
 const VOICE_LANGUAGE_NAMES = { it: "Italiano", en: "English", es: "Español", fr: "Français", de: "Deutsch", pt: "Português" };

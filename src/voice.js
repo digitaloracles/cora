@@ -188,33 +188,41 @@ export class Voice {
    * A voice message as text, with the language it was spoken in: upload, transcribe,
    * read, then delete both on Soniox.
    */
-  async transcribe(bytes, { filename = "voice.ogg", languages = [], reference = "cora" } = {}) {
+  transcribe(bytes, options = {}) {
+    return this.transcribeAudio(bytes, options);
+  }
+
+  transcribeCall(bytes, options = {}) {
+    return this.transcribeAudio(bytes, { filename: "call.webm", reference: "cora-call", timeoutMs: 45 * 60000, pollMs: 3000, ...options }, true);
+  }
+
+  async transcribeAudio(bytes, { filename = "voice.ogg", languages = [], reference = "cora", timeoutMs = this.timeoutMs, pollMs = 700 }, call = false) {
     if (!bytes?.length) throw new VoiceError("audio vuoto");
-    if (bytes.length > AUDIO_LIMIT_BYTES) throw new VoiceError("audio troppo lungo");
+    if (!call && bytes.length > AUDIO_LIMIT_BYTES) throw new VoiceError("audio troppo lungo");
     const form = new FormData();
     form.append("file", new Blob([bytes]), filename.replace(/[^\w.-]/g, "_").slice(-80) || "voice.ogg");
-    const file = await (await this.request(`${this.api}/v1/files`, { method: "POST", body: form, timeoutMs: 60000 })).json();
+    const file = await (await this.request(`${this.api}/v1/files`, { method: "POST", body: form, timeoutMs: call ? 600000 : 60000 })).json();
     let transcription = null;
     try {
       const hints = [...new Set(languages.filter(Boolean))];
       transcription = await (await this.request(`${this.api}/v1/transcriptions`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: STT_MODEL, file_id: file.id, ...(hints.length ? { language_hints: hints } : {}), enable_language_identification: true, client_reference_id: String(reference).slice(0, 200) }),
+        body: JSON.stringify({ model: STT_MODEL, file_id: file.id, ...(hints.length ? { language_hints: hints } : {}), enable_language_identification: true, ...(call ? { enable_speaker_diarization: true } : {}), client_reference_id: String(reference).slice(0, 200) }),
       })).json();
-      const deadline = Date.now() + this.timeoutMs;
+      const deadline = Date.now() + timeoutMs;
       let state = transcription;
       while (state.status !== "completed") {
         if (state.status === "error") throw new VoiceError(`trascrizione non riuscita${state.error_message ? `: ${state.error_message}` : ""}`);
         if (Date.now() > deadline) throw new VoiceError("trascrizione troppo lenta");
-        await new Promise((resolve) => setTimeout(resolve, 700));
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
         state = await (await this.request(`${this.api}/v1/transcriptions/${transcription.id}`)).json();
       }
-      const transcript = await (await this.request(`${this.api}/v1/transcriptions/${transcription.id}/transcript`)).json();
+      const transcript = await (await this.request(`${this.api}/v1/transcriptions/${transcription.id}/transcript`, { timeoutMs: call ? 120000 : 30000 })).json();
       // Each token carries the language it was heard in: the one spoken most is the message's.
       const spoken = new Map();
       for (const token of transcript.tokens || []) if (token.language) spoken.set(token.language, (spoken.get(token.language) || 0) + String(token.text || "").length);
       const language = [...spoken].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
-      return { text: String(transcript.text || "").trim(), language };
+      return { text: String(transcript.text || "").trim(), language, ...(call ? { tokens: transcript.tokens || [] } : {}) };
     } finally {
       if (transcription?.id) this.request(`${this.api}/v1/transcriptions/${transcription.id}`, { method: "DELETE" }).catch(() => {});
       this.request(`${this.api}/v1/files/${file.id}`, { method: "DELETE" }).catch(() => {});

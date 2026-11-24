@@ -709,7 +709,7 @@ export class Artifacts {
    * folder does not hold yet, and record a commit — proposed, or published at once
    * where the folder says so.
    */
-  async push({ agent, folder: folderRef, path, to = "", message = "", mirror = false, create = null, requester = null, memberUserId = "", channelId = "", traceId = "" }) {
+  async push({ agent, folder: folderRef, path, to = "", message = "", mirror = false, create = null, requester = null, memberUserId = "", channelId = "", traceId = "", announceToChannel = true }) {
     if (encryptedOnly(this.store, agent)) throw new ArtifactError("Encrypted-only mode: plaintext filesystem access is disabled.", 409);
     if (encryptedFolder(this.store, this.findFolder(folderRef)?.id)) throw Object.assign(new Error("Encrypted folder: plaintext pushes are disabled."), { status: 409 });
     if (!this.boxes) throw new ArtifactError("there are no desktops here");
@@ -835,7 +835,7 @@ export class Artifacts {
       let published = null;
       if (this.publishingPolicy(this.store.artifactFolder(folder.id)) === "direct") published = this.publishLocked(folder, commit, { by: { kind: "agent", id: agent.id, name: agent.name } });
       const final = this.store.artifactCommit(commit.id);
-      this.announce(folder, final, { agent, channelId, published: final.status === "published" });
+      this.announce(folder, final, { agent, channelId: announceToChannel ? channelId : "", published: final.status === "published" });
       return { folder, commit: final, published, manifest, send, files, created };
     });
   }

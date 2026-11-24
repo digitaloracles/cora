@@ -85,6 +85,8 @@ exec sleep infinity
 `;
 
 const OUTPUT_LIMIT = 24000;
+const MEET_SCRIPT = readFileSync(new URL("./desktop-meet.mjs", import.meta.url), "utf8");
+const MEET_LAUNCH = 'set -eu; umask 077; dir="$HOME/.cora-meet"; mkdir -p "$dir"; file=$(mktemp "$dir/seat.XXXXXX"); trap \'rm -f "$file"\' EXIT; cat > "$file"; mv "$file" "$dir/seat.mjs"; exec node "$dir/seat.mjs" "$@"';
 const MAIL_CLIENT_SCRIPT = readFileSync(new URL("./desktop-mail.mjs", import.meta.url), "utf8");
 const MAILBOX_SCRIPT = readFileSync(new URL("./desktop-mailbox.mjs", import.meta.url), "utf8");
 const GIT_SCRIPT = readFileSync(new URL("./desktop-git.sh", import.meta.url), "utf8");
@@ -756,6 +758,20 @@ export class Boxes {
       return JSON.parse(result.stdout.toString("utf8"));
     } catch {
       throw new Error(`browser ${action}: unreadable answer`);
+    }
+  }
+
+  /**
+   * The agent's seat in Google Meet (`desktop-meet.mjs`): the script goes in on stdin each time,
+   * so a desktop needs nothing installed, and answers one line of JSON.
+   */
+  async meet(agentId, argv, { timeoutMs = 60000 } = {}) {
+    const result = await runProcess(this.docker, this.execArgs(agentId, ["sh", "-c", MEET_LAUNCH, "cora-meet", ...argv.map(String)]), { input: MEET_SCRIPT, timeoutMs, maxBytes: 8 * 1024 * 1024 });
+    if (result.code !== 0) throw new Error(lastLine(result.stderr, "il browser della riunione non risponde"));
+    try {
+      return JSON.parse(result.stdout.toString("utf8"));
+    } catch {
+      throw new Error("risposta illeggibile dal desktop");
     }
   }
 
