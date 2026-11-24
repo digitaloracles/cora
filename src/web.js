@@ -27,7 +27,7 @@ import { Telegram } from "./telegram.js";
 import { telegramSetup } from "./telegram-setup.js";
 import { pullModel } from "./llm.js";
 import { telegramBotEnvName } from "./telegram-bots.js";
-import { isWebRoom, isSalotto, ownerRoom, roomAgentId } from "./rooms.js";
+import { isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
 import { PreviewWindow } from "./preview.js";
 import { nextRuns } from "./scheduler.js";
 import { SHARED } from "./store.js";
@@ -218,7 +218,7 @@ async function readJson(req, limit = 256 * 1024) {
   }
 }
 
-export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null, skills = null }) {
+export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null, skills = null, meet = null }) {
   // Tries of a doc rule across the brains in use: they take a while, so the panel follows them.
   const ruleTests = new Map();
   const encrypted = encryptedSpaceFor(store, { llm, knowledge, artifacts, publicOrigin: config.publicHost ? `https://${config.publicHost}` : "" });
@@ -1821,6 +1821,29 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
         activity({ type: "agent", text: `eliminato ${agent.name}` });
         return send(res, 200, { ok: true });
       }
+    }
+
+    match = /^\/api\/agents\/([\w-]+)\/meet(?:\/(signin|account|signout|join|leave|retry))?$/.exec(path);
+    if (match && meet) {
+      const agent = store.agent(match[1]);
+      if (!agent) throw new HttpError(404, "Agente non trovato.");
+      if (!canManagePlan(agent, user)) throw new HttpError(403, "Solo il proprietario può gestire Google Meet.");
+      const action = match[2];
+      if (!action && method === "GET") return send(res, 200, meet.view(agent, user));
+      if (!action && method === "PUT") {
+        const { enabled } = await readJson(req, 1024);
+        if (typeof enabled !== "boolean") throw new HttpError(400, "Serve un valore booleano.");
+        meet.setEnabled(agent, enabled);
+      } else if (method === "POST" && action) {
+        const body = await readJson(req, 4096);
+        if (action === "signin") await meet.signIn(agent);
+        if (action === "account") await meet.check(agent);
+        if (action === "signout") await meet.signOut(agent);
+        if (action === "join") await meet.join(agent, { link: body.link, folder: body.folder, language: body.language, by: { kind: "user", id: user.id, name: user.name }, memberUserId: user.id, channelId: privateRoom(agent.id), panelOrigin: connectorOrigin(req) });
+        if (action === "leave") await meet.leave(agent);
+        if (action === "retry") await meet.retry(agent, body.id);
+      } else throw new HttpError(405, "Metodo non consentito.");
+      return send(res, 200, meet.view(agent, user));
     }
 
     if (skills && path === "/api/skills/search" && method === "GET") {
