@@ -295,6 +295,8 @@ export function startCora(overrides = {}) {
   web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls, harnessUpdates, skills });
 
   discord.on("message", (message) => {
+    // An agent already receives guild messages on its own gateway.
+    if (!listenerToken) return;
     orchestrator.onMessage(message).catch((error) => activity({ type: "error", channelId: message.channel_id, text: error.message }));
   });
   discord.on("interaction", (interaction) => {

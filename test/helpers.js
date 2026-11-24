@@ -148,11 +148,16 @@ export async function fakeDiscord() {
       res.writeHead(200, { "Content-Type": file.type });
       return res.end(file.data);
     }
-    if ((match = /^\/channels\/(\d+)\/messages$/.exec(url.pathname)) && req.method === "GET") {
+    if ((match = /^\/channels\/(\d+)\/messages(?:\/(\d+))?$/.exec(url.pathname)) && req.method === "GET") {
       const only = state.privateTo.get(match[1]);
       const asking = String(req.headers.authorization || "").replace(/^Bot /, "");
       if (only && only !== asking) return json(res, 403, { message: "Missing Access", code: 50001 });
-      return json(res, 200, [...(state.history.get(match[1]) || [])].reverse());
+      const messages = state.history.get(match[1]) || [];
+      if (match[2]) {
+        const message = messages.find((item) => item.id === match[2]);
+        return message ? json(res, 200, message) : json(res, 404, { message: "Unknown Message" });
+      }
+      return json(res, 200, [...messages].reverse());
     }
     if ((match = /^\/channels\/(\d+)\/threads$/.exec(url.pathname)) && req.method === "POST") {
       const asked = JSON.parse(String(body || "{}"));

@@ -223,6 +223,7 @@ export class Orchestrator {
     this.voice = voice;
     // Messages being read right now (a voice message takes seconds): the other bots' copies wait for nothing.
     this.arriving = new Set();
+    this.readingMentions = new Set();
     this.watching = watching;
     this.requestsByAgent = new Map();
     this.bots = bots;
@@ -266,7 +267,7 @@ export class Orchestrator {
   state(channelId) {
     let state = this.states.get(channelId);
     if (!state) {
-      state = { id: channelId, history: [], seen: new Set(), heardFrom: new Set(), humanQueue: new Map(), mainBlind: false, focus: this.engagements[channelId] || null, generation: 0, ownerOrigin: false, running: false, pending: false, timer: null, loading: null };
+      state = { id: channelId, history: [], seen: new Set(), humanQueue: new Map(), mainBlind: false, focus: this.engagements[channelId] || null, generation: 0, ownerOrigin: false, running: false, pending: false, timer: null, loading: null };
       this.states.set(channelId, state);
     }
     return state;
@@ -311,10 +312,9 @@ export class Orchestrator {
   async conversationAgents(channelId) {
     let agents = this.agentsFor(channelId);
     const state = this.states.get(channelId);
-    if (state?.mainBlind && state.heardFrom.size) agents = agents.filter((agent) => state.heardFrom.has(agent.id));
     const transport = transportOf(channelId);
     if (transport === "discord" && !this.dmAgentId(channelId) && this.bots) {
-      const access = await Promise.allSettled(agents.map((agent) => this.bots.canRead(agent, channelId)));
+      const access = await Promise.allSettled(agents.map((agent) => this.bots.canRead(agent, channelId, { requireOwn: state?.mainBlind })));
       agents = agents.filter((agent, index) => access[index].status === "fulfilled" && access[index].value);
     } else if (transport === "slack" && this.skBots) {
       const info = this.channels.info(channelId);
@@ -493,7 +493,7 @@ export class Orchestrator {
         .catch(async (error) => {
           // A private channel the main bot cannot read: another agent's bot may be in it, and
           // only the agents whose bots are in it can speak there. A passing network error is not that.
-          if (/\b40[13]\b/.test(error.message)) state.mainBlind = true;
+          if ([401, 403, 404].includes(error.status) || /\b40[134]\b/.test(error.message)) state.mainBlind = true;
           const viaBot = await this.bots?.fetchMessages(state.id, this.store.settings.historySize);
           if (viaBot) return viaBot;
           throw error;
@@ -550,11 +550,28 @@ export class Orchestrator {
     // What an agent's own bot posts is already in the history (Cora posted it); the gateway echo can arrive first.
     if (raw.author?.id && this.bots?.agentIdForUser(raw.author.id)) return;
     const state = this.state(raw.channel_id);
-    // Who delivered it is who is in the channel: in a private one, only they can answer.
-    if (viaAgentId) state.heardFrom.add(viaAgentId);
-    // Several bots may hear the same channel: the first delivery wins, the rest are the same message.
-    if (state.seen.has(raw.id) || this.store.hasMessage(raw.id)) return;
+    if (state.seen.has(raw.id) || this.store.hasMessage(raw.id) || this.arriving.has(raw.id)) return;
+    const targets = (raw.mentions || []).map((user) => this.bots?.agentIdForUser(user.id)).filter(Boolean);
+    const target = !raw.author?.bot && targets.length === 1 ? this.store.agent(targets[0]) : null;
+    if (target?.enabled && viaAgentId !== target.id) {
+      // A different gateway is a wake-up signal. The addressed bot reads the message itself.
+      // Its own gateway delivery can still win while the REST read is in flight.
+      if (this.readingMentions.has(raw.id)) return;
+      this.readingMentions.add(raw.id);
+      try {
+        const own = this.bots.client(target.id);
+        if (!own) return;
+        const message = await own.request("GET", `/channels/${state.id}/messages/${raw.id}`);
+        await this.onMessage({ ...message, guild_id: guildId }, target.id);
+      } catch (error) {
+        if (error.status !== 403 && error.status !== 404) throw error;
+      } finally {
+        this.readingMentions.delete(raw.id);
+      }
+      return;
+    }
     await this.arrive(raw.id, async () => {
+      if (target && !this.channels.discordInfo(state.id)) await this.threadFor(target, state.id);
       await this.ensureHistory(state, { exclude: raw.id });
       const item = this.toItem(raw);
       if (item.kind === "owner" || item.kind === "human") {
@@ -1027,7 +1044,6 @@ export class Orchestrator {
     const channelId = slackChannel(channel, threadTs);
     if (privateWith) this.dmAgent.set(channelId, privateWith);
     const state = this.state(channelId);
-    if (viaAgentId && !direct) state.heardFrom.add(viaAgentId);
     const kind = this.isSlackOwner(user.id) ? "owner" : "human";
     if (kind !== "owner" && !this.authorized({ kind, authorId: String(user.id) }, agent, state)) {
       return notice(english ? `Only the owner or someone allowed to work with ${agent.name} can answer.` : `Può rispondere solo il proprietario o chi ha il permesso di far lavorare ${agent.name}.`);
@@ -1140,8 +1156,6 @@ export class Orchestrator {
     if (this.skBots?.isOwnMessage(event) || this.slack?.isOwnMessage(event) || this.skBots?.agentIdForBot(event.bot_id)) return;
     const threadTs = event.thread_ts && event.thread_ts !== event.ts ? event.thread_ts : "";
     const state = this.state(slackChannel(event.channel, threadTs));
-    // Who delivered it is who is in the conversation.
-    if (viaAgentId) state.heardFrom.add(viaAgentId);
     const id = `sl_${event.channel}_${event.ts}`;
     // Every app in the channel hears the same message: the first delivery wins.
     if (state.seen.has(id) || this.store.hasMessage(id)) return;
@@ -1283,10 +1297,8 @@ export class Orchestrator {
     await this.brain.settleChannel(state.id);
     // An agent still on a task gets new messages through its inbox, never a second turn.
     let eligible = this.agentsFor(state.id);
-    // A channel the main bot cannot see is private: only the agents whose own bot is in it can read or post there.
-    if (state.mainBlind && state.heardFrom.size) eligible = eligible.filter((agent) => state.heardFrom.has(agent.id));
-    if (!isWebRoom(state.id) && !isTelegramChannel(state.id) && !this.dmAgentId(state.id) && this.bots) {
-      const access = await Promise.allSettled(eligible.map((agent) => this.bots.canRead(agent, state.id)));
+    if (transportOf(state.id) === "discord" && !this.dmAgentId(state.id) && this.bots) {
+      const access = await Promise.allSettled(eligible.map((agent) => this.bots.canRead(agent, state.id, { requireOwn: state.mainBlind })));
       eligible = eligible.filter((agent, index) => access[index].status === "fulfilled" && access[index].value);
     }
     // A message that calls nobody is for nobody, except in a room or a DM of one agent.
@@ -1989,12 +2001,13 @@ export class Orchestrator {
     const listed = this.channels.listFor(agent);
     const known = listed.find((channel) => channel.id === threadId);
     if (known) return known;
+    const client = this.bots?.client(agent.id) || this.discord;
     let thread = null;
-    try { thread = await this.discord.request("GET", `/channels/${threadId}`); } catch { return null; }
+    try { thread = await client.request("GET", `/channels/${threadId}`); } catch { return null; }
     if (![10, 11, 12].includes(thread?.type)) return null;
     const parent = listed.find((channel) => channel.id === thread.parent_id && !channel.thread);
     if (!parent || !this.allowedGuild(parent.guildId)) return null;
-    this.discord.guilds?.get(parent.guildId)?.threads.set(thread.id, { ...thread, guild_id: parent.guildId });
+    client.guilds?.get(parent.guildId)?.threads.set(thread.id, { ...thread, guild_id: parent.guildId });
     return { id: thread.id, name: thread.name, kind: "discord", guildId: parent.guildId, guildName: parent.guildName, thread: true, parentId: parent.id };
   }
 
@@ -2165,6 +2178,7 @@ export class Orchestrator {
     // Discord: a real voice message needs the agent's own bot (webhooks cannot send one); otherwise an audio file.
     const own = this.bots?.client(agent.id);
     const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content: "", file: clip });
+    if (!own && this.bots?.token(agent)) throw new Error("agent Discord bot is not connected");
     if (!own) return shared();
     if (note.ogg) {
       try { return await own.voiceNote(state.id, note); }
@@ -2172,7 +2186,7 @@ export class Orchestrator {
     }
     try { return await own.say(state.id, { content: "", file: clip }); }
     catch (error) {
-      if (this.dmAgent.has(state.id) || state.mainBlind) throw error;
+      if (this.dmAgent.has(state.id) || state.mainBlind || this.channelMeta(state.id).parentId) throw error;
       return shared();
     }
   }
@@ -2200,12 +2214,13 @@ export class Orchestrator {
     else {
       const own = this.bots?.client(agent.id);
       const shared = () => this.discord.post(state.id, { username: agent.name, avatarUrl: agent.avatarUrl, content, file, components });
+      if (!own && this.bots?.token(agent)) throw new Error("agent Discord bot is not connected");
       if (!own) sent = await shared();
       else {
         try { sent = await own.say(state.id, { content, file, components }); }
         catch (error) {
           const channel = this.channelMeta(state.id);
-          if (error.status !== 403 || error.sentCount || state.mainBlind || this.dmAgent.has(state.id) || !channel.guildId || !this.allowedGuild(channel.guildId)) throw error;
+          if (error.status !== 403 || error.sentCount || state.mainBlind || this.dmAgent.has(state.id) || channel.parentId || !channel.guildId || !this.allowedGuild(channel.guildId)) throw error;
           await own.fetchMessages(state.id, 1);
           await this.discord.fetchMessages(state.id, 1);
           this.log({ type: "warning", agentId: agent.id, channelId: state.id, text: "Il bot dell'agente non può scrivere qui; rispondo con la sua identità tramite il bot principale autorizzato." });

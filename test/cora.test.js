@@ -4715,6 +4715,42 @@ describe("conversation colleague reachability", () => {
     assert.equal(app.orchestrator.state(target).history.length, 0);
   });
 
+  test("a human mention delivered by a different gateway starts the named bot in the thread exactly once", async (t) => {
+    const { threadId, sender, receiver } = await fixture(t);
+    const own = app.bots.client(receiver.id);
+    const message = {
+      id: "1599000000000000998", channel_id: threadId, guild_id: GUILD, type: 0,
+      content: `<@${own.user.id}> reply here`, mentions: [own.user],
+      author: { id: OWNER, username: "Sam" }, timestamp: new Date().toISOString(),
+    };
+    discord.state.privateTo.set(threadId, "reach-receiver");
+    discord.state.history.set(threadId, [message]);
+    t.after(() => { discord.state.history.delete(threadId); replies.delete(receiver.name); });
+    replies.set(receiver.name, () => ({ content: "Thread delivery verified." }));
+    const observedReads = [];
+    const request = own.request.bind(own);
+    t.mock.method(own, "request", (method, path, ...args) => {
+      observedReads.push(path);
+      return request(method, path, ...args);
+    });
+    discord.dispatchTo(app.bots.client(sender.id).user.id, "MESSAGE_CREATE", message);
+    const posts = () => discord.state.botPosts.filter((item) => item.content === "Thread delivery verified.");
+    const post = await waitFor(() => posts()[0]);
+    assert.deepEqual([post.channelId, post.token], [threadId, "reach-receiver"]);
+    assert.ok(observedReads.includes(`/channels/${threadId}/messages/${message.id}`));
+    assert.equal(app.orchestrator.state(threadId).mainBlind, true);
+    discord.dispatchTo(own.user.id, "MESSAGE_CREATE", message);
+    await quiet();
+    assert.equal(posts().length, 1);
+    assert.ok(!discord.state.webhookPosts.some((item) => item.content === post.content));
+    discord.state.privateTo.delete(threadId);
+    discord.state.deniedPosts.set(threadId, new Set(["reach-receiver"]));
+    t.after(() => discord.state.deniedPosts.delete(threadId));
+    app.orchestrator.state(threadId).mainBlind = false;
+    await assert.rejects(app.orchestrator.postAs(receiver, app.orchestrator.state(threadId), "Denied thread reply."), /403/);
+    assert.ok(!discord.state.webhookPosts.some((item) => item.content === "Denied thread reply."));
+  });
+
   test("fresh and resumed model turns receive the current scoped roster rather than the old global roster", async (t) => {
     const { threadId, state, sender } = await fixture(t);
     discord.state.privateTo.set(threadId, "reach-sender");
@@ -4731,7 +4767,7 @@ describe("conversation colleague reachability", () => {
     t.after(() => { app.bots.canRead = canRead; });
     app.bots.canRead = async (agent, id) => { if (agent.name === "ReachReceiver") throw new Error("transport unavailable"); return canRead.call(app.bots, agent, id); };
     assert.ok(!(await app.orchestrator.conversationAgents(threadId)).some((item) => item.reachable && item.id !== sender.id && app.store.agent(item.id)?.name === "ReachReceiver"), "failed probes never advertise a reachable bot");
-    state.mainBlind = true; state.heardFrom.add(sender.id);
+    state.mainBlind = true;
     assert.deepEqual((await app.orchestrator.conversationAgents(threadId)).filter((item) => item.reachable).map((item) => item.id), [sender.id]);
   });
 });

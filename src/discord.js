@@ -6,6 +6,8 @@ export const PRESENCE_INTENTS = 1 << 0;
 export const VOICE_STATE_INTENTS = 1 << 7;
 /** Direct messages reach a bot without the privileged content intent. */
 export const DIRECT_MESSAGE_INTENTS = PRESENCE_INTENTS | VOICE_STATE_INTENTS | (1 << 12);
+/** Guild mentions arrive without the privileged Message Content intent. */
+export const AGENT_MENTION_INTENTS = DIRECT_MESSAGE_INTENTS | (1 << 9);
 /** An agent bot that may read message content listens to its channels too, so private ones are heard. */
 export const LISTENING_INTENTS = LISTENER_INTENTS | VOICE_STATE_INTENTS | (1 << 12);
 const FATAL_CLOSE_CODES = new Map([

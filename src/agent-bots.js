@@ -1,4 +1,4 @@
-import { Discord, DIRECT_MESSAGE_INTENTS, LISTENING_INTENTS } from "./discord.js";
+import { Discord, AGENT_MENTION_INTENTS, LISTENING_INTENTS } from "./discord.js";
 import { ValidationError } from "./store.js";
 
 // Application flags meaning the Message Content intent is on (the limited one is for unverified apps).
@@ -31,8 +31,7 @@ export function inviteUrl(applicationId, guildId) {
 
 /**
  * One Discord connection per agent that has its own bot token. These
- * connections only keep the bot online and post as it; listening stays on the
- * main connection, so every message is handled once.
+ * connections receive mentions and deliver replies with the same identity.
  */
 export class AgentBots {
   constructor({ store, apiBase, gatewayUrl = "", tokenFor = (name) => process.env[name] || "", log, onDirect = null, onGuild = null }) {
@@ -81,8 +80,8 @@ export class AgentBots {
       }
       const on = Boolean((app?.flags || 0) & MESSAGE_CONTENT_FLAGS);
       if (this.clients.get(agentId) !== entry) return;
-      // Only a bot allowed to read content asks to hear channels: asking without it closes the gateway for good.
-      entry.client.useIntents(on ? LISTENING_INTENTS : DIRECT_MESSAGE_INTENTS);
+      // Ask for privileged message content only when Discord has enabled it.
+      entry.client.useIntents(on ? LISTENING_INTENTS : AGENT_MENTION_INTENTS);
       if (on !== entry.messageContent) {
         entry.messageContent = on;
         this.onChange?.();
@@ -180,7 +179,7 @@ export class AgentBots {
         if (!this.clients.get(agentId).messageContent) this.readFlags(agentId);
         continue;
       }
-      const client = new Discord({ token, apiBase: this.apiBase, gatewayUrl: this.gatewayUrl, intents: DIRECT_MESSAGE_INTENTS });
+      const client = new Discord({ token, apiBase: this.apiBase, gatewayUrl: this.gatewayUrl, intents: AGENT_MENTION_INTENTS });
       // No server means a DM to this bot, answered by its agent; anything else is a channel this bot can see,
       // so a private channel is heard as long as one agent's bot is in it. Repeats are dropped by message id.
       client.on("message", (raw) => {
@@ -246,11 +245,11 @@ export class AgentBots {
     return entry?.client.user ? entry.client : null;
   }
 
-  async canRead(agent, channelId) {
+  async canRead(agent, channelId, { requireOwn = false } = {}) {
     const client = this.client(agent.id);
     if (!client) {
       if (this.token(agent)) throw new Error("agent Discord bot is not connected");
-      return true;
+      return !requireOwn;
     }
     try {
       await client.fetchMessages(channelId, 1);
