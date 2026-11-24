@@ -536,7 +536,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
   };
 
   /** Plans across every thread this person sees: the open ones and the history of finished ones, newest first. */
-  const plansView = async (scope, { open = true, limit = 50, before = "", board = null } = {}) => {
+  const canManagePlan = (agent, user) => Boolean(agent && (knowledge ? knowledge.canManage(agent, user) : user.role === "owner"));
+  const plansView = async (scope, user, { open = true, limit = 50, before = "", board = null } = {}) => {
     const plans = store.plans.recent({ agentIds: scope.agentIds || null, open, limit: limit + 1, before });
     const more = plans.length > limit;
     if (more) plans.pop();
@@ -544,7 +545,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     const tasks = Map.groupBy(store.plans.tasks(plans.map((plan) => plan.id)), (task) => task.planId);
     const items = plans.map((plan) => {
       const agent = store.agent(plan.agentId), thread = threads.get(plan.channelId);
-      return { ...plan, agentName: agent?.name || plan.agentId, color: agent?.color || "#f2a93b",
+      return { ...plan, canClose: ["active", "blocked"].includes(plan.status) && canManagePlan(agent, user), agentName: agent?.name || plan.agentId, color: agent?.color || "#f2a93b",
         threadName: thread?.name || "", threadKind: thread?.kind || "", link: thread?.link || "", tasksWithReasoning: tasks.get(plan.id) || [] };
     });
     return { plans: items, next: more && items.length ? `${items.at(-1).updatedAt}|${items.at(-1).id}` : null };
@@ -561,8 +562,8 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
     const board = await orchestrator.threadBoard(scope);
     const live = [...(traces?.live.values() || [])].filter((trace) => ids.has(trace.agentId) && ownsEntry(trace.summary(), user));
     const visiblePlan = (plan) => ids.has(plan.agentId);
-    const openPlans = (await plansView(scope, { open: true, limit: 100, board })).plans.filter(visiblePlan);
-    const history = await plansView(scope, { open: false, limit: 20, board });
+    const openPlans = (await plansView(scope, user, { open: true, limit: 100, board })).plans.filter(visiblePlan);
+    const history = await plansView(scope, user, { open: false, limit: 20, board });
     const names = new Map(board.threads.map((thread) => [thread.id, thread]));
     // Every active subscription of this person, with or without agents on it; never someone else's private login.
     const linked = (record) => !knowledge?.ownerMemory || record.connectedBy?.id === user.id || (record.server && user.role === "owner");
@@ -655,7 +656,9 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       try { return send(res, 200, choice[2] ? orchestrator.dismissChoice(record.id, { user }) : await orchestrator.answerChoice(record.id, body.index, { user })); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
-    if (method !== "GET") throw new HttpError(405, "L’app risponde solo alle scelte degli agenti.");
+    const closePlan = /^\/app\/v1\/(threads\/[\w:.%-]{3,160}\/plans\/[a-f0-9-]{36}\/close)$/.exec(path);
+    if (method === "POST" && closePlan) return api(req, res, new URL("/api/" + closePlan[1], "http://cora.internal"), user);
+    if (method !== "GET") throw new HttpError(405, "Metodo non consentito.");
     if (path === "/app/v1/snapshot") return send(res, 200, await appSnapshot(user, req));
     if (path === "/app/v1/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
@@ -1115,7 +1118,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       }
       throw new HttpError(404, "not found");
     }
-    const canStopFlow = (agentId) => knowledge ? knowledge.canManage(store.agent(agentId), user) : user.role === "owner";
+    const canStopFlow = (agentId) => canManagePlan(store.agent(agentId), user);
     const privateThreads = Boolean(knowledge?.ownerMemory || store.agents().some((agent) => agent.sealed));
     const visibleThreadAgents = knowledge?.agentsFor(user) || store.agents();
     const threadScope = privateThreads ? {
@@ -1145,7 +1148,7 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
       const before = url.searchParams.get("before") || "";
       if (before && !/^[\d\-:.TZ]{10,40}\|[a-f0-9-]{36}$/.test(before)) throw new HttpError(400, "Cursore non valido.");
-      return send(res, 200, { status, ...(await plansView(threadScope, { open: status === "open", limit, before })) });
+      return send(res, 200, { status, ...(await plansView(threadScope, user, { open: status === "open", limit, before })) });
     }
     const threadPlanAgents = (id) => orchestrator.agentsFor(id).filter((agent) => canStopFlow(agent.id) && !encryptedOnly(store, agent));
     const planAction = /^\/api\/threads\/([\w:.%-]{3,160})\/plans(?:\/([a-f0-9-]{36})\/(close|tasks)(?:\/([a-f0-9-]{36}))?)?$/.exec(path);
