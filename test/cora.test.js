@@ -5508,6 +5508,22 @@ describe("talking with the agents", () => {
     assert.equal(posts("Olga").length, before, "disengagement survives a fresh state");
   });
 
+  test("a request to work in threads without speaking in their parent still reaches the named agent", async () => {
+    const request = "@Olga come ieri, controlla notifiche linear e apri nuovi thread, NON PARLARE QUI, lavora nei thread";
+    const before = posts("Olga").length;
+    let received = false;
+    departures = () => [olga.id];
+    replies.set("Olga", (body) => {
+      received = body.messages.some(({ content }) => String(content).includes(request));
+      return { content: "PASS" };
+    });
+    discord.say({ content: request });
+    await waitFor(() => Boolean(received), { what: "the new task reaches the worker" });
+    await quiet();
+    assert.ok(app.orchestrator.engagements[CHANNEL]?.ids.includes(olga.id));
+    assert.equal(posts("Olga").length, before, "the parent gets no false departure announcement");
+  });
+
   test("an explicit detach ends listening before a model farewell and stays detached after restart", async () => {
     const THREAD = "1599000000000000799";
     discord.dispatch("THREAD_CREATE", { id: THREAD, guild_id: GUILD, parent_id: CHANNEL, type: 11, name: "explicit detach regression" });

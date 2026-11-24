@@ -12,6 +12,17 @@ export function writtenReplyEvidence(content, evidence) {
   if (typeof evidence !== "string" || !evidence.trim() || evidence.length > 500 || !String(content || "").includes(evidence)) return false;
   return /\b(?:testo|text|texto|texte|written|schriftlich|scritt[oa]|iscritto|escrit[oa]|ecrit(?:e)?)\b/iu.test(evidence.normalize("NFD").replace(/\p{M}/gu, ""));
 }
+export function asksForWrittenReply(content) {
+  const request = String(content || "")
+    .replace(/^\(in risposta a [\s\S]+?"\)\s*/i, "")
+    .replace(/^@[^\s,:]+[, :]*\s*/u, "")
+    .trim();
+  const bare = /^(?:scrivi|scrivimi|write back|reply in writing)[.!\s]*$/iu;
+  const repeated = /^scrivi[\s,!]+(?:[^\s,.!?]+[\s,!]+){0,2}scrivi[.!\s]*$/iu;
+  const format = /^(?:rispondi(?:mi)?|scrivi(?:mi)?)\s+(?:solo\s+)?(?:per iscritto|in (?:forma scritta|testo)|scritto)(?=\s|[!.,:]|$)/iu;
+  return bare.test(request) || repeated.test(request) || format.test(request);
+}
+
 const STT_MODEL = "stt-async-v5";
 const TTS_MODEL = "tts-rt-v2";
 const SPEECH_LIMIT = 1200;

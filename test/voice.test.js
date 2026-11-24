@@ -6,7 +6,7 @@ import { Store } from "../src/store.js";
 import { Voice, accentOf, speakable, speechParts, wavShape } from "../src/voice.js";
 import { FISH_CATALOG, FISH_VOICES } from "../src/voice-calls.js";
 const FISH_FEMALE = FISH_VOICES.female;
-import { CHANNEL, GUILD, MAIN_TOKEN, SLACK_CHANNEL, TG_GROUP, TG_OWNER, fakeDiscord, fakeDocker, fakeOllama, fakeSlack, fakeSoniox, fakeTelegram, sleep, tempHome, toneWav, waitFor } from "./helpers.js";
+import { CHANNEL, GUILD, MAIN_TOKEN, OWNER, SLACK_CHANNEL, TG_GROUP, TG_OWNER, fakeDiscord, fakeDocker, fakeOllama, fakeSlack, fakeSoniox, fakeTelegram, sleep, tempHome, toneWav, waitFor } from "./helpers.js";
 
 async function fixture(t, { sonioxKey = "", stored = new Map() } = {}) {
   const soniox = await fakeSoniox();
@@ -560,6 +560,44 @@ test("long voice-only replies keep every spoken word and a synthesis failure nev
   await quiet();
   assert.equal(discord.state.webhookPosts.some((post) => post.content === "Questa risposta deve restare solo vocale."), false);
   assert.equal(app.store.recentMessages(CHANNEL).some((item) => item.content === "Questa risposta deve restare solo vocale."), false, "failed audio never enters the archive as delivered");
+});
+
+test("a written delivery correction stops retrying failed audio in the active turn", async (t) => {
+  const { app, discord, replies, soniox, call, quiet, delivery } = await world(t);
+  const agent = (await call("/api/agents", { method: "POST", body: { name: "Fia", model: "ollama/test-model", tools: true } })).data;
+  const progress = "Il riepilogo è verificato.";
+  const final = "Il riepilogo è pronto per la consegna.";
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  let attempts = 0;
+  app.voice.voiceNote = async () => { attempts++; throw new Error("fixture synthesis unavailable"); };
+  delivery.intention = { intent: "continue", reply: "" };
+  let calls = 0;
+  const say = (text) => ({ tool_calls: [{ function: { name: "say", arguments: { text, voice: true } } }] });
+  replies.set("Fia", async () => {
+    if (++calls === 1) return say("Controllo il riepilogo.");
+    if (calls === 2) { await gate; return say(progress); }
+    return { content: final };
+  });
+  soniox.state.transcripts.push("Fia, controlla il riepilogo.");
+  discord.say({ content: "", flags: 1 << 13, attachments: [discord.attachment("fia-active.ogg", RECORDING, "audio/ogg")] });
+  const warning = await waitFor(() => discord.state.webhookPosts.find((post) => /Non riesco a inviare il vocale/.test(post.content)));
+  const correction = {
+    id: "1599000000000000911", type: 19, channel_id: CHANNEL, guild_id: GUILD, timestamp: new Date().toISOString(),
+    author: { id: OWNER, username: "Sam" }, content: "Scrivi cristo scrivi",
+    referenced_message: { author: { username: "Fia" }, content: warning.content },
+  };
+  discord.dispatch("MESSAGE_CREATE", correction);
+  await waitFor(() => app.store.hasMessage(correction.id));
+  release();
+  await waitFor(() => discord.state.webhookPosts.some((post) => post.content === final));
+  await quiet();
+  const posts = discord.state.webhookPosts.filter((post) => post.username === "Fia");
+  assert.deepEqual(posts.map((post) => post.content), [warning.content, progress, final]);
+  assert.equal(attempts, 1);
+  const trace = app.store.traces(agent.id, 1)[0];
+  assert.ok(app.store.trace(trace.id).steps.some((step) => step.replyTo?.id === correction.id && step.replyTo.replyMode === "text"));
 });
 
 test("an interrupted voice task resumes with the original delivery preference and language", async (t) => {

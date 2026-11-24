@@ -147,6 +147,14 @@ export function listenersLeaving(message, agents) {
   return called.filter((agent) => listenExit(windows.get(agent.id) || "")).map((agent) => agent.id);
 }
 
+function keepsWorkingInThreads(text) {
+  const spoken = /\[messaggio vocale: «([\s\S]*)»\]/.exec(text)?.[1];
+  const value = normalize(spoken ?? text).replace(/`[^`]*`|«[^»]*»|"[^"]*"|“[^”]*”/g, " ");
+  const quietHere = /\b(?:non\s+(?:parlare|scrivere|rispondere|postare)\s+qui|(?:do not|don't)\s+(?:speak|write|reply|post)\s+here)\b/u;
+  const threadWork = /\b(?:(?:lavora|continua|scrivi|rispondi)\s+(?:solo\s+)?(?:nei|nel)\s+thread|(?:work|continue|write|reply)\s+(?:only\s+)?in\s+(?:the\s+)?threads?)\b/u;
+  return quietHere.test(value) && threadWork.test(value) && !listenExit(value);
+}
+
 function explicitIds(content, agents, voice = false) {
   return agents.filter((agent) => tagged(content, agent.name) || (voice && spokenTo(content, agent.name))).map((agent) => agent.id);
 }
@@ -694,11 +702,13 @@ export class Orchestrator {
     // A pressed answer is called to the agent that offered it.
     const named = available.filter((agent) => calls(agent) || item.choiceFor === agent.id).map((agent) => agent.id);
     const candidates = available.filter((agent) => previous.includes(agent.id) || named.includes(agent.id));
-    const recipientsForExit = named.length ? candidates.filter((agent) => named.includes(agent.id)) : candidates;
+    const addressedForExit = named.length ? candidates.filter((agent) => named.includes(agent.id)) : candidates;
+    const windows = addressedForExit.length > 1 ? mentionWindows(item.content, addressedForExit) : new Map();
+    const recipientsForExit = addressedForExit.filter((agent) => !keepsWorkingInThreads(windows.get(agent.id) || item.content));
     const decision = recipientsForExit.length ? await this.brain.disengagement({ message: item.content, agents: recipientsForExit, history: state.history.filter((entry) => entry.id !== item.id), reminded: Boolean(state.focus?.remindedAt) }) : null;
     const exits = decision === null ? listenersLeaving(item.content, recipientsForExit) : recipientsForExit.filter((agent) => decision.includes(agent.id)).map((agent) => agent.id);
     // A "no" to the inactivity question lets go of whoever it was asked for, or of those it tags.
-    const declined = decision === null && !exits.length && state.focus?.remindedAt && idleDecline(item.content) ? (named.length ? named : previous).filter((id) => previous.includes(id)) : [];
+    const declined = decision === null && !exits.length && state.focus?.remindedAt && idleDecline(item.content) ? recipientsForExit.filter((agent) => previous.includes(agent.id)).map((agent) => agent.id) : [];
     const leaving = exits.length ? exits : declined;
     // The answer to an agent's question comes from whoever it asked: the owner, or the person the agent belongs to.
     // After a restart the question still open in this thread says who is waiting.
@@ -2078,7 +2088,8 @@ export class Orchestrator {
   }
 
   replyDelivery(item) {
-    return item?.voice ? { replyMode: ["text", "both"].includes(item.replyMode) ? item.replyMode : "voice", language: item.spokenIn || "" } : {};
+    if (item?.replyMode === "text") return { replyMode: "text" };
+    return item?.voice ? { replyMode: item.replyMode === "both" ? "both" : "voice", language: item.spokenIn || "" } : {};
   }
 
   async postAs(agent, state, text, file, traceId, { voice = false, replyMode, language = "", traceId: deliveryTraceId, ...options } = {}) {
