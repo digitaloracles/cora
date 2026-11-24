@@ -218,6 +218,29 @@ test("the app reads plans across threads, open and history, and hears every chan
   assert.ok(!stream.events.some((event) => event.type === "plan" && event.agentId === other.id), "another owner's plan changes never reach the app");
 });
 
+test("the native owner closes the displayed revision and retains unfinished steps in history", async (t) => {
+  const f = await appWorld(t);
+  const agent = f.app.store.createAgent({ name: "Planner", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
+  const channel = "800000000000000081";
+  const plans = f.app.store.plans;
+  const plan = plans.create(channel, agent.id, { name: "Close me", items: ["Ready", "Pending"] });
+  const alice = await f.connect(f.alice), bob = await f.connect(f.bob);
+  const close = (token, revision) => fetch(f.base + "/app/v1/threads/" + channel + "/plans/" + plan.id + "/close", {
+    method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", "X-Cora": "1" }, body: JSON.stringify({ revision })
+  });
+  assert.equal((await f.read(alice, "/app/v1/snapshot")).data.plans.open[0].canClose, true);
+  const current = plans.change(channel, agent.id, "advance", { ...plan, step: 1 });
+  assert.equal((await close(bob, current.revision)).status, 404);
+  assert.equal((await close(alice, plan.revision)).status, 409);
+  const open = (await f.read(alice, "/app/v1/plans?status=open")).data.plans[0];
+  assert.deepEqual([open.canClose, open.revision], [true, current.revision]);
+  assert.equal((await close(alice, current.revision)).status, 200);
+  const board = (await f.read(alice, "/app/v1/snapshot")).data.plans;
+  assert.equal(board.open.length, 0);
+  const closed = board.history[0];
+  assert.deepEqual([closed.id, closed.status, closed.canClose, closed.done, closed.items], [plan.id, "closed", false, 1, current.items]);
+});
+
 test("in a panel room the person who manages the agent answers its question from the app, and nobody else sees or answers it", async (t) => {
   const f = await appWorld(t);
   const own = f.app.store.createAgent({ name: "Chooser", brainOwnerId: f.alice.user.id, tools: false, enabled: true });
