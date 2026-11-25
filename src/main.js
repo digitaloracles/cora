@@ -242,7 +242,7 @@ export function startCora(overrides = {}) {
   googleConnector.knowledge = knowledge;
   googleConnector.log = activity;
   // Connectors that take a key or an app: the value is checked with the service and kept in the vault.
-  const keyConnectors = new KeyConnectors({ store, vault, google: googleConnector, log: activity });
+  const keyConnectors = new KeyConnectors({ store, vault, google: googleConnector, log: activity, broker: cfg.connectorBroker || (cfg.cloudUrl && cfg.cloudSpace ? cfg.cloudUrl : ""), space: cfg.cloudSpace, ...(cfg.graphApi ? { graphApi: cfg.graphApi } : {}) });
   brain.connectors = keyConnectors;
   brain.vault = vault;
   // Live voice calls in Discord voice channels: Fish Audio's key from the environment, or the vault's when it keeps one.

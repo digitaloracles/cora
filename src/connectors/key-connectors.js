@@ -24,8 +24,8 @@ const sameIdentity = (multi, a, b) => {
 };
 
 export class KeyConnectors {
-  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", higgsfieldApi = "https://mcp.higgsfield.ai/mcp", oauthUrls = {}, fetch: fetchImpl = fetch }) {
-    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, higgsfieldApi, oauthUrls, fetch: fetchImpl });
+  constructor({ store, vault = null, google = null, log = () => {}, linearApi = "https://api.linear.app/graphql", asanaApi = "https://app.asana.com/api/1.0", canvaApi = "https://api.canva.com/rest/v1", lovableApi = "https://mcp.lovable.dev/", firecrawlApi = "https://mcp.firecrawl.dev/v2/mcp", firecrawlOAuthApi = "", firecrawlRestApi = "https://api.firecrawl.dev/v2", earendilApi = "https://earendil.studio/api/mcp", higgsfieldApi = "https://mcp.higgsfield.ai/mcp", graphApi = "https://graph.microsoft.com/v1.0", broker = "", space = "", oauthUrls = {}, fetch: fetchImpl = fetch }) {
+    Object.assign(this, { store, vault, google, log, linearApi, asanaApi, canvaApi, lovableApi, firecrawlApi, firecrawlOAuthApi, firecrawlRestApi, earendilApi, higgsfieldApi, graphApi, broker: String(broker || "").replace(/\/$/, ""), space, oauthUrls, fetch: fetchImpl });
     // OAuth authorisations under way: nonce → who started it, the PKCE verifier and where Google-style callbacks return.
     this.pending = new Map();
     // Access tokens renewed from a stored refresh token, until they expire.
@@ -34,7 +34,7 @@ export class KeyConnectors {
     this.writeQueue = Promise.resolve();
   }
 
-  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi, higgsfield: this.higgsfieldApi }; }
+  api() { return { linear: this.linearApi, asana: this.asanaApi, canva: this.canvaApi, lovable: this.lovableApi, firecrawl: this.firecrawlApi, firecrawlOAuth: this.firecrawlOAuthApi, firecrawlRest: this.firecrawlRestApi, earendil: this.earendilApi, higgsfield: this.higgsfieldApi, graph: this.graphApi }; }
 
   /** A module's OAuth endpoints, which a test may point elsewhere. */
   oauthOf(service) {
@@ -74,6 +74,7 @@ export class KeyConnectors {
 
   async connectMulti(service, input, user, connectionId = "") {
     const meta = KEY_SERVICES[service], multi = multiOf(service);
+    if (this.oauthOf(service)?.broker) throw new KeyConnectorError(`Collega ${meta.name} con il tuo account.`);
     // A connection saved before ids existed gets one now, so the panel can address it beside the new one.
     if (this.records().some((item) => item.service === service && !item.id)) this.save(this.records().map((item) => item.service === service && !item.id ? { ...item, id: `kc_${randomBytes(6).toString("hex")}` } : item));
     const previous = connectionId ? this.selectedRecord(service, connectionId) : null;
@@ -226,7 +227,7 @@ export class KeyConnectors {
       return this.finishPasted(service, returned, user);
     }
     const module = CONNECTORS.find((item) => item.id === service);
-    if (!module.checkKey && module.oauth?.dynamicRegistration) throw new KeyConnectorError(`Collega ${meta.name} con il tuo account.`);
+    if (!module.checkKey && (module.oauth?.dynamicRegistration || module.oauth?.broker)) throw new KeyConnectorError(`Collega ${meta.name} con il tuo account.`);
     if (module.checkKey) {
       if (input.mode !== "key") throw new KeyConnectorError("Scegli il collegamento con account o chiave API.");
       const token = clean(input.token, 4000);
@@ -324,6 +325,7 @@ export class KeyConnectors {
     const oauth = this.oauthOf(service);
     if (!oauth) throw new KeyConnectorError("Questo connettore non ha un'autorizzazione OAuth.", 404);
     if (mode === "quick") return this.beginQuick(service, user);
+    if (oauth.broker) return this.beginBroker(service, user, connectionId);
     let record = this.selectedRecord(service, connectionId);
     if (record?.status === "revocation_pending") throw new KeyConnectorError("Completa la revoca prima di collegare di nuovo il servizio.", 409);
     if (oauth.dynamicRegistration) {
@@ -354,6 +356,49 @@ export class KeyConnectors {
       ...(oauth.params || {}),
     });
     return { url: url.href, nonce };
+  }
+
+  /** An account connected through Cora's broker on usecora.space, which holds the app's secret: the space keeps the PKCE verifier and the tokens. */
+  async beginBroker(service, user, connectionId = "") {
+    const oauth = this.oauthOf(service), meta = KEY_SERVICES[service];
+    if (!this.broker || !this.space) throw new KeyConnectorError(`${meta.name} si collega dagli spazi di usecora.space: questo Cora non ne ha uno.`, 409);
+    this.vaultReady();
+    const record = connectionId ? this.selectedRecord(service, connectionId) : null;
+    if (record?.status === "revocation_pending") throw new KeyConnectorError("Completa la revoca prima di collegare di nuovo il servizio.", 409);
+    for (const [key, value] of this.pending) if (value.expires < Date.now()) this.pending.delete(key);
+    const nonce = randomBytes(32).toString("base64url"), verifier = randomBytes(32).toString("base64url");
+    this.pending.set(nonce, { service, broker: true, connectionId: record?.id || "", userId: user.id, verifier, expires: Date.now() + 900000 });
+    const url = new URL(`${this.broker}/connectors/${oauth.broker}/start`);
+    url.search = new URLSearchParams({ space: this.space, nonce, challenge: createHash("sha256").update(verifier).digest("base64url") });
+    return { url: url.href, nonce };
+  }
+
+  /** One call to the broker: the exchange of a code or the renewal of a token. */
+  async brokerCall(service, path, body) {
+    const meta = KEY_SERVICES[service];
+    let response, data = null;
+    try { response = await this.fetch(`${this.broker}/connectors/${this.oauthOf(service).broker}/${path}`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(45000) }); }
+    catch { throw new KeyConnectorError(`${meta.name} non risponde. Riprova tra poco.`, 502); }
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok || !data?.access_token) throw new KeyConnectorError(`${meta.name} non ha completato il collegamento: riprova da Connettori.`, response.status === 400 ? 400 : 502);
+    return data;
+  }
+
+  /** The broker sent the owner back: Cora trades the code through it and keeps the account's tokens in the vault. */
+  async finishBroker(service, state, code, pending, user) {
+    const meta = KEY_SERVICES[service], multi = multiOf(service);
+    const data = await this.brokerCall(service, "exchange", { state, code: String(code), verifier: pending.verifier });
+    if (!data.refresh_token || !data.grant || !data.subject || !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(data.email || "")) throw new KeyConnectorError(`${meta.name} non ha confermato l'account.`, 502);
+    const bundle = { access_token: data.access_token, refresh_token: data.refresh_token, grant: data.grant, expires_at: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000 };
+    const checked = { account: String(data.email).toLowerCase(), accountId: String(data.subject), accountName: String(data.name || "").slice(0, 200), workspace: "", scope: String(data.scope || "") };
+    return this.serialWrite(() => {
+      const existing = this.records().filter((item) => item.service === service && !item.disconnected);
+      const previous = pending.connectionId ? existing.find((item) => item.id === pending.connectionId) : existing.find((item) => item.status === "connected" && sameIdentity(multi, item, checked));
+      if (pending.connectionId && !previous) throw new KeyConnectorError("Il collegamento è stato rimosso. Riparti da Connettori.", 409);
+      const id = previous?.id || `kc_${randomBytes(6).toString("hex")}`;
+      const secretName = previous ? this.tokenName(meta, previous) : existing.some((item) => this.tokenName(meta, item) === meta.secret) ? `${meta.secret}_${id.slice(3).toUpperCase()}` : meta.secret;
+      return this.saveMultiConnection(service, checked, "oauth", JSON.stringify(bundle), user, previous?.id || "", { id, secretName });
+    });
   }
 
   /** Quick access: the owner accepts on the service, which sends the browser to a loopback address; the owner pastes it back. */
@@ -427,13 +472,17 @@ export class KeyConnectors {
 
   /** The service sent the owner back with a code: Cora trades it for tokens and stores them in the vault. */
   async finishOAuth(service, { state, code, error }, nonce) {
-    const pending = this.pending.get(String(state || ""));
-    if (!pending || pending.service !== service || pending.expires < Date.now() || state !== nonce) throw new KeyConnectorError("Autorizzazione scaduta. Riprova da Connettori.");
-    this.pending.delete(state);
+    const brokered = Boolean(this.oauthOf(service)?.broker);
+    let key = String(state || "");
+    if (brokered) { try { key = String(JSON.parse(Buffer.from(key.split(".")[1] || "", "base64url").toString("utf8")).nonce || ""); } catch { key = ""; } }
+    const pending = key && this.pending.get(key);
+    if (!pending || pending.service !== service || pending.expires < Date.now() || key !== nonce || Boolean(pending.broker) !== brokered) throw new KeyConnectorError("Autorizzazione scaduta. Riprova da Connettori.");
+    this.pending.delete(key);
     const user = this.store.panelUser(pending.userId);
     if (!user || user.blocked) throw new KeyConnectorError("Accesso non autorizzato.", 403);
     if (error || !code) throw new KeyConnectorError("Autorizzazione annullata.");
     this.vaultReady();
+    if (brokered) return this.finishBroker(service, String(state), code, pending, user);
     const source = multiOf(service) || this.oauthOf(service)?.dynamicRegistration ? this.selectedRecord(service, pending.connectionId) : pending.mode === "quick" ? { mode: "quick" } : null;
     if (this.oauthOf(service)?.dynamicRegistration && (!source || source.id !== pending.connectionId)) throw new KeyConnectorError("Collegamento annullato. Riparti da Connettori.", 409);
     if (source && source.appVersion !== pending.appVersion) throw new KeyConnectorError("L'app è cambiata durante l'autorizzazione. Riparti dal collegamento.", 409);
@@ -472,9 +521,11 @@ export class KeyConnectors {
       if (stored.expires_at > Date.now() + 60000) { this.access.set(name, stored); return stored; }
       if (!stored.refresh_token) throw new Error(`${connector.name} needs a new authorisation: the owner authorises it again in Connettori`);
       let data;
-      try { data = await this.tokenCall(connector.id, { grant_type: "refresh_token", refresh_token: stored.refresh_token }, record); }
+      const brokered = Boolean(this.oauthOf(connector.id)?.broker);
+      try { data = brokered ? await this.brokerCall(connector.id, "refresh", { grant: stored.grant, refresh_token: stored.refresh_token }) : await this.tokenCall(connector.id, { grant_type: "refresh_token", refresh_token: stored.refresh_token }, record); }
       catch { throw new Error(`${connector.name} did not renew the authorisation: the owner authorises it again in Connettori`); }
-      const bundle = this.bundle(stored, data);
+      if (brokered && String(data.email || "").toLowerCase() !== record.account) throw new Error(`${connector.name} answered for another account: the owner connects it again in Connettori`);
+      const bundle = { ...this.bundle(stored, data), ...(brokered ? { grant: data.grant || stored.grant } : {}) };
       const current = this.records().find((item) => item.id === record.id && ["connected", "revocation_pending"].includes(item.status));
       if (!current || current.connectedAt !== record.connectedAt || current.appVersion !== record.appVersion || !this.store.vaultSecret(name)) throw new Error(`${connector.name} was disconnected during renewal`);
       await this.vault.put({ name, value: JSON.stringify(bundle), agents: current.agents || [], by: this.store.vaultSecret(name)?.createdBy || null, source: "connector" });

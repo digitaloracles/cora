@@ -3553,6 +3553,19 @@ Object.assign(EN, {
   "Cora non conosce il suo indirizzo pubblico.": "Cora does not know its public address.",
   "Collegamento annullato. Riparti da Connettori.": "Connection cancelled. Return to Connectors.",
   "Il servizio non ha confermato la revoca. Riprova lo scollegamento.": "The service did not confirm revocation. Try disconnecting again.",
+  "Leggi, cerca, organizza e invia la posta del tuo account Microsoft (Outlook.com, Hotmail, Microsoft 365) con gli agenti che scegli.": "Read, search, organize and send the mail of your Microsoft account (Outlook.com, Hotmail, Microsoft 365) with the agents you choose.",
+  "Outlook · Microsoft 365": "Outlook · Microsoft 365",
+  "Gli agenti lavorano sulla posta del tuo account Microsoft. Accedi con Microsoft e autorizzi Cora: i token restano nella cassaforte, mai nel pannello.": "Agents work on the mail of your Microsoft account. Sign in with Microsoft and authorize Cora: the tokens stay in the vault, never in the panel.",
+  "L'account Microsoft che colleghi: gli agenti inviano a suo nome.": "The Microsoft account you connect: agents send in its name.",
+  "Account Microsoft": "Microsoft account",
+  "Il tuo account Microsoft": "Your Microsoft account",
+  "Si apre Microsoft: scegli l'account e accetta. Poi torni qui e scegli gli agenti.": "Microsoft opens: choose the account and accept. Then come back here and choose the agents.",
+  "Accedi con Microsoft": "Sign in with Microsoft",
+  "Collega Outlook con il tuo account.": "Connect Outlook with your account.",
+  "Outlook si collega dagli spazi di usecora.space: questo Cora non ne ha uno.": "Outlook connects from usecora.space spaces: this Cora does not have one.",
+  "Outlook non ha completato il collegamento: riprova da Connettori.": "Outlook did not complete the connection: try again from Connectors.",
+  "Outlook non ha confermato l'account.": "Outlook did not confirm the account.",
+  "Outlook autorizzato. Scegli gli agenti che possono usarlo.": "Outlook authorized. Choose the agents that can use it.",
 });
 
 Object.assign(EN, {

@@ -6,13 +6,14 @@ import { earendil } from "./earendil.js";
 import { firecrawl } from "./firecrawl/index.js";
 import { higgsfield } from "./higgsfield.js";
 import { lovable } from "./lovable.js";
+import { outlook } from "./outlook.js";
 
 /**
  * Every connector, in the order the panel's catalogue shows them. The panel draws
  * each card and each form from what the module declares: to add a connector, write
  * its module next to these and list it here (see README.md).
  */
-export const CONNECTORS = [google, linear, asana, canva, lovable, firecrawl, earendil, higgsfield];
+export const CONNECTORS = [google, outlook, linear, asana, canva, lovable, firecrawl, earendil, higgsfield];
 
 /** The connectors that a person connects with a key or an app's credentials. */
 export const KEY_SERVICES = Object.fromEntries(CONNECTORS.filter((connector) => (connector.kind || "key") === "key")
