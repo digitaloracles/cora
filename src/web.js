@@ -2833,7 +2833,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         const body = `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${status === 200 ? '<meta http-equiv="refresh" content="1;url=/#/settings/connettori/google">' : ""}<title>Google · Cora</title><style>${SEND_STYLE}</style></head><body><main>${SEND_MARK}<h1>Google</h1><p>${message}</p><a class="button" href="/#/settings/connettori/google">Torna a Connettori</a></main></body></html>`;
         return send(res, status, body, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'", "Set-Cookie": `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${config.insecureCookies ? "" : "; Secure"}` });
       }
-      const oauthBack = /^\/connectors\/oauth\/([a-z][a-z0-9-]{1,40})\/callback$/.exec(url.pathname);
+      const oauthBack = url.pathname === "/connectors/microsoft/callback" ? [url.pathname, "outlook"] : /^\/connectors\/oauth\/([a-z][a-z0-9-]{1,40})\/callback$/.exec(url.pathname);
       if (oauthBack && keyConnectors && KEY_SERVICES[oauthBack[1]] && req.method === "GET") {
         const service = oauthBack[1], title = KEY_SERVICES[service].name;
         const name = config.insecureCookies ? "cora_oauth" : "__Host-cora_oauth";

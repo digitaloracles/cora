@@ -3953,7 +3953,9 @@ function connectorsPane() {
     return connectedCard(`${service.id}:${record.id || record.workspace || "default"}`, { icon: service.icon, title: service.multi ? raw(multiLabel(service, record)) : service.name, hint: service.multi && record.workspace && record.workspace !== multiLabel(service, record) ? raw(`${service.name} · ${record.workspace}`) : tr(service.meta), actions: tag("Collegato", "ok") },
       h("p", {}, tr(service.intro)),
       setRows(
-        setRow("Workspace", h("span", {}, raw(record.workspace || record.account || "—"), record.account && record.workspace ? h("small", {}, raw(record.account)) : null), tag("Collegato", "ok")),
+        record.workspace || !record.account
+          ? setRow("Workspace", h("span", {}, raw(record.workspace || record.account || "—"), record.account && record.workspace ? h("small", {}, raw(record.account)) : null), tag("Collegato", "ok"))
+          : setRow("Account collegato", h("span", {}, raw(record.accountName || record.account), record.accountName ? h("small", {}, raw(record.account)) : null), tag("Collegato", "ok")),
         record.mode === "oauth" || record.mode === "quick"
           ? setRow("Autorizzazione", h("span", {}, "Token OAuth nella cassaforte come ", h("code", {}, raw(record.secretName || service.secret)), ". Cora lo rinnova da solo quando scade.", record.mode === "quick" ? h("small", { class: "muted" }, " ", tr("Per autorizzare di nuovo con l'accesso rapido, scollega e ricollega.")) : null), record.mode === "quick" ? null : authorizeButton(service, "Autorizza di nuovo", record))
           : setRow("Chiave", h("span", {}, "Nella cassaforte come ", h("code", {}, raw(record.secretName || service.secret)), ". Gli agenti autorizzati la prendono da lì, senza vederla.")),

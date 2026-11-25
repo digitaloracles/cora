@@ -29,6 +29,7 @@ that is not authorised for a connector does not even see its tool.
 | `remote-mcp.js` | Shared JSON/SSE transport, sessions, recovery and image files for Lovable and Firecrawl. |
 | `lovable.js` | Lovable: the official MCP server (`mcp.lovable.dev`), reached by Cora as an MCP client with the owner's OAuth token; 31 `lovable_` actions (projects, the project agent's messages, diffs and files, knowledge, skills, database, deploy, analytics, uploads) and `lovable_mcp`. |
 | `google.js` | Google: accounts connected through Cora's OAuth broker (`GoogleConnector`); 14 `gmail_` actions (send, reply, search, read, attachments, labels, archive, drafts) and `gmail_api`. |
+| `outlook.js` | Outlook: Microsoft accounts (Outlook.com, Hotmail, Microsoft 365) connected through Cora's broker on usecora.space; 12 `outlook_` actions on Microsoft Graph (search, read, conversations, send, reply, drafts, categories, flags, moves, folders, attachments) and `outlook_api`. |
 | `google-drive.js` | Google Drive on the same accounts: 16 `drive_` actions (search, file details, read as text, download and export, upload, create Docs/Sheets/Slides/text, rename/move/new version, folders, copy, trash, share/unshare, permissions, comments, shared drives) and `drive_api`. |
 
 A connector that declares `multi` holds several connections (Linear workspaces, Asana accounts):
@@ -178,6 +179,29 @@ oauth: {
 
 Tests point `authorize` and `token` at a fake service with
 `keyConnectors.oauthUrls[<id>] = { token: "http://127.0.0.1:…/token" }`.
+
+### Apps held by Cora's broker
+
+Some services are connected through an app that Cora itself registered (Outlook, on Microsoft
+Entra), so the owner registers nothing. The module declares `oauth: { broker: "microsoft" }`
+and holds no endpoints: the app's secret lives only on usecora.space
+(`cloud/src/microsoft-connector.js`), which also has Cora's redirect address.
+
+1. «Accedi con Microsoft» calls `POST /api/connectors/keys/<id>/authorize`: Cora keeps a nonce
+   and a PKCE verifier and answers `<broker>/connectors/microsoft/start?space&nonce&challenge`.
+   The broker is the space's `CORA_CLOUD_URL` (with `CORA_CLOUD_SPACE`); a Cora without them
+   cannot connect the service.
+2. The broker signs the state, sends the owner to Microsoft, and sends the browser back to the
+   space at `/connectors/microsoft/callback`. Cora reads its nonce from the signed state, checks
+   it against the cookie of the browser that started, and trades the code through
+   `<broker>/connectors/microsoft/exchange` with its verifier.
+3. The vault keeps `{ access_token, refresh_token, grant, expires_at }`. The grant is the
+   broker's signature binding that refresh token to the space; renewals go through
+   `<broker>/connectors/microsoft/refresh`, which answers Microsoft's rotated refresh token and
+   a new grant, stored at once.
+
+The connector is `multi` by account: connecting an account already there renews it in place,
+with its agents; another account gets its own vault secret.
 
 ### Quick access through a loopback client
 
