@@ -7,7 +7,7 @@ import { OpenChoices } from "./open-choices.js";
 import { ThreadSessions, killPid, noteChildPid, pidAlive, recoverHarness, sessionFailure } from "./thread-sessions.js";
 import { ProcessUsage } from "./process-usage.js";
 import { escapeSlack, isDirectChannel } from "./slack.js";
-import { TRANSPORT_LABELS, isSlackChannel, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
+import { TRANSPORT_LABELS, discordLink, isSlackChannel, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
 import { MEMORY_TOOLS } from "./tools.js";
 import { userName } from "./telegram.js";
@@ -2009,6 +2009,42 @@ export class Orchestrator {
     if (!parent || !this.allowedGuild(parent.guildId)) return null;
     client.guilds?.get(parent.guildId)?.threads.set(thread.id, { ...thread, guild_id: parent.guildId });
     return { id: thread.id, name: thread.name, kind: "discord", guildId: parent.guildId, guildName: parent.guildName, thread: true, parentId: parent.id };
+  }
+
+  /**
+   * A Discord channel or thread an agent may write to, read with its own bot (the main one only when the
+   * agent has none), as say does: by id or link, its latest messages, those before one, or around a linked one.
+   */
+  async readChannel(agent, target, { limit = 30, before = "", around = "" } = {}) {
+    const link = discordLink(target);
+    const channelId = link?.channelId || String(target || "").trim();
+    if (!/^\d{5,30}$/.test(channelId)) throw new Error("give a Discord channel or thread id, or its discord.com/channels link");
+    if (link?.guildId && !this.allowedGuild(link.guildId)) throw new Error("channel not authorized: it is in another Discord server");
+    const info = this.channels.listFor(agent).find((channel) => channel.id === channelId) || await this.threadFor(agent, channelId);
+    if (!info?.guildId || transportOf(channelId) !== "discord" || !this.allowedGuild(info.guildId)) throw new Error("channel not authorized: choose a channel from list_channels or a thread under one");
+    const count = Math.max(1, Math.min(100, Math.round(Number(limit) || 30)));
+    const anchor = String(around || link?.messageId || "");
+    const older = String(before || "");
+    const query = new URLSearchParams({ limit: String(count) });
+    if (/^\d{5,30}$/.test(older)) query.set("before", older);
+    else if (/^\d{5,30}$/.test(anchor)) query.set("around", anchor);
+    const client = this.bots?.client(agent.id) || this.discord;
+    const raw = await client.request("GET", `/channels/${channelId}/messages?${query}`);
+    // A bot without Message Content reads other people's messages as empty: the archive keeps their words.
+    const archived = new Map(this.store.recentMessages(channelId, 500).map((item) => [item.id, item]));
+    const messages = (Array.isArray(raw) ? raw : []).slice().sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+      .filter((message) => discordConversationMessage(message, archived.get(message.id)))
+      .map((message) => {
+        const item = this.toItem(message);
+        const kept = archived.get(message.id);
+        return !message.content?.trim() && kept?.content?.trim() ? { ...item, content: kept.content } : item;
+      });
+    const parentId = info.thread ? info.parentId || "" : "";
+    return {
+      id: channelId, name: info.name || "", guildId: info.guildId, thread: Boolean(info.thread), parentId,
+      parentName: parentId ? this.channels.listFor(agent).find((channel) => channel.id === parentId)?.name || "" : "",
+      around: query.has("around") ? anchor : "", messages,
+    };
   }
 
   /**

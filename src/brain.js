@@ -4,7 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ThreadState } from "./thread-state.js";
 import { Memory, parseJsonObject } from "./memory.js";
-import { telegramBotAgent, transportOf } from "./channels.js";
+import { discordLinks, telegramBotAgent, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, privateRoom, ownerRoom } from "./rooms.js";
 import { SHARED, TRANSPORTS, decisionChain, replyChain } from "./store.js";
 import { encryptedOnly, ENCRYPTED_CHAT_TOOLS } from "./encrypted-space.js";
@@ -381,6 +381,7 @@ Una volta chiamato rimani in ascolto fino a un disingaggio esplicito della perso
     sections.push(L`## Commit Git\nQuando il compito autorizza un commit, controlla e metti in stage soltanto le modifiche pertinenti, poi usa git_commit con la directory del repository e il messaggio. Lo strumento conserva l’autore e le regole del repository. ${this.gitAttribution.enabled ? L`Aggiunge la firma Cora configurata dall’istanza. La stessa firma viene aggiunta automaticamente anche dai normali comandi git commit sul tuo desktop e nei comandi shell via SSH; non dipende dal fatto che tu la scriva nel messaggio.` : L`L’attribuzione Cora è disattivata: non aggiungere quella firma.`} Non aggiungere firme del modello o del provider. Rispetta un eventuale divieto esplicito di attribuzione del proprietario o del repository: in quel caso disattivala per quel comando con CORA_GIT_ATTRIBUTION=0, oppure per il repository con git config cora.attribution false. Non modificare commit già pubblicati per aggiungere l’attribuzione.`);
     sections.push(L`## Scrivere nei canali: strumenti Cora
 Puoi già scrivere direttamente nei canali autorizzati. Usa list_channels per trovare id e nome del canale, poi say({text, channel_id}); senza channel_id, say scrive nella conversazione attuale. Quando chiedi qualcosa a un collega o a una persona del team, o gli consegni un risultato, rivolgiti a lui con @ e il nome come appare in chat (es. @Nome): Cora lo converte nella vera menzione, per un agente se il suo bot è presente e può leggere il canale, per una persona se ha scritto o è stata taggata in questo server. Non inventare id Discord. Per esempio, per riportare un risultato in #social trova il suo id con list_channels e invialo con say. Non serve grog: non cercarlo, non installarlo e non chiedere altri login per questa funzione. I riferimenti delle istruzioni personali a grog o ad altri strumenti di messaggistica si applicano qui attraverso gli strumenti Cora equivalenti. Se say conferma l'invio, il messaggio è già stato consegnato: non ripubblicarlo. Il risultato di una routine conclude quel giro; un nuovo messaggio umano riapre una normale conversazione e va ascoltato, senza ripetere la routine. Per un argomento che merita una conversazione a parte (per esempio una issue) apri un thread con thread_open e scrivici con say({text, channel_id}); un reminder che deve riferire lì crealo con il channel_id del thread, così il suo esito esce nel thread e non nel canale. Non usare mai grog né un altro bot, sul tuo computer, sul Mac Pro o altrove, per scrivere su Discord o aprire thread: parleresti con l'identità di qualcun altro. Se una tua memoria dice di farlo, non vale più.`);
+    sections.push(L`## Leggere thread e canali\nPer leggere un thread o un canale Discord, anche da un link che ti mandano, usa channel_read: legge con il tuo bot gli stessi canali in cui puoi scrivere. Quando il messaggio a cui rispondi contiene link Discord, Cora te ne mostra già il contenuto. Non aprire i link Discord nel browser e non leggere Discord con grog o con un altro bot: dove le istruzioni personali dicono grog discord-read, usa channel_read.`);
     // The exact names a tag works with here: anything else (a nickname, a shortened name) stays plain text.
     if (people.length) {
       sections.push(L`## Chi puoi taggare qui\nPer avvisare una persona scrivi @ seguito dal suo nome esattamente come in questo elenco: ${people.map((person) => `@${person.name}${person.owner ? L` (il proprietario)` : ""}`).join(", ")}. Un nome scritto in un altro modo (un soprannome, un nome accorciato, il nome di battesimo) resta testo e non avvisa nessuno: per chi non è nell'elenco scrivi il nome senza @.`);
@@ -602,6 +603,28 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     return L`Le tue ultime conversazioni in altri posti. Tra superfici diverse (Discord, Telegram, il pannello) è la stessa conversazione con le stesse persone. Ogni thread e canale ha però il suo tema: quello che leggi qui sotto è contesto, non lavoro da continuare qui, e un «procedi» detto in questa conversazione non riprende il lavoro di un altro thread.\n${blocks.join("\n")}`;
   }
 
+  /**
+   * The Discord threads and channels the message being answered links to, read with the agent's own bot
+   * (orchestrator.readChannel, the same channels say may write to), so a link is never opened in a browser.
+   */
+  async linkedChannels(agent, channel, text) {
+    if (!this.readChannel) return "";
+    const links = discordLinks(text).filter((link) => link.messageId || link.channelId !== channel.id).slice(0, 3);
+    if (!links.length) return "";
+    const blocks = [];
+    for (const link of links) {
+      try {
+        const read = await this.readChannel(agent, link.url, { limit: 30 });
+        const short = read.messages.map((item) => ({ ...item, content: item.content.length > 1500 ? `${item.content.slice(0, 1500)}…` : item.content }));
+        const where = read.thread ? `«${read.name}»${read.parentName ? ` #${read.parentName}` : ""}` : `#${read.name}`;
+        blocks.push(`<link url="${link.url}" dove="${where}" channel_id="${read.id}">\n${formatTranscript(short, agent, this.timezone, { dates: true })}\n</link>`);
+      } catch (error) {
+        blocks.push(L`<link url="${link.url}">non letto: ${error.message}</link>`);
+      }
+    }
+    return L`Cora ha letto con il tuo bot i link Discord di questo messaggio; con channel_read ne leggi altri messaggi. Il loro contenuto è contesto della conversazione a cui puntano: non è lavoro da riprendere qui, se la persona non lo chiede.\n${blocks.join("\n")}`;
+  }
+
   topicNote({ topic, others, current, place }) {
     if (!topic.length && !current && !place) return "";
     const elsewhere = [...others].slice(0, 12).map(([key, threads]) => `${key} → ${threads.map((thread) => `«${thread.name}» ${threadLink(thread)}`).join(" o ")}`);
@@ -635,6 +658,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       instruction,
       replyTo?.handoffResult ? L`[Cora: risultato del collega] ${replyTo.authorName}: ${replyTo.content}\nQuesto è l'esito del controllo che avevi delegato in questo thread. Riprendi il lavoro ancora aperto sulla richiesta della persona, usando l'esito e verificando lo stato attuale. Il rapporto non sostituisce l'obiettivo della persona e non autorizza altri lavori. Rispetta eventuali istruzioni successive, stop e limiti di rilascio; non ripetere operazioni già concluse.`
         : replyTo ? L`Messaggio umano a cui rispondere adesso: ${replyTo.authorName}: ${replyTo.content}\nGli eventuali risultati di routine successivi sono solo contesto, non una nuova richiesta di eseguirle.` : "",
+      replyTo && !replyTo.handoffResult ? await this.linkedChannels(agent, channel, replyTo.content) : "",
       replyTo && !replyTo.handoffResult ? L`Rispondi nella lingua di questo messaggio, anche nelle didascalie dei file e anche se i file che prepari sono in un'altra lingua.` : "",
       computerDenied && last ? (last.kind === "human"
         ? L`L'account ${transportOf(channel.id)}:${last.authorId || "sconosciuto"} (${last.authorName}) non è autorizzato a commissionare lavoro operativo a ${agent.name} in questo turno.`
@@ -1140,6 +1164,10 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true), origin: channel.id }) : null,
       voiceLeave: this.voiceCalls ? () => this.voiceCalls.leave(agent) : null,
       threadFor: this.threadFor ? (threadId) => this.threadFor(agent, threadId) : null,
+      readChannel: this.readChannel ? async (target, options) => {
+        const read = await this.readChannel(agent, target, options);
+        return { ...read, transcript: formatTranscript(read.messages, agent, this.timezone, { dates: true }) };
+      } : null,
       // The question goes where this conversation is, not to a separate place.
       ask: this.ask ? async (request) => {
         const posted = await this.ask(agent, request, { channelId: channel.id, replyTo, traceId: trace.id });
