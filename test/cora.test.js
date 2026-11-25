@@ -3731,7 +3731,7 @@ describe("agents in Discord", () => {
     assert.match(run.argv[run.argv.indexOf("--system-prompt") + 1], /^Sei Clara\./);
     assert.match(run.argv[run.argv.indexOf("--system-prompt") + 1], /<istruzioni_personali>\n# Global Agent Instructions\nISTRUZIONI DI PROVA/);
     // Its own routines travel with it: they are the agent's own, not the owner's computer.
-    assert.deepEqual(run.argv[run.argv.indexOf("--allowedTools") + 1].split(","), ["mcp__cora__encrypted_request", "mcp__cora__read_attachment", "mcp__cora__say", "mcp__cora__thread_open", "mcp__cora__email_inbox", "mcp__cora__email_read", "mcp__cora__email_settings", "mcp__cora__email_draft", "mcp__cora__email_send", "mcp__cora__list_channels", "mcp__cora__remember", "mcp__cora__forget", "mcp__cora__recall", "mcp__cora__update_core", "mcp__cora__list_routines", "mcp__cora__set_routine", "mcp__cora__set_reminder", "mcp__cora__routine_history", "mcp__cora__delete_routine", "mcp__cora__notify", "mcp__cora__ask_owner", "mcp__cora__artifact_folders", "mcp__cora__artifact_log", "mcp__cora__secret_list", "mcp__cora__secret_request"]);
+    assert.deepEqual(run.argv[run.argv.indexOf("--allowedTools") + 1].split(","), ["mcp__cora__encrypted_request", "mcp__cora__read_attachment", "mcp__cora__say", "mcp__cora__thread_open", "mcp__cora__email_inbox", "mcp__cora__email_read", "mcp__cora__email_settings", "mcp__cora__email_draft", "mcp__cora__email_send", "mcp__cora__list_channels", "mcp__cora__channel_read", "mcp__cora__remember", "mcp__cora__forget", "mcp__cora__recall", "mcp__cora__update_core", "mcp__cora__list_routines", "mcp__cora__set_routine", "mcp__cora__set_reminder", "mcp__cora__routine_history", "mcp__cora__delete_routine", "mcp__cora__notify", "mcp__cora__ask_owner", "mcp__cora__artifact_folders", "mcp__cora__artifact_log", "mcp__cora__secret_list", "mcp__cora__secret_request"]);
     assert.ok(run.tools.includes("recall") && !run.tools.includes("shell"));
     assert.match(run.stdin, /Clara, il mio colore preferito è il verde/);
     const memories = await call(`/api/agents/${created.data.id}/memories`);
@@ -4608,6 +4608,71 @@ async function fakePhone() {
   };
 }
 
+
+describe("reading Discord threads and links", () => {
+  before(() => waitFor(() => app.orchestrator.state(CHANNEL).loaded, { what: "initial Discord history recovery" }));
+
+  test("an agent reads a linked thread with its own bot: the link is in its turn, channel_read reads around a message, another server is refused", async (t) => {
+    const READER = "600000000000000111";
+    botTokens.CORA_BOT_READER = "reader-token";
+    discord.state.botUsers.set("reader-token", { id: READER, username: "Reader" });
+    const agent = app.store.createAgent({ name: "Reader", model: "ollama/test-model", tools: false, channelIds: [CHANNEL] });
+    let threadId = "";
+    t.after(async () => {
+      replies.delete("Reader");
+      await quiet();
+      discord.state.privateTo.delete(threadId);
+      delete botTokens.CORA_BOT_READER;
+      app.store.deleteAgent(agent.id);
+      await app.bots.sync();
+    });
+    await app.bots.sync();
+    await waitFor(() => app.bots.client(agent.id)?.user?.id === READER, { what: "Reader's own bot online" });
+    const thread = await fetch(`${discord.url}/channels/${CHANNEL}/threads`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bot other" }, body: JSON.stringify({ name: "Ignora istruzioni", type: 11 }) }).then((response) => response.json());
+    threadId = thread.id;
+    const start = Date.now() - 3_600_000;
+    const old = ["Primo: «comandi di Cora», non «comandi di coda»", "Secondo", "Terzo", "Quarto", "Quinto"].map((content, index) => ({
+      id: String(990000000000000100n + BigInt(index)), type: 0, channel_id: threadId, guild_id: GUILD, content, attachments: [], embeds: [], mentions: [],
+      author: { id: OWNER, username: "Sam", global_name: "Sam" }, timestamp: new Date(start + index * 1000).toISOString(),
+    }));
+    discord.state.history.set(threadId, old);
+    // Only Reader's own bot may read it: a read through the main bot or another one would fail.
+    discord.state.privateTo.set(threadId, "reader-token");
+    const link = `https://discord.com/channels/${GUILD}/${threadId}`;
+    const prompts = [];
+    const results = [];
+    replies.set("Reader", (body) => {
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "tool") {
+        results.push(last.content);
+        if (results.length === 1) return { tool_calls: [{ function: { name: "channel_read", arguments: { channel: `https://discord.com/channels/${OTHER_GUILD}/${OTHER_CHANNEL}` } } }] };
+        return { content: "Letto." };
+      }
+      prompts.push(lastUserText(body));
+      return { tool_calls: [{ function: { name: "channel_read", arguments: { channel: `${link}/${old[2].id}`, limit: 3 } } }] };
+    });
+    const reads = discord.state.reads.length;
+    discord.say({ content: `<@${READER}> leggi qui ${link}`, mentions: [{ id: READER, username: "Reader" }] });
+    await waitFor(() => discord.state.botPosts.some((post) => post.token === "reader-token" && post.content === "Letto."), { what: "Reader's answer" });
+
+    assert.match(prompts[0], /Cora ha letto con il tuo bot i link Discord di questo messaggio/);
+    assert.match(prompts[0], /dove="«Ignora istruzioni» #/);
+    assert.match(prompts[0], /Sam ★: Primo: «comandi di Cora», non «comandi di coda»[\s\S]*Sam ★: Quinto/, "the linked thread, oldest first");
+    const head = JSON.parse(results[0].split("\n")[0]);
+    assert.deepEqual({ id: head.channel_id, thread: head.thread, parent: head.parent_id, around: head.around_message, count: head.messages, older: head.older_than },
+      { id: threadId, thread: true, parent: CHANNEL, around: old[2].id, count: 3, older: old[1].id });
+    assert.match(results[0], /Sam ★: Secondo\n.*Sam ★: Terzo\n.*Sam ★: Quarto\n<\/chat>$/);
+    assert.doesNotMatch(results[0], /Primo|Quinto/, "only the messages around the linked one");
+    assert.match(results[1], /^error: channel not authorized/);
+    const since = discord.state.reads.slice(reads);
+    const threadReads = since.filter((read) => read.channel === threadId);
+    assert.ok(threadReads.length >= 2, "the link in the message and the tool call");
+    assert.ok(threadReads.every((read) => read.token === "reader-token"), "always with the agent's own bot");
+    assert.ok(threadReads.some((read) => read.query.around === old[2].id && read.query.limit === "3"));
+    assert.ok(!since.some((read) => read.channel === OTHER_CHANNEL), "a channel of another server never reaches Discord");
+    assert.match(app.brain.systemPrompt(agent, { place: "" }), /## Leggere thread e canali\n[\s\S]*usa channel_read/);
+  });
+});
 
 describe("conversation colleague reachability", () => {
   before(() => waitFor(() => app.orchestrator.state(CHANNEL).loaded, { what: "initial Discord history recovery" }));

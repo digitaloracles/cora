@@ -316,3 +316,19 @@ export class Channels {
     return { active: this.active, enabled: this.enabled, discord: this.discord.status(), telegram: this.telegram.status(), slack: this.slack ? this.slack.status() : null };
   }
 }
+
+/** The guild, channel and optional message of a discord.com/channels link, or null. */
+export function discordLink(text) {
+  const match = /https?:\/\/(?:www\.|ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d{5,30}|@me)\/(\d{5,30})(?:\/(\d{5,30}))?/.exec(String(text || ""));
+  return match ? { guildId: match[1] === "@me" ? "" : match[1], channelId: match[2], messageId: match[3] || "", url: match[0] } : null;
+}
+
+/** Every distinct discord.com/channels link in a text, in order. */
+export function discordLinks(text) {
+  const found = new Map();
+  for (const [url] of String(text || "").matchAll(/https?:\/\/(?:www\.|ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:\d{5,30}|@me)\/\d{5,30}(?:\/\d{5,30})?/g)) {
+    const link = discordLink(url);
+    if (link && !found.has(`${link.channelId}/${link.messageId}`)) found.set(`${link.channelId}/${link.messageId}`, link);
+  }
+  return [...found.values()];
+}

@@ -125,6 +125,8 @@ export async function fakeDiscord() {
     messageEdits: [],
     // Threads opened through the API: id -> the thread, and who opened it.
     threads: new Map(),
+    // Every read of a channel's messages: which channel, with which bot token, and the query.
+    reads: [],
     nextId: 900000000000000000n,
   };
   const id = () => String(state.nextId++);
@@ -151,11 +153,22 @@ export async function fakeDiscord() {
     if ((match = /^\/channels\/(\d+)\/messages(?:\/(\d+))?$/.exec(url.pathname)) && req.method === "GET") {
       const only = state.privateTo.get(match[1]);
       const asking = String(req.headers.authorization || "").replace(/^Bot /, "");
+      state.reads.push({ channel: match[1], token: asking, query: Object.fromEntries(url.searchParams) });
       if (only && only !== asking) return json(res, 403, { message: "Missing Access", code: 50001 });
       const messages = state.history.get(match[1]) || [];
       if (match[2]) {
         const message = messages.find((item) => item.id === match[2]);
         return message ? json(res, 200, message) : json(res, 404, { message: "Unknown Message" });
+      }
+      // Like Discord: `before` the older ones, `around` those around one message, `limit` of them.
+      const limit = Number(url.searchParams.get("limit")) || 50;
+      const before = url.searchParams.get("before");
+      const around = url.searchParams.get("around");
+      if (before) return json(res, 200, messages.filter((item) => BigInt(item.id) < BigInt(before)).slice(-limit).reverse());
+      if (around) {
+        const index = messages.findIndex((item) => item.id === around);
+        const from = Math.max(0, index - Math.floor(limit / 2));
+        return json(res, 200, index < 0 ? [] : messages.slice(from, from + limit).reverse());
       }
       return json(res, 200, [...messages].reverse());
     }
