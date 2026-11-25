@@ -30,6 +30,7 @@ import { CompanyBrain } from "./company-brain.js";
 import { Doc, findDoc } from "./doc.js";
 import { Librarian } from "./librarian.js";
 import { Orchestrator } from "./orchestrator.js";
+import { StorageMaintenance } from "./storage-maintenance.js";
 import { Scheduler } from "./scheduler.js";
 import { SlackApps } from "./slack-apps.js";
 import { Store } from "./store.js";
@@ -292,12 +293,13 @@ export function startCora(overrides = {}) {
     messageOwner: (text, ownerId) => ownerId ? orchestrator.messagePerson(text, knowledge.contactFor(ownerId)) : orchestrator.messageOwner(text),
     reviewUrl: () => (instanceUrl ? `${instanceUrl}/#/brain/revisione` : ""),
   });
-  const scheduler = new Scheduler({ store, orchestrator, brain, librarian, companyBrain: knowledge.ownerMemory ? { enabled: companyBrain.enabled, exportAll: () => knowledge.exportAll() } : companyBrain, artifacts, backups: join(cfg.home, "backups"), timezone: cfg.timezone, tickMs: cfg.schedulerTickMs, log: activity });
+  const storage = new StorageMaintenance({ store, home: cfg.home, timezone: cfg.timezone, docker: cfg.docker, boxes, brainEnabled: () => companyBrain.enabled, log: activity });
+  const scheduler = new Scheduler({ storage, store, orchestrator, brain, librarian, companyBrain: knowledge.ownerMemory ? { enabled: companyBrain.enabled, exportAll: () => knowledge.exportAll() } : companyBrain, artifacts, backups: join(cfg.home, "backups"), timezone: cfg.timezone, tickMs: cfg.schedulerTickMs, log: activity });
   companyBrain.onNote = () => librarian.requestRun({ reason: "memoria" });
   // Cora's own app on Slack keeps its name and wears Cora's mark, served by this instance.
   const syncMainSlackApp = (options) => slackApps.sync({ key: "main", botToken: slack.botToken, name: "Cora", iconUrl: instanceUrl ? `${instanceUrl}/assets/icon-512.png` : "" }, options);
   const agentTransfer = new AgentTransfer({ store, knowledge, companyBrain, vault, keyConnectors, activity, timezone: cfg.timezone, allowLocal: cfg.agentImportAllowLocal === true });
-  web = createWeb({ config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls, harnessUpdates, skills, meet });
+  web = createWeb({ storage, config: { ...cfg, filesDir }, store, subscriptions, discord, telegram, slack, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots, activity, storeSecret, traces, push, voice, companyBrain, librarian, slackApps, syncMainSlackApp, artifacts, vault, credentials, github, mailDomains, email, googleConnector, keyConnectors, knowledge, agentTransfer, voiceCalls, harnessUpdates, skills, meet });
 
   discord.on("message", (message) => {
     // An agent already receives guild messages on its own gateway.
@@ -436,6 +438,7 @@ export function startCora(overrides = {}) {
     clearInterval(slackCatalogTimer);
     meet.stop();
     scheduler.stop();
+    await storage.pending;
     harnessUpdates.stop();
     github.stop();
     await email.stop();

@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { retainedArtifactTrees } from "./storage-backups.js";
+
 const FIELDS = [
   { name: "minute", min: 0, max: 59 },
   { name: "hour", min: 0, max: 23 },
@@ -91,11 +93,12 @@ export function nextRuns(expression, timezone, count = 3, from = new Date()) {
 }
 
 export class Scheduler {
-  constructor({ store, orchestrator, brain, librarian = null, companyBrain = null, artifacts = null, backups = "", timezone, tickMs, log }) {
+  constructor({ store, orchestrator, brain, librarian = null, companyBrain = null, artifacts = null, backups = "", storage = null, timezone, tickMs, log }) {
     this.librarian = librarian;
     this.artifacts = artifacts;
     this.companyBrain = companyBrain;
     this.backups = backups;
+    this.storage = storage;
     this.store = store;
     this.brain = brain;
     this.orchestrator = orchestrator;
@@ -120,7 +123,7 @@ export class Scheduler {
     // Artifact files nothing points at any more, once no kept backup can need them.
     if (this.artifacts) {
       try {
-        const removed = this.artifacts.collect();
+        const removed = this.artifacts.collect(this.backups ? retainedArtifactTrees(this.backups) : []);
         if (removed) this.log({ type: "artifact", text: `artefatti: ${removed} file non più usati eliminati` });
       } catch (error) {
         this.log({ type: "error", text: `artefatti: pulizia: ${error.message}` });
@@ -129,19 +132,30 @@ export class Scheduler {
     if (this.librarian) await this.librarian.run({ reason: "notte" });
   }
 
-  /** The night's copies, seven of each kept: Cora's SQLite whole, and what the brain cannot rebuild from the chats. */
+  /** Publish complete nightly copies. Storage maintenance owns their retention. */
   async backup(day) {
     mkdirSync(this.backups, { recursive: true, mode: 0o700 });
     const database = join(this.backups, `cora-${day}.db`);
-    if (!existsSync(database)) this.store.backup(database);
-    if (this.companyBrain?.enabled) writeFileSync(join(this.backups, `brain-${day}.json`), JSON.stringify(await this.companyBrain.exportAll()), { mode: 0o600 });
-    for (const prefix of ["cora-", "brain-"]) {
-      const kept = readdirSync(this.backups).filter((name) => name.startsWith(prefix) && /^\w+-\d{4}-\d{2}-\d{2}\.(db|json)$/.test(name)).sort();
-      for (const old of kept.slice(0, -7)) rmSync(join(this.backups, old), { force: true });
+    const stage = mkdtempSync(join(this.backups, ".nightly-"));
+    try {
+      if (!existsSync(database)) {
+        const path = join(stage, "database");
+        this.store.backup(path);
+        renameSync(path, database);
+      }
+      const brain = join(this.backups, `brain-${day}.json`);
+      if (this.companyBrain?.enabled && !existsSync(brain)) {
+        const path = join(stage, "brain");
+        writeFileSync(path, JSON.stringify(await this.companyBrain.exportAll()), { mode: 0o600 });
+        renameSync(path, brain);
+      }
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
     }
   }
 
   tick(now = new Date()) {
+    this.storage?.tick(now);
     const parts = zonedParts(now, this.timezone);
     const key = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
     if (parts.minute === 0) {

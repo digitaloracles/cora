@@ -218,7 +218,7 @@ async function readJson(req, limit = 256 * 1024) {
   }
 }
 
-export function createWeb({ config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null, skills = null, meet = null }) {
+export function createWeb({ storage, config, store, subscriptions, discord, telegram, slack = null, channels, boxes, llm, orchestrator, brain, bots, tgBots, skBots = null, activity, storeSecret, traces, push = null, voice = null, companyBrain = null, librarian = null, slackApps = null, syncMainSlackApp = null, artifacts = null, vault = null, credentials = null, github = null, mailDomains = null, email = null, googleConnector = null, keyConnectors = null, knowledge = null, agentTransfer = null, voiceCalls = null, harnessUpdates = null, skills = null, meet = null }) {
   // Tries of a doc rule across the brains in use: they take a while, so the panel follows them.
   const ruleTests = new Map();
   const encrypted = encryptedSpaceFor(store, { llm, knowledge, artifacts, publicOrigin: config.publicHost ? `https://${config.publicHost}` : "" });
@@ -1491,6 +1491,16 @@ export function createWeb({ config, store, subscriptions, discord, telegram, sla
       return send(res, 200, subscriptions.list().filter((record) => record.resident));
     }
     /* How the space looks: everyone reads it, only the space owner changes it (DESIGN.md › Themes). */
+    if (["/api/storage", "/api/storage/run", "/api/storage/sample"].includes(path)) {
+      if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce la pulizia dello spazio.");
+      if (path === "/api/storage/sample" && method === "GET") return send(res, 200, storage.sample(url.searchParams.get("hour")));
+      if (path === "/api/storage" && method === "GET") return send(res, 200, storage.status());
+      if (path === "/api/storage" && method === "PUT") return send(res, 200, storage.update(await readJson(req, 4096)));
+      if (path === "/api/storage/run" && method === "POST") {
+        const { action, preview } = await readJson(req, 4096);
+        return send(res, 202, storage.request(action, preview));
+      }
+    }
     if (path === "/api/appearance" && method === "GET") return send(res, 200, readAppearance(store));
     if (path === "/api/appearance/logo" && method === "GET") {
       const logo = readLogo(store);
