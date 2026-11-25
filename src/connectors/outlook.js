@@ -8,6 +8,8 @@ import { count, defined, fail, list, localFile, pick, text } from "./tooling.js"
  */
 const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[a-z]{2,}$/i;
 const ADDRESS = /^(?:"?([^"<>\r\n]{0,200})"?\s*)?<([^\s@<>,;"]+@[^\s@<>,;"]+\.[a-z]{2,})>$/i;
+const CONSUMER = /@(?:outlook|hotmail|live|msn|windowslive|passport)\.[a-z.]{2,}$/i;
+const PERSONAL_ID = /^[0-9a-f]{16}$/i;
 const WELL_KNOWN = ["inbox", "drafts", "sentitems", "deleteditems", "junkemail", "archive", "outbox"];
 const SUMMARY = "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,isRead,isDraft,flag,hasAttachments,categories,importance";
 const SMALL = 3 * 1024 * 1024, CHUNK = 10 * 327680;
@@ -86,7 +88,37 @@ export function client(ctx) {
     }
     return pick(candidates, wanted, { what: "folder", name: "displayName" }).id;
   };
-  return { call, folder, base };
+  /**
+   * The address mail leaves from. A personal Microsoft account whose main address is not an Outlook one
+   * (a Gmail or company address) keeps its mailbox under an Outlook alias: Microsoft accepts a send from
+   * the main address and then never delivers it, so Cora sends from the alias the mailbox receives at.
+   */
+  let sender;
+  const from = async (value) => {
+    const wanted = text(value, 320);
+    if (wanted) {
+      if (!EMAIL.test(wanted)) fail("from is one address of this mailbox, e.g. name@outlook.com");
+      return { emailAddress: { address: wanted } };
+    }
+    if (sender !== undefined) return sender;
+    if (CONSUMER.test(account)) return (sender = null);
+    const me = await call("GET", "/me", { query: { $select: "id,mail" } });
+    if (!PERSONAL_ID.test(String(me.id || ""))) return (sender = null);
+    const seen = new Map();
+    for (const box of ["inbox", "junkemail"]) {
+      const { value: items = [] } = await call("GET", `/me/mailFolders/${box}/messages`, { query: { $top: 50, $select: "toRecipients,ccRecipients" } });
+      for (const item of items) {
+        for (const person of [...(item.toRecipients || []), ...(item.ccRecipients || [])]) {
+          const address = String(person.emailAddress?.address || "").toLowerCase();
+          if (CONSUMER.test(address) && !/^outlook_[0-9a-f]+@/i.test(address)) seen.set(address, (seen.get(address) || 0) + 1);
+        }
+      }
+    }
+    const best = [...seen].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (!best) fail(`${account} is not an Outlook address and Microsoft does not deliver what this mailbox sends from it: pass from with the mailbox's own Outlook address (e.g. name@outlook.com)`);
+    return (sender = { emailAddress: { address: best } });
+  };
+  return { call, folder, from, base };
 }
 
 /** The message an agent composed: checked recipients, an HTML body, attachments read from its computer. */
@@ -106,7 +138,7 @@ async function composed(args, ctx, { needTo = true } = {}) {
     if (total > MAX_TOTAL) fail("attachments exceed 100 MB in all: share a link instead");
     files.push(file);
   }
-  return { to, cc, bcc, subject, files, html: html || escapeHtml(plain).replace(/\n/g, "<br>") };
+  return { to, cc, bcc, subject, files, from: await ctx.outlook.from(args.from), html: html || escapeHtml(plain).replace(/\n/g, "<br>") };
 }
 
 /** Attaches files to a draft: small ones whole, large ones through an upload session in chunks. */
@@ -134,10 +166,10 @@ async function draft(ctx, graph, message, { reply = "", replyAll = false } = {})
   if (reply) {
     created = await graph.call("POST", `/me/messages/${reply}/${replyAll ? "createReplyAll" : "createReply"}`, { body: {} });
     const patch = defined({ body: { contentType: "HTML", content: `<div>${message.html}</div>${created.body?.contentType === "html" || created.body?.contentType === "HTML" ? created.body.content || "" : escapeHtml(String(created.body?.content || "")).replace(/\n/g, "<br>")}` },
-      toRecipients: message.to.length ? message.to : undefined, ccRecipients: message.cc.length ? message.cc : undefined, bccRecipients: message.bcc.length ? message.bcc : undefined, subject: message.subject || undefined });
+      toRecipients: message.to.length ? message.to : undefined, ccRecipients: message.cc.length ? message.cc : undefined, bccRecipients: message.bcc.length ? message.bcc : undefined, subject: message.subject || undefined, from: message.from || undefined });
     created = await graph.call("PATCH", `/me/messages/${encodeURIComponent(created.id)}`, { body: patch });
   } else {
-    created = await graph.call("POST", "/me/messages", { body: { subject: message.subject, body: { contentType: "HTML", content: message.html }, toRecipients: message.to, ccRecipients: message.cc, bccRecipients: message.bcc } });
+    created = await graph.call("POST", "/me/messages", { body: defined({ subject: message.subject, body: { contentType: "HTML", content: message.html }, toRecipients: message.to, ccRecipients: message.cc, bccRecipients: message.bcc, from: message.from || undefined }) });
   }
   if (!created?.id) fail("Outlook did not create the draft");
   if (message.files.length) await attach(ctx, graph, encodeURIComponent(created.id), message.files);
@@ -154,6 +186,7 @@ const COMPOSE = {
   body_html: { type: "string", description: "the message as HTML" },
   body_text: { type: "string", description: "the message as plain text; give this or body_html" },
   attachments: { type: "array", items: { type: "string" }, description: "absolute paths of files on your computer to attach, e.g. /home/agent/work/report.pdf (at most 100 MB in all)" },
+  from: { type: "string", description: "optional: the address of this mailbox it leaves from; default the mailbox's own (its Outlook alias when the account's main address is not an Outlook one)" },
 };
 const FOLDER = { type: "string", description: "a folder: inbox, drafts, sentitems, deleteditems, junkemail, archive, a folder's name or its id" };
 const message = { type: "string", description: "the message id from outlook_search" };
@@ -226,12 +259,12 @@ const TOOLS = [
     async run(args, ctx) {
       const graph = ctx.outlook, composedMessage = await composed(args, ctx);
       if (!composedMessage.files.length) {
-        await graph.call("POST", "/me/sendMail", { body: { message: { subject: composedMessage.subject, body: { contentType: "HTML", content: composedMessage.html }, toRecipients: composedMessage.to, ccRecipients: composedMessage.cc, bccRecipients: composedMessage.bcc }, saveToSentItems: true } });
+        await graph.call("POST", "/me/sendMail", { body: { message: defined({ subject: composedMessage.subject, body: { contentType: "HTML", content: composedMessage.html }, toRecipients: composedMessage.to, ccRecipients: composedMessage.cc, bccRecipients: composedMessage.bcc, from: composedMessage.from || undefined }), saveToSentItems: true } });
       } else {
         const created = await draft(ctx, graph, composedMessage);
         await graph.call("POST", `/me/messages/${encodeURIComponent(created.id)}/send`);
       }
-      return defined({ sent: true, from: ctx.record.account, to: composedMessage.to.map(shown), subject: composedMessage.subject, attachments: composedMessage.files.length || undefined });
+      return defined({ sent: true, from: shown(composedMessage.from) || ctx.record.account, to: composedMessage.to.map(shown), subject: composedMessage.subject, attachments: composedMessage.files.length || undefined });
     },
   },
   {
@@ -243,7 +276,7 @@ const TOOLS = [
       const id = ID(args.message, "message"), composedMessage = await composed(args, ctx, { needTo: false });
       const created = await draft(ctx, ctx.outlook, composedMessage, { reply: id, replyAll: Boolean(args.reply_all) });
       await ctx.outlook.call("POST", `/me/messages/${encodeURIComponent(created.id)}/send`);
-      return { sent: true, from: ctx.record.account, to: shownList(created.toRecipients), subject: created.subject };
+      return { sent: true, from: shown(composedMessage.from) || ctx.record.account, to: shownList(created.toRecipients), subject: created.subject };
     },
   },
   {
@@ -272,10 +305,15 @@ const TOOLS = [
     parameters: { type: "object", properties: { draft: { type: "string", description: "the draft id from outlook_list_drafts or outlook_create_draft" } }, required: ["draft"] },
     async run(args, ctx) {
       const id = ID(args.draft, "draft");
-      const found = await ctx.outlook.call("GET", `/me/messages/${id}`, { query: { $select: "id,isDraft,subject,toRecipients" } });
+      const found = await ctx.outlook.call("GET", `/me/messages/${id}`, { query: { $select: "id,isDraft,subject,toRecipients,from" } });
       if (!found.isDraft) fail("that message is not a draft");
+      let sender = found.from;
+      if (!sender?.emailAddress?.address) {
+        sender = await ctx.outlook.from();
+        if (sender) await ctx.outlook.call("PATCH", `/me/messages/${id}`, { body: { from: sender } });
+      }
       await ctx.outlook.call("POST", `/me/messages/${id}/send`);
-      return { sent: true, from: ctx.record.account, to: shownList(found.toRecipients), subject: found.subject };
+      return { sent: true, from: shown(sender) || ctx.record.account, to: shownList(found.toRecipients), subject: found.subject };
     },
   },
   {

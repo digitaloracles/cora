@@ -7,8 +7,8 @@ import { toolFor } from "../src/connectors/index.js";
 
 const NAMES = ["outlook_search", "outlook_read_message", "outlook_read_thread", "outlook_send", "outlook_reply", "outlook_create_draft", "outlook_list_drafts", "outlook_send_draft", "outlook_delete_draft", "outlook_modify", "outlook_list_folders", "outlook_download_attachment", "outlook_api"];
 
-async function tools(t) {
-  const graph = await fakeGraph(t, { token: (value) => value === "at_fixture" });
+async function tools(t, { account = "ada@outlook.example", me } = {}) {
+  const graph = await fakeGraph(t, { token: (value) => value === "at_fixture", ...(me ? { me } : {}) });
   const files = new Map([["/home/agent/work/report.pdf", Buffer.from("%PDF-1.4 report")], ["/home/agent/work/video.mp4", Buffer.alloc(7 * 1024 * 1024 + 123, 7)]]), written = new Map();
   const request = async (url, { method = "GET", headers = {}, body, raw } = {}) => {
     const response = await fetch(url, { method, headers, body: raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body) });
@@ -16,7 +16,7 @@ async function tools(t) {
     let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = null; }
     return { status: response.status, data };
   };
-  const ctx = (token = "at_fixture") => outlook.context({ token, request, api: { graph: graph.base }, record: { account: "ada@outlook.example" },
+  const ctx = (token = "at_fixture") => outlook.context({ token, request, api: { graph: graph.base }, record: { account },
     readFile: async (path) => { if (!files.has(path)) throw new Error("missing"); return files.get(path); }, writeFile: async (path, bytes) => { written.set(path, Buffer.from(bytes)); } });
   const run = async (name, args = {}, token) => { try { return await toolFor(name).run(args, ctx(token)); } catch (error) { return `error: ${error.message}`; } };
   return { ...graph, run, written };
@@ -115,6 +115,35 @@ test("the Outlook tools send, reply with the quote, keep drafts and upload large
   assert.equal(g.db.messages.get("m1moved").folder, "archive");
   assert.deepEqual((await g.run("outlook_modify", { messages: ["m0"], trash: true })).changed[0].moved_to, "deleteditems");
   assert.match(await g.run("outlook_modify", { messages: ["m0moved"] }), /^error: say what to change/);
+});
+
+test("a personal Microsoft account whose main address is not Outlook sends from its Outlook alias", async (t) => {
+  const personal = await tools(t, { account: "radix@acme.example", me: { id: "957638715824a173", mail: "radix@acme.example" } });
+  personal.db.messages.get("m1").toRecipients = [{ emailAddress: { address: "Radix.Cora@outlook.com" } }, { emailAddress: { address: "outlook_957638715824A173@outlook.com" } }];
+  personal.db.messages.set("j1", { id: "j1", conversationId: "cj", subject: "Spam?", from: { emailAddress: { address: "anna@acme.it" } }, toRecipients: [{ emailAddress: { address: "radix.cora@outlook.com" } }], ccRecipients: [{ emailAddress: { address: "friend@hotmail.com" } }], isDraft: false, folder: "junkemail", attachments: [] });
+  const sent = await personal.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x" });
+  assert.equal(sent.from, "radix.cora@outlook.com");
+  assert.deepEqual(personal.last("POST", "/me/sendMail").body.message.from, { emailAddress: { address: "radix.cora@outlook.com" } }, "Microsoft drops a send from the main address: the alias the mailbox receives at goes out");
+  const reply = await personal.run("outlook_reply", { message: "m1", body_text: "Grazie" });
+  assert.equal(reply.from, "radix.cora@outlook.com");
+  assert.deepEqual(personal.calls.filter((call) => call.method === "PATCH").at(-1).body.from, { emailAddress: { address: "radix.cora@outlook.com" } });
+  const kept = await personal.run("outlook_create_draft", { to: ["luca@acme.it"], subject: "Bozza", body_text: "x" });
+  assert.deepEqual(personal.db.messages.get(kept.draft).from, { emailAddress: { address: "radix.cora@outlook.com" } });
+  const chosen = await personal.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x", from: "radix@hotmail.com" });
+  assert.equal(chosen.from, "radix@hotmail.com");
+  assert.match(await personal.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x", from: "nope" }), /^error: from is one address of this mailbox/);
+
+  const empty = await tools(t, { account: "radix@acme.example", me: { id: "957638715824a173" } });
+  empty.db.messages.clear();
+  assert.match(await empty.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x" }), /^error: radix@acme\.example is not an Outlook address.*pass from/);
+  assert.equal(empty.db.sent.length, 0, "nothing leaves that Microsoft would drop");
+
+  const work = await tools(t, { account: "bob@contoso.example", me: { id: "5f0c6a1e-2b7d-4c8e-9a1f-0e3d2c1b4a59" } });
+  assert.equal((await work.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x" })).from, "bob@contoso.example");
+  assert.equal(work.last("POST", "/me/sendMail").body.message.from, undefined, "a work account sends as itself");
+  const outlookCom = await tools(t);
+  await outlookCom.run("outlook_send", { to: ["luca@acme.it"], subject: "Ciao", body_text: "x" });
+  assert.equal(outlookCom.calls.some((call) => call.path === "/me"), false, "an Outlook address needs no lookup");
 });
 
 test("an Outlook account connects through the broker, renews rotating tokens and is authorised per agent", async (t) => {

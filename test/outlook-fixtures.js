@@ -10,7 +10,7 @@ const listen = async (server, t) => {
 };
 
 /** A small Outlook mailbox behind Microsoft Graph: folders, messages, drafts, attachments and upload sessions. */
-export async function fakeGraph(t, { token = () => true } = {}) {
+export async function fakeGraph(t, { token = () => true, me = { id: "ms-ada", mail: "ada@outlook.example" } } = {}) {
   const calls = [];
   const db = {
     folders: [{ id: "inbox", displayName: "Inbox", unreadItemCount: 1, totalItemCount: 2, childFolderCount: 1 }, { id: "drafts", displayName: "Drafts", totalItemCount: 0 }, { id: "deleteditems", displayName: "Deleted Items" }, { id: "archive", displayName: "Archive" }],
@@ -19,7 +19,7 @@ export async function fakeGraph(t, { token = () => true } = {}) {
       ["m1", { id: "m1", conversationId: "c1", subject: "Preventivo", from: { emailAddress: { name: "Anna Rossi", address: "anna@acme.it" } }, toRecipients: [{ emailAddress: { address: "ada@outlook.example" } }], receivedDateTime: "2026-11-24T10:00:00Z", bodyPreview: "Ecco il preventivo", isRead: false, isDraft: false, flag: { flagStatus: "notFlagged" }, hasAttachments: true, categories: ["Clienti"], importance: "high", internetMessageId: "<abc@acme.it>", body: { contentType: "text", content: "Ecco il preventivo.\r\n\r\n\r\n\r\nAnna" }, attachments: [{ id: "att1", name: "preventivo.pdf", contentType: "application/pdf", size: 9, contentBytes: Buffer.from("PDF-BYTES").toString("base64") }], folder: "inbox" }],
       ["m0", { id: "m0", conversationId: "c1", subject: "Richiesta", from: { emailAddress: { address: "ada@outlook.example" } }, toRecipients: [{ emailAddress: { address: "anna@acme.it" } }], receivedDateTime: "2026-11-23T09:00:00Z", isRead: true, isDraft: false, body: { contentType: "text", content: "Mi mandi il preventivo?" }, folder: "sentitems" }],
     ]),
-    uploads: new Map(), sent: [], serial: 0,
+    uploads: new Map(), sent: [], serial: 0, me,
   };
   const server = http.createServer(async (req, res) => {
     const chunks = [];
@@ -43,6 +43,7 @@ export async function fakeGraph(t, { token = () => true } = {}) {
     if (!token(String(req.headers.authorization || "").replace(/^Bearer /, ""))) return json(res, 401, { error: { code: "InvalidAuthenticationToken", message: "Access token has expired." } });
     if (path === "/me/messages/forbidden") return json(res, 403, { error: { message: "Access is denied." } });
     if (path === "/me/messages/busy") return json(res, 429, { error: { message: "Too many requests" } });
+    if (path === "/me" && req.method === "GET") return json(res, 200, db.me);
     if (path === "/me/mailFolders" && req.method === "GET") return json(res, 200, { value: db.folders });
     if ((m = path.match(/^\/me\/mailFolders\/([^/]+)\/childFolders$/))) return json(res, 200, { value: db.children[decodeURIComponent(m[1])] || [] });
     const list = (items) => json(res, 200, { value: items, ...(items.length && url.searchParams.get("$top") === "1" ? { "@odata.nextLink": `${url.origin}/v1.0${path}?$skiptoken=next` } : {}) });
