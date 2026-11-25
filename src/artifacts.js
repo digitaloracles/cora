@@ -1581,13 +1581,11 @@ export class Artifacts {
   /* ---------- housekeeping ---------- */
 
   /** Removes files no commit points at any more, once they are older than the backups. */
-  collect() {
+  collect(retainedTrees = []) {
     const keep = new Set();
-    for (const tree of this.store.artifactTrees()) {
+    for (const tree of new Set([...retainedTrees, ...this.store.artifactTrees()])) {
       keep.add(tree);
-      try {
-        for (const file of this.readTree(tree).values()) keep.add(file.sha);
-      } catch {}
+      for (const file of this.readTree(tree).values()) keep.add(file.sha);
     }
     const cutoff = Date.now() - GC_GRACE_MS;
     let removed = 0;

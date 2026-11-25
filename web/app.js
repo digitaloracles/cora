@@ -10196,6 +10196,95 @@ function harnessPane() {
   return node;
 }
 
+function storagePane() {
+  const root = h("div", { class: "stack" });
+  let busy = false;
+  let poll;
+  const active = () => root.isConnected && !root.closest(".rail-page")?.hidden;
+
+  async function load() {
+    clearTimeout(poll);
+    if (busy) return;
+    try { draw(await api("/api/storage")); }
+    catch (error) { root.replaceChildren(h("p", { class: "notice warn" }, error.message), btn("Riprova", { onclick: load })); }
+  }
+
+  async function send(path, method, body) {
+    if (busy) return;
+    busy = true;
+    clearTimeout(poll);
+    root.inert = true;
+    try { draw(await api(path, { method, body })); }
+    catch (error) { toast(error.message, true); }
+    finally { busy = false; root.inert = false; await load(); }
+  }
+
+  function draw({ settings, timezone, last, running, hours }) {
+    const save = (key, value) => send("/api/storage", "PUT", { [key]: value });
+    const toggle = (key, label, hint) => {
+      const input = h("input", { type: "checkbox", role: "switch", "aria-label": label, checked: settings[key], onchange: () => save(key, input.checked) });
+      return setRow(label, hint, h("label", { class: "switch" }, input, h("span", { class: "rocker" })));
+    };
+    const time = h("input", { type: "time", required: true, value: settings.time, "aria-label": "Ora della pulizia", onchange: () => time.reportValidity() && save("time", time.value) });
+    const keep = h("input", { type: "number", min: 1, max: 90, required: true, value: String(settings.keep), "aria-label": "Copie per tipo", onchange: () => keep.reportValidity() && save("keep", keep.valueAsNumber) });
+    const days = h("input", { type: "number", min: 1, max: 90, required: true, value: String(settings.sampleDays), "aria-label": "Giorni di storico", onchange: () => days.reportValidity() && save("sampleDays", days.valueAsNumber) });
+    const policy = panel({ title: "Pulizia e backup", icon: "layers", hint: "Scegli quando intervenire e quali dati conservare." }, setRows(
+      toggle("automatic", "Pulizia automatica", "Esegui le operazioni selezionate a orari programmati."),
+      setRow("Ora della pulizia", timezone, time),
+      toggle("backups", "Ruota i backup", "Conserva le copie notturne verificate. Le copie di rilascio sono escluse."),
+      setRow("Copie per tipo", "Da 1 a 90 per database e Brain. Se la verifica fallisce, Cora conserva tutto.", keep),
+      toggle("grok", "Deduplica Grok", "Su Btrfs condivide i blocchi identici mantenendo ogni eseguibile al suo posto."),
+      toggle("monitor", "Misura lo spazio ogni ora", "Usa il minuto scelto sopra per misurare host e desktop degli agenti."),
+      setRow("Giorni di storico", "Conserva una misura dello spazio per ora.", days)));
+    const task = (action, label) => {
+      const report = last[action], r = report?.result;
+      const run = preview => {
+        if (action === "backups" && !preview && !window.confirm(tr("Eliminare le copie notturne oltre la conservazione scelta, dopo la verifica?"))) return;
+        return send("/api/storage/run", "POST", { action, preview });
+      };
+      const actions = h("div", { class: "actions" },
+        action !== "monitor" && btn("Anteprima", { cls: "ghost", disabled: !!running, onclick: () => run(true) }),
+        btn(action === "monitor" ? "Misura ora" : "Esegui ora", { disabled: !!running, onclick: () => run(false) }));
+      const info = [];
+      if (running?.action === action) info.push(h("p", { role: "status" }, "In corso…"));
+      if (report) {
+        info.push(h("small", { class: "muted" }, raw(new Date(report.at).toLocaleString()), " · ", report.preview ? "Anteprima" : "Esecuzione"));
+        if (report.error) info.push(h("p", { class: "notice warn" }, raw(report.error)));
+        else if (action === "backups") info.push(tr("{count} copie verificate · {expired} oltre il limite · {size}", { count: r.validated, expired: r.expired, size: fmtBytes(r.bytes) }));
+        else if (action === "grok") info.push(r.supported ? tr("{count} copie identiche", { count: r.copies }) : tr("Deduplicazione disponibile sui volumi Btrfs con eseguibili Grok."));
+        else {
+          info.push(tr("{size} disponibili · {count} desktop misurati", { size: fmtBytes(r.available), count: Object.keys(r.scopes).length - 1 }));
+          if (r.warning) info.push(h("p", { class: "notice warn" }, raw(r.warning)));
+          const labels = { logs: "Log", backups: "Backup", cache: "Cache", work: "Directory di lavoro", traces: "Tracce", other: "Altro" };
+          for (const change of r.growth) info.push(h("small", {}, raw(change.scope + " · " + tr(labels[change.category]) + " +" + fmtBytes(change.delta))));
+          const breakdown = h("div", { class: "stack-sm" });
+          const show = sample => breakdown.replaceChildren(
+            ...Object.entries(sample.scopes).map(([name, stats]) => h("div", { class: "stack-sm" }, h("b", {}, raw(name)),
+              h("small", {}, raw(Object.entries(stats.bytes).map(([key, value]) => tr(labels[key]) + " " + fmtBytes(value)).join(" · "))),
+              stats.unreadable_count ? h("small", {}, tr("{count} directory inaccessibili", { count: stats.unreadable_count })) : null)),
+            ...sample.unavailable.map(name => h("p", {}, raw(name), " · ", "Non disponibile")));
+          show(r);
+          const history = h("select", { "aria-label": "Ora della misura" }, [...hours].reverse().map(hour =>
+            h("option", { value: hour }, raw(new Date(hour + ":00:00Z").toLocaleString()))));
+          history.addEventListener("change", async () => {
+            history.disabled = true;
+            try { show(await api("/api/storage/sample?hour=" + encodeURIComponent(history.value))); }
+            catch (error) { breakdown.replaceChildren(h("p", { class: "notice warn" }, raw(error.message))); }
+            finally { history.disabled = false; }
+          });
+          info.push(h("details", {}, h("summary", {}, "Dettaglio per host e desktop"), hours.length > 1 && history, breakdown));
+        }
+      }
+      return setRow(label, "", h("div", { class: "stack-sm" }, actions, ...info), { stack: true });
+    };
+    root.replaceChildren(policy, panel({ title: "Operazioni manuali", icon: "sliders", hint: "Avvia una singola operazione e controlla il risultato." },
+      setRows(task("backups", "Backup notturni"), task("grok", "Eseguibili Grok"), task("monitor", "Spazio disco"))));
+    if (running) poll = setTimeout(() => { if (active()) load(); }, 1000);
+  }
+  root.load = load;
+  return root;
+}
+
 function renderSettings() {
   if (route()[1] === "permessi") { location.hash = "#/agenti"; return; }
   const settings = S.data.settings;
@@ -10212,7 +10301,7 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", "aspetto", ...ACCOUNT_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", "aspetto", "pulizia", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
@@ -10602,6 +10691,8 @@ function renderSettings() {
   page("controlli", docChecksPane());
   page("preferenze", languagePanel(), notificationsPanel());
   page("aspetto", appearancePane());
+  const storage = S.data.currentUser?.role === "owner" ? storagePane() : null;
+  if (storage) page("pulizia", storage);
 
   /* ---------- the list ---------- */
   const doc = S.data.doc || {};
@@ -10631,6 +10722,7 @@ function renderSettings() {
     } }] : []),
     { id: "cifratura", group: "Generale", label: "Spazio cifrato", mark: "lock", state: () => [null, tr("Passkeys e cartelle cifrate")] },
     { id: "controlli", group: "Generale", label: "Controlli di doc", mark: "shield", state: () => [doc.installed ? "on" : "off", doc.installed ? tr("doc attivo") : tr("doc non installato")] },
+    ...(storage ? [{ id: "pulizia", group: "Generale", label: "Pulizia e backup", mark: "layers", state: () => [null, tr("Conservazione e spazio disco")] }] : []),
     { id: "aspetto", group: "Generale", label: "Aspetto", mark: "palette", state: () => [null, tr(S.data.appearance?.theme === "custom" ? "Personalizzata" : THEMES.find(([id]) => id === (S.data.appearance?.theme || "cora"))?.[1] || "Cora")] },
     { id: "preferenze", group: "Generale", label: "Lingua e notifiche", mark: "globe", state: () => [null, LANGS[LANG]] },
   ];
@@ -10663,6 +10755,7 @@ function renderSettings() {
     root.classList.toggle("open", Boolean(current));
     drawNav();
     if (updateRoute) history.replaceState(null, "", current ? `#/settings/${current}` : "#/settings");
+    if (current === "pulizia") storage.load();
     if (updateRoute && current === "connettori") pages.get(current).querySelector(".connectors-pane")?.openCatalog?.();
     if ((current || fallback()) === "discord") discordOwners?.loadPeople();
   }

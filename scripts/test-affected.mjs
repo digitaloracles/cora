@@ -30,6 +30,7 @@ const PANEL = {
 
 // Each area: the paths it owns, the test files that cover it and the cora.test.js groups (name prefixes).
 const AREAS = [
+  { name: "storage maintenance", paths: [/^src\/storage-(maintenance|backups|backup-worker|grok|measure)\.(js|py)$/], files: ["storage-maintenance", "artifacts", "brain", "panel-mcp-tools"], cora: [] },
   { name: "Firecrawl connector", paths: [/^src\/connectors\/firecrawl\//, /^src\/connectors\/remote-mcp\.js$/, /^test\/firecrawl-fixtures\.js$/, /^test\/connector-firecrawl\.test\.js$/], files: ["connector-firecrawl", "connector-lovable", "key-connectors"], cora: ["Firecrawl connector"] },
   { name: "tool budget", paths: [/^src\/tool-budget\.js$/, /^test\/tool-budget\.test\.js$/], files: ["tool-budget"], cora: ["a Gemini subscription"] },
   { name: "appearance", paths: [/^src\/appearance\.js$/, /^test\/appearance\.test\.js$/], files: ["appearance"], cora: [] },
