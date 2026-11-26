@@ -4854,6 +4854,32 @@ describe("conversation colleague reachability", () => {
     assert.deepEqual(reloaded.history.map((item) => [item.id, item.content]), [[mention.id, "@ReachReceiver check the reel"]], "the unnamed blank line stays out");
   });
 
+  test("the restart catch-up archives a blank mention in a channel only an agent's bot sees", async (t) => {
+    const { threadId, receiver } = await fixture(t);
+    const own = app.bots.client(receiver.id);
+    const at = Date.now() - 14 * 60 * 60 * 1000;
+    const mention = {
+      id: "1599000000000000993", channel_id: threadId, guild_id: GUILD, type: 0,
+      content: `<@${own.user.id}> can you create your google meet?`, mentions: [own.user], attachments: [], embeds: [],
+      author: { id: STRANGER, username: "nocodelab.ai", global_name: "Sncl" }, timestamp: new Date(at).toISOString(),
+    };
+    discord.state.history.set(threadId, [mention]);
+    discord.state.privateTo.set(threadId, "reach-receiver");
+    t.after(() => { discord.state.history.delete(threadId); replies.delete(receiver.name); });
+    const list = app.channels.list.bind(app.channels);
+    t.mock.method(app.channels, "list", () => list().filter((channel) => channel.id !== threadId));
+    t.mock.method(own, "listChannels", () => [{ id: threadId, name: "Reachability", guildId: GUILD, guildName: "Guild", thread: true }]);
+    assert.ok(!app.channels.list().some((channel) => channel.id === threadId), "the main bot does not see the channel");
+    const answers = [];
+    replies.set(receiver.name, () => { answers.push(1); return { content: "Late answer." }; });
+    const state = app.orchestrator.state(threadId);
+    state.loaded = true;
+    await app.orchestrator.catchUp();
+    assert.match(app.store.recentMessages(threadId, 5).find((item) => item.id === mention.id)?.content || "", /google meet/);
+    await quiet();
+    assert.equal(answers.length, 0, "a fourteen-hour-old mention is archived, not answered");
+  });
+
   test("fresh and resumed model turns receive the current scoped roster rather than the old global roster", async (t) => {
     const { threadId, state, sender } = await fixture(t);
     discord.state.privateTo.set(threadId, "reach-sender");
