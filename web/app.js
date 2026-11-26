@@ -806,6 +806,7 @@ function connectEvents() {
     }
     if (["web-message", "web-typing", "trace"].includes(entry.type)) {
       S.live?.(entry);
+      app.querySelector(".agent-chat-widget")?.onLiveEntry?.(entry);
       return;
     }
     if (entry.type === "request") {
@@ -3262,10 +3263,9 @@ function agentMeetPane(agent) {
     }
     body.append(h("div", { class: "stack" }, h("strong", {}, account || agent.mailbox?.email || "Account Google da collegare"), actions));
     if (setup) {
-      let verification = null, chatSlot = null;
+      let verification = null;
       if (needsHuman) {
         const viewer = `/box/${agent.id}/vnc.html?autoconnect=true&reconnect=true&path=box/${agent.id}/websockify`;
-        chatSlot = h("div", { class: "meet-step-chat" }, skeleton("chat"));
         verification = h("div", { class: "meet-step-verification stack" },
           h("p", {}, data.setup.note ? raw(data.setup.note) : "Completa la verifica richiesta da Google sul desktop dell’agente."),
           h("div", { class: "actions" }, btn("Apri desktop a schermo intero", { href: viewer + "&resize=off", target: "_blank", icon: "maximize", cls: "primary" })),
@@ -3274,22 +3274,6 @@ function agentMeetPane(agent) {
           h("div", { class: "actions" }, btn("Ho completato la verifica", { onclick: () => request("/setup", {}) })));
       }
       body.append(meetSetupChecklist(data.setup, verification));
-      if (chatSlot) {
-        const title = tr("Chat con {name}", { name: agent.name });
-        const launcher = h("summary", { class: "btn primary" }, icon("chat"), h("span", {}, raw(title)));
-        const close = () => { widget.open = false; launcher.focus({ preventScroll: true }); };
-        const widget = h("details", { class: "meet-chat-widget", onkeydown: (event) => {
-          if (event.key === "Escape" && widget.open) { event.preventDefault(); close(); }
-        } }, launcher,
-          h("section", { class: "meet-chat-window", "aria-label": title },
-            h("header", {}, h("strong", {}, raw(title)), btn("", { icon: "close", title: "Chiudi", cls: "sm ghost", onclick: close })),
-            chatSlot));
-        body.append(widget);
-        const isCurrent = () => chatSlot.isConnected && route()[3] === "meet";
-        void chatPanel(`web-${agent.id}`, { placeholder: tr("Scrivi a {name}…", { name: agent.name }), isCurrent }).then((chat) => {
-          if (chat && isCurrent()) chatSlot.replaceChildren(chat);
-        });
-      }
     }
     if ((running || needsHuman) && data.setup.canStop) body.append(h("div", { class: "actions" },
       btn("Ferma collegamento", { cls: "sm", onclick: () => request("/stop-setup", {}) })));
@@ -4714,6 +4698,37 @@ function renderNew() {
   shell([pageHead("Nuovo agente", "Dagli un nome e un carattere."), agentForm({ enabled: true, tools: true })], { title: "Nuovo agente", back: "#/agenti" });
 }
 
+function agentChatWidget(agent) {
+  const title = tr("Chat con {name}", { name: agent.name });
+  const current = app.querySelector(".agent-chat-widget");
+  if (current?.dataset.agentId === agent.id && current.querySelector("summary").textContent === title) return current;
+
+  const launcher = h("summary", { class: "btn primary" }, icon("chat"), h("span", {}, raw(title)));
+  const slot = h("div", { class: "agent-chat-body" }, skeleton("chat"));
+  const close = () => { widget.open = false; launcher.focus({ preventScroll: true }); };
+  const widget = h("details", { class: "agent-chat-widget", "data-agent-id": agent.id,
+    onkeydown: (event) => {
+      if (event.key === "Escape" && widget.open) { event.preventDefault(); close(); }
+    } }, launcher,
+    h("section", { class: "agent-chat-window", "aria-label": title },
+      h("header", {}, h("strong", {}, raw(title)), btn("", { icon: "close", title: "Chiudi", cls: "sm ghost", onclick: close })),
+      slot));
+  let loading = false;
+  widget.addEventListener("toggle", async () => {
+    if (!widget.open || loading || slot.querySelector(".chat-compose")) return;
+    loading = true;
+    try {
+      const isCurrent = () => widget.isConnected && route()[1] === agent.id;
+      const chat = await chatPanel(`web-${agent.id}`, {
+        placeholder: tr("Scrivi a {name}…", { name: agent.name }), isCurrent,
+        connectLive: (listener) => { widget.onLiveEntry = listener; },
+      });
+      if (chat && isCurrent()) slot.replaceChildren(chat);
+    } finally { loading = false; }
+  });
+  return widget;
+}
+
 async function renderAgent() {
   const [, legacyAgent, legacyTab, legacyChat] = route();
   if (legacyTab === "chat" && legacyChat === "cifrata") history.replaceState(null, "", `#/agent/${legacyAgent}/chat`);
@@ -4760,7 +4775,7 @@ async function renderAgent() {
       const count = key === "memoria" ? agent.memoryCount : key === "routine" ? routines.length : key === "skill" ? agent.skillCount : null;
       return h("a", { href: `#/agent/${agent.id}/${key}`, class: key === tab ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "count" }, count) : null);
     })),
-    slot,
+    slot, agentChatWidget(agent),
   ], { title: agent.name, back: workspaceTab && sub ? `#/agent/${agent.id}/${tab}` : sub ? `#/agent/${agent.id}/ragionamento` : "#/agenti", mode: compact ? "chat" : workspaceTab ? "email" : "" });
   document.querySelector(".tabs a.active")?.scrollIntoView({ block: "nearest", inline: "center" });
   const isCurrent = () => slot.isConnected && (workspaceTab ? location.hash.startsWith(`#/agent/${agent.id}/${tab}`) : location.hash === view);
@@ -5803,7 +5818,7 @@ function chatMessage(item, answer) {
       choices));
 }
 
-async function chatPanel(room, { placeholder = "Scrivi…", hint = null, isCurrent = () => true } = {}) {
+async function chatPanel(room, { placeholder = "Scrivi…", hint = null, isCurrent = () => true, connectLive = (listener) => { S.live = listener; } } = {}) {
   const data = await guard(api(`/api/rooms/${room}/messages`));
   if (!isCurrent()) return null;
   if (!data) return panel({ icon: "alert", title: "Chat non disponibile" });
@@ -5873,7 +5888,7 @@ async function chatPanel(room, { placeholder = "Scrivi…", hint = null, isCurre
   if (!data.messages.length) log.append(empty("chat", "Ancora niente qui. Scrivi tu per primo."));
   for (const trace of data.running) card(trace);
 
-  S.live = (entry) => {
+  connectLive((entry) => {
     if (entry.type === "web-message" && entry.room === room) add(entry.item);
     if (entry.type !== "trace") return;
     if (entry.event === "start" && entry.trace.channelId === room) card(entry.trace);
@@ -5883,7 +5898,7 @@ async function chatPanel(room, { placeholder = "Scrivi…", hint = null, isCurre
       cards.delete(entry.trace.id);
       if (entry.trace.status !== "done" && entry.trace.kind === "chat") note(entry.trace);
     }
-  };
+  });
 
   const input = h("textarea", { class: "chat-input", rows: 1, maxlength: 3000, placeholder, enterkeyhint: "send" });
   const send = btn("", { icon: "send", type: "submit", cls: "primary send", title: "Invia" });
