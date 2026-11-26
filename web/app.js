@@ -3174,7 +3174,7 @@ function agentMeetPane(agent) {
   const body = h("div", { class: "stack" });
   const message = h("p", { class: "muted", role: "status", "aria-live": "polite" });
   const node = panel({ icon: "mic", title: "Google Meet" }, body, message);
-  let busy = false, showDesktop = false, timer, linkValue = "", folderValue = "", languageValue = "";
+  let busy = false, timer, linkValue = "", folderValue = "", languageValue = "";
   const phases = { starting: "Ingresso in corso", waiting: "In attesa di ammissione", joined: "In riunione", transcribing: "Trascrizione in corso", ended: "Riunione conclusa", failed: "Ingresso non riuscito" };
   async function request(action = "", payload, method = "POST") {
     if (busy) return;
@@ -3184,38 +3184,49 @@ function agentMeetPane(agent) {
     message.textContent = tr("Caricamento…");
     try {
       const data = await api(endpoint + action, { method, body: payload });
-      if (action === "/signin") showDesktop = true;
-      if (action === "/account" && data.account || action === "/signout") showDesktop = false;
       if (action === "/join") linkValue = "";
       render(data);
       message.textContent = "";
     } catch (error) {
       message.textContent = error.message;
-      if (!body.childElementCount) body.append(btn("Riprova", { onclick: node.load }));
+      if (!body.childElementCount || method === "GET") message.append(" ", btn("Riprova", { onclick: node.load }));
     } finally { busy = false; body.inert = false; }
   }
   function render(data) {
     const enable = switchInput("meet-enabled", "Attiva Google Meet", data.enabled, "L’agente entra con microfono e videocamera spenti.");
     const toggle = enable.querySelector("input");
-    toggle.disabled = Boolean(data.active) || !data.desktop || !data.onAir;
+    const setup = data.setup?.status;
+    const running = setup === "running";
+    const needsHuman = setup === "needs-human";
+    toggle.disabled = Boolean(data.active) || running || !data.desktop || !data.onAir;
     toggle.onchange = () => { const enabled = toggle.checked; toggle.checked = !enabled; void request("", { enabled }, "PUT"); };
     body.replaceChildren(enable);
     if (!data.desktop || !data.onAir) body.append(h("p", { class: "muted" }, "Accendi l’agente e il suo computer per usare Google Meet."));
     if (!data.enabled) return;
     const account = data.account?.email;
     const actions = h("div", { class: "actions" });
-    if (!data.active) {
-      actions.append(btn(account ? "Scollega account" : "Accedi a Google", { cls: account ? "sm ghost" : "sm primary", onclick: () => request(account ? "/signout" : "/signin", {}) }),
-        btn("Verifica account", { cls: "sm", icon: "refresh", onclick: () => request("/account", {}) }));
+    if (!data.active && !running) {
+      const ownAccount = account && account.toLowerCase() === agent.mailbox?.email?.toLowerCase();
+      if (!ownAccount || needsHuman || setup === "failed") {
+        const label = needsHuman ? "Ho completato la verifica" : setup === "failed" ? "Riprova collegamento" : "Collega la mail dell’agente";
+        actions.append(btn(label, { cls: "sm primary", disabled: !data.desktop || !data.onAir, onclick: () => request("/setup", {}) }));
+      }
+      if (account) actions.append(btn("Scollega account", { cls: "sm ghost", onclick: () => request("/signout", {}) }));
+      if (!needsHuman && account) actions.append(btn("Verifica account", { cls: "sm", icon: "refresh", onclick: () => request("/account", {}) }));
     }
-    body.append(h("div", { class: "stack" }, h("strong", {}, account || "Account Google da collegare"), actions));
-    if (showDesktop) body.append(h("p", { class: "muted" }, "Completa l’accesso sul desktop dell’agente, poi scegli Verifica account."),
+    body.append(h("div", { class: "stack" }, h("strong", {}, account || agent.mailbox?.email || "Account Google da collegare"), actions));
+    if (running) {
+      body.append(h("p", { role: "status" }, "L’agente sta collegando la sua email a Google Meet."));
+      timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
+    }
+    if (setup === "failed") body.append(h("p", { class: "err-text" }, data.setup.note || "Collegamento interrotto. Puoi riprendere dalla verifica dell’account."));
+    if (needsHuman) body.append(h("p", {}, data.setup.note || "Completa la verifica richiesta da Google sul desktop dell’agente."),
       h("div", { class: "screen" }, h("iframe", { title: "Accesso Google sul desktop", src: `/box/${agent.id}/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=box/${agent.id}/websockify` })));
     if (data.active) {
       body.append(h("strong", { role: "status" }, phases[data.active.phase]), h("span", {}, data.active.link));
       if (data.active.phase !== "transcribing") body.append(btn("Esci dalla riunione", { onclick: () => request("/leave", {}) }));
       timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
-    } else if (account) {
+    } else if (account && !running && !needsHuman) {
       const link = h("input", { type: "url", required: true, value: linkValue, placeholder: "https://meet.google.com/abc-defg-hij", oninput: (event) => { linkValue = event.target.value; } });
       const folder = h("select", { required: true, onchange: (event) => { folderValue = event.target.value; } }, h("option", { value: "" }, "Scegli una cartella"),
         data.folders.map((item) => h("option", { value: item.path }, item.path)));

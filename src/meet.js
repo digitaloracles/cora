@@ -1,4 +1,5 @@
 import { encryptedOnly, encryptedFolder } from "./encrypted-space.js";
+import { privateRoom } from "./rooms.js";
 import { randomBytes } from "node:crypto";
 
 /**
@@ -197,6 +198,7 @@ export class Meet {
       enabled: config.enabled,
       language: MEETING_LANGUAGES.includes(agent.voiceLanguage) ? agent.voiceLanguage : this.language,
       account: config.account,
+      setup: this.setupView(config),
       desktop: Boolean(agent.tools),
       onAir: Boolean(agent.enabled),
       transcription: Boolean(this.voice?.enabled),
@@ -207,12 +209,49 @@ export class Meet {
     };
   }
 
+  setupView(config) {
+    const setup = config.setup;
+    if (!setup) return null;
+    const routine = config.setupRoutineId && this.store.routine(config.setupRoutineId, { archived: true });
+    const pending = routine?.enabled && !routine.archivedAt && [null, "running", "skipped"].includes(routine.lastStatus);
+    if (setup.status === "running" && config.setupRoutineId && !pending) return { status: "failed" };
+    return { status: setup.status, note: setup.note || "" };
+  }
+
+  async queueSetup(agent) {
+    await this.desk(agent);
+    if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("Esci prima dalla riunione attiva.", 409);
+    const mailbox = this.store.value(`agentMailbox:${agent.id}`);
+    if (mailbox?.status !== "ready" || !mailbox.email) throw new MeetError("L’agente deve avere una casella email configurata.", 409);
+    this.store.tx(() => {
+      const config = this.config(agent.id);
+      const existing = config.setupRoutineId && this.store.routine(config.setupRoutineId);
+      if (existing?.enabled && [null, "running", "skipped"].includes(existing.lastStatus)) return;
+      const runAt = new Date().toISOString();
+      const input = {
+        kind: "reminder", enabled: true, runAt, name: "Google Meet · account", channelId: privateRoom(agent.id),
+        prompt: "Connect Google Meet using your own currently configured mailbox. First use meet_setup check to verify the signed-in identity. If setup is required, use meet_setup start and follow its instructions to sign in or register using that mailbox. Reuse any existing account and progress. Obtain mailbox verification yourself. Only request a specific action if Google requires a human. Never include passwords or verification codes in chat. Finish only when meet_setup check confirms the expected address. Report the outcome here.",
+      };
+      const routine = existing ? this.store.updateRoutine(existing.id, input) : this.store.createRoutine(agent.id, input);
+      this.save(agent.id, { setupRoutineId: routine.id, setup: { status: "running" } });
+    });
+  }
+
   setEnabled(agent, enabled) {
     if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("Esci prima dalla riunione attiva.", 409);
     if (enabled && !agent.tools) throw new MeetError("Per entrare in una riunione l'agente usa il suo computer: accendi «Usa il suo computer» nel Cervello.", 409);
+    if (!enabled) this.cancelQueuedSetup(agent);
     this.save(agent.id, { enabled: Boolean(enabled) });
     this.log({ type: "meet", agentId: agent.id, text: `Google Meet ${enabled ? "acceso" : "spento"} per ${agent.name}` });
     return this.view(agent);
+  }
+
+  cancelQueuedSetup(agent) {
+    const id = this.config(agent.id).setupRoutineId;
+    const routine = id && this.store.routine(id);
+    if (routine?.lastStatus === "running") throw new MeetError("Il collegamento a Google è in corso.", 409);
+    if (routine) this.store.deleteRoutine(id);
+    this.save(agent.id, { setup: null, setupRoutineId: null });
   }
 
   async desk(agent) {
@@ -247,6 +286,7 @@ export class Meet {
   async signOut(agent) {
     await this.desk(agent);
     if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("L’agente sta entrando in una riunione o è già dentro.", 409);
+    this.cancelQueuedSetup(agent);
     await this.boxes.meet(agent.id, ["signout"], { timeoutMs: 60000 });
     this.save(agent.id, { account: null });
     this.log({ type: "meet", agentId: agent.id, text: `account Google scollegato da ${agent.name}` });

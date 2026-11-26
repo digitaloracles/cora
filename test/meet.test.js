@@ -61,6 +61,46 @@ test("Meet actions enforce agent and folder access and deliver a reviewed transc
   assert.equal((await call("/signout")).data.account, null);
 });
 
+test("the Meet panel queues a private one-time setup and resumes the same reminder", async (t) => {
+  const f = await knowledgeWorld();
+  t.after(f.close);
+  const { meet, boxes, store } = f.app;
+  const agent = store.createAgent({ name: "Setup", brainOwnerId: f.alice.user.id, enabled: true, tools: true });
+  boxes.ensure = async () => {};
+  const path = "/api/agents/" + agent.id + "/meet";
+  const queue = (actor) => f.request(actor, path + "/setup", { method: "POST", body: {} });
+  assert.equal((await queue(f.bob)).status, 403);
+  assert.equal((await queue(f.alice)).status, 409);
+  meet.setEnabled(agent, true);
+  assert.equal((await queue(f.alice)).status, 409);
+  assert.equal(store.routines(agent.id).length, 0);
+  store.setValue(`agentMailbox:${agent.id}`, { email: "setup@example.test", status: "ready" });
+  const receipts = await Promise.all([queue(f.alice), queue(f.alice)]);
+  assert.deepEqual(receipts.map((r) => [r.status, r.data.setup.status]), [[200, "running"], [200, "running"]]);
+  const [routine] = store.routines(agent.id);
+  assert.equal(store.routines(agent.id).length, 1);
+  assert.equal(routine.id, meet.config(agent.id).setupRoutineId);
+  assert.equal(routine.kind, "reminder");
+  assert.equal(routine.channelId, privateRoom(agent.id));
+  assert.ok(Date.parse(routine.runAt) <= Date.now());
+  assert.match(routine.prompt, /meet_setup check/);
+  const verify = () => f.app.brain.verifyReminder({ agent, routine, result: { text: "Done" } });
+  assert.equal((await verify()).met, false);
+  meet.save(agent.id, { setup: { status: "done" }, account: { email: "other@example.test", checkedAt: Date.now() } });
+  assert.equal((await verify()).met, false);
+  meet.save(agent.id, { account: { email: "setup@example.test", checkedAt: 0 } });
+  assert.equal((await verify()).met, false);
+  meet.save(agent.id, { account: { email: "setup@example.test", checkedAt: Date.now() } });
+  assert.equal((await verify()).met, true);
+  meet.save(agent.id, { account: null, setup: { status: "running" } });
+  store.recordRoutineRun(routine.id, "error", "Fixture interrupted");
+  assert.equal((await f.request(f.alice, path)).data.setup.status, "failed");
+  meet.save(agent.id, { setup: { status: "needs-human" } });
+  assert.equal((await f.request(f.alice, path)).data.setup.status, "needs-human");
+  assert.equal((await queue(f.alice)).data.setup.status, "running");
+  assert.deepEqual(store.routines(agent.id).map((r) => [r.id, r.lastStatus]), [[routine.id, null]]);
+});
+
 test("updated Meet captions produce one timed turn per block", () => {
   const partial = { at: 2, block: 4, speaker: "Host", text: "Hello" };
   assert.deepEqual(captionTurns([partial, { ...partial, at: 30, text: "Hello. Goodbye." }]), [{ name: "Host", start: 2, text: "Hello" }, { name: "Host", start: 30, text: "Goodbye." }]);

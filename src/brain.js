@@ -731,6 +731,13 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
 
   async verifyReminder({ agent, routine, result, delivered = false }) {
     if (result.stopped || result.asked) return { met: false, blocked: true, reason: result.stopped ? "Esecuzione interrotta." : "Serve una risposta del proprietario." };
+    const meet = this.meet?.config(agent.id);
+    if (meet?.setupRoutineId === routine.id) {
+      const mailbox = this.mailboxFor(agent);
+      const email = mailbox?.status === "ready" && mailbox.email?.toLowerCase();
+      const met = Boolean(email && meet.setup?.status === "done" && meet.account?.email?.toLowerCase() === email && meet.account.checkedAt >= Date.parse(routine.runAt));
+      return { met, blocked: meet.setup?.status === "needs-human", reason: met ? "Account Google dell’agente verificato." : "Accesso Google dell’agente ancora da verificare." };
+    }
     const evidence = this.traces?.get(result.traceId);
     const work = (evidence?.steps || []).filter((step) => step.type === "tool").slice(-40)
       .map((step) => `${step.name} ${JSON.stringify(step.args || {}).slice(0, 500)} → ${String(step.result || "").slice(0, 2400)}`).join("\n");
