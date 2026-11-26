@@ -4816,6 +4816,44 @@ describe("conversation colleague reachability", () => {
     assert.ok(!discord.state.webhookPosts.some((item) => item.content === "Denied thread reply."));
   });
 
+  test("a mention that reaches only bots without Message Content is read again by the named bot and answered once", async (t) => {
+    const { threadId, sender, receiver } = await fixture(t);
+    const own = app.bots.client(receiver.id);
+    const message = {
+      id: "1599000000000000996", channel_id: threadId, guild_id: GUILD, type: 0,
+      content: `<@${own.user.id}> are you there?`, mentions: [own.user], attachments: [], embeds: [],
+      author: { id: STRANGER, username: "nocodelab.ai", global_name: "Sncl" }, timestamp: new Date().toISOString(),
+    };
+    discord.state.history.set(threadId, [message]);
+    discord.state.contentBlind.add(MAIN_TOKEN).add("reach-sender");
+    t.after(() => { discord.state.history.delete(threadId); discord.state.contentBlind.clear(); replies.delete(receiver.name); });
+    replies.set(receiver.name, () => ({ content: "Blank mention answered." }));
+    discord.dispatchTo(app.bots.client(sender.id).user.id, "MESSAGE_CREATE", { ...message, content: "" });
+    await waitFor(() => app.store.hasMessage(message.id), { what: "the blank mention archived with its words" });
+    assert.match(app.store.recentMessages(threadId, 5).find((item) => item.id === message.id).content, /are you there\?/);
+    discord.dispatchTo(app.bots.client(sender.id).user.id, "MESSAGE_CREATE", { ...message, content: "" });
+    await quiet();
+    assert.equal(app.store.recentMessages(threadId, 10).filter((item) => item.id === message.id).length, 1);
+  });
+
+  test("history read by bots without Message Content keeps a mention the named bot can read", async (t) => {
+    const { threadId, receiver } = await fixture(t);
+    const own = app.bots.client(receiver.id);
+    const at = Date.now() - 60 * 60 * 1000;
+    const mention = {
+      id: "1599000000000000994", channel_id: threadId, guild_id: GUILD, type: 0,
+      content: `<@${own.user.id}> check the reel`, mentions: [own.user], attachments: [], embeds: [],
+      author: { id: STRANGER, username: "nocodelab.ai", global_name: "Sncl" }, timestamp: new Date(at).toISOString(),
+    };
+    const other = { ...mention, id: "1599000000000000995", content: "nobody named here", mentions: [], timestamp: new Date(at + 1000).toISOString() };
+    discord.state.history.set(threadId, [mention, other]);
+    discord.state.contentBlind.add(MAIN_TOKEN);
+    t.after(() => { discord.state.history.delete(threadId); discord.state.contentBlind.clear(); });
+    const reloaded = { id: threadId, history: [], seen: new Set() };
+    await app.orchestrator.ensureHistory(reloaded);
+    assert.deepEqual(reloaded.history.map((item) => [item.id, item.content]), [[mention.id, "@ReachReceiver check the reel"]], "the unnamed blank line stays out");
+  });
+
   test("fresh and resumed model turns receive the current scoped roster rather than the old global roster", async (t) => {
     const { threadId, state, sender } = await fixture(t);
     discord.state.privateTo.set(threadId, "reach-sender");
