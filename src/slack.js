@@ -384,12 +384,12 @@ export class Slack extends EventEmitter {
   }
 
   /**
-   * A channel's latest messages, oldest first. A thread is read from its first message on:
+   * A channel's latest messages (up to `latest`, when given), oldest first. A thread is read from its first message on:
    * page to its end and keep that first message with the latest replies.
    */
-  async fetchMessages(channelId, limit = 30, threadTs = "") {
+  async fetchMessages(channelId, limit = 30, threadTs = "", latest = "") {
     if (!threadTs) {
-      const data = await this.request("conversations.history", { channel: channelId, limit: Math.min(200, limit) });
+      const data = await this.request("conversations.history", { channel: channelId, limit: Math.min(200, limit), ...(latest ? { latest, inclusive: true } : {}) });
       return (data.messages || []).reverse();
     }
     const messages = [];

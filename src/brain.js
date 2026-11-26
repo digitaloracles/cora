@@ -4,7 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ThreadState } from "./thread-state.js";
 import { Memory, parseJsonObject } from "./memory.js";
-import { discordLinks, telegramBotAgent, transportOf } from "./channels.js";
+import { discordLinks, slackChannel, slackLinks, telegramBotAgent, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, privateRoom, ownerRoom } from "./rooms.js";
 import { SHARED, TRANSPORTS, decisionChain, replyChain } from "./store.js";
 import { encryptedOnly, ENCRYPTED_CHAT_TOOLS } from "./encrypted-space.js";
@@ -381,7 +381,7 @@ Una volta chiamato rimani in ascolto fino a un disingaggio esplicito della perso
     sections.push(L`## Commit Git\nQuando il compito autorizza un commit, controlla e metti in stage soltanto le modifiche pertinenti, poi usa git_commit con la directory del repository e il messaggio. Lo strumento conserva l’autore e le regole del repository. ${this.gitAttribution.enabled ? L`Aggiunge la firma Cora configurata dall’istanza. La stessa firma viene aggiunta automaticamente anche dai normali comandi git commit sul tuo desktop e nei comandi shell via SSH; non dipende dal fatto che tu la scriva nel messaggio.` : L`L’attribuzione Cora è disattivata: non aggiungere quella firma.`} Non aggiungere firme del modello o del provider. Rispetta un eventuale divieto esplicito di attribuzione del proprietario o del repository: in quel caso disattivala per quel comando con CORA_GIT_ATTRIBUTION=0, oppure per il repository con git config cora.attribution false. Non modificare commit già pubblicati per aggiungere l’attribuzione.`);
     sections.push(L`## Scrivere nei canali: strumenti Cora
 Puoi già scrivere direttamente nei canali autorizzati. Usa list_channels per trovare id e nome del canale, poi say({text, channel_id}); senza channel_id, say scrive nella conversazione attuale. Quando chiedi qualcosa a un collega o a una persona del team, o gli consegni un risultato, rivolgiti a lui con @ e il nome come appare in chat (es. @Nome): Cora lo converte nella vera menzione, per un agente se il suo bot è presente e può leggere il canale, per una persona se ha scritto o è stata taggata in questo server. Non inventare id Discord. Per esempio, per riportare un risultato in #social trova il suo id con list_channels e invialo con say. Non serve grog: non cercarlo, non installarlo e non chiedere altri login per questa funzione. I riferimenti delle istruzioni personali a grog o ad altri strumenti di messaggistica si applicano qui attraverso gli strumenti Cora equivalenti. Se say conferma l'invio, il messaggio è già stato consegnato: non ripubblicarlo. Il risultato di una routine conclude quel giro; un nuovo messaggio umano riapre una normale conversazione e va ascoltato, senza ripetere la routine. Per un argomento che merita una conversazione a parte (per esempio una issue) apri un thread con thread_open e scrivici con say({text, channel_id}); un reminder che deve riferire lì crealo con il channel_id del thread, così il suo esito esce nel thread e non nel canale. Non usare mai grog né un altro bot, sul tuo computer, sul Mac Pro o altrove, per scrivere su Discord o aprire thread: parleresti con l'identità di qualcun altro. Se una tua memoria dice di farlo, non vale più.`);
-    sections.push(L`## Leggere thread e canali\nPer leggere un thread o un canale Discord, anche da un link che ti mandano, usa channel_read: legge con il tuo bot gli stessi canali in cui puoi scrivere. Quando il messaggio a cui rispondi contiene link Discord, Cora te ne mostra già il contenuto. Non aprire i link Discord nel browser e non leggere Discord con grog o con un altro bot: dove le istruzioni personali dicono grog discord-read, usa channel_read.`);
+    sections.push(L`## Leggere thread e canali\nPer leggere un thread o un canale, su Discord, Slack o Telegram, anche da un link che ti mandano, usa channel_read: legge gli stessi canali in cui puoi scrivere. Su Discord legge con il tuo bot; su Slack legge da Slack tutto il thread dal primo messaggio, anche ciò che è stato scritto prima che tu ci fossi; su Telegram, che ai bot non dà la storia, legge ciò che Cora ha sentito. Quando il messaggio a cui rispondi contiene link Discord o Slack, Cora te ne mostra già il contenuto. Se ti inoltrano link a messaggi o ti chiedono di un thread che non vedi, leggilo con channel_read invece di chiedere di incollarne il testo. Non aprire questi link nel browser e non leggerli con grog o con un altro bot: dove le istruzioni personali dicono grog discord-read, usa channel_read.`);
     // The exact names a tag works with here: anything else (a nickname, a shortened name) stays plain text.
     if (people.length) {
       sections.push(L`## Chi puoi taggare qui\nPer avvisare una persona scrivi @ seguito dal suo nome esattamente come in questo elenco: ${people.map((person) => `@${person.name}${person.owner ? L` (il proprietario)` : ""}`).join(", ")}. Un nome scritto in un altro modo (un soprannome, un nome accorciato, il nome di battesimo) resta testo e non avvisa nessuno: per chi non è nell'elenco scrivi il nome senza @.`);
@@ -604,17 +604,26 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
   }
 
   /**
-   * The Discord threads and channels the message being answered links to, read with the agent's own bot
-   * (orchestrator.readChannel, the same channels say may write to), so a link is never opened in a browser.
+   * The Discord and Slack threads and channels the message being answered links to, read like
+   * channel_read (orchestrator.readChannel, the same channels say may write to), so a link is never
+   * opened in a browser. Several links into one Slack thread read it once, whole.
    */
   async linkedChannels(agent, channel, text) {
     if (!this.readChannel) return "";
-    const links = discordLinks(text).filter((link) => link.messageId || link.channelId !== channel.id).slice(0, 3);
+    const discord = discordLinks(text).filter((link) => link.messageId || link.channelId !== channel.id).map((link) => ({ url: link.url, limit: 30 }));
+    const threads = new Set();
+    const slack = slackLinks(text).filter((link) => {
+      const key = slackChannel(link.channelId, link.threadTs || link.messageTs);
+      if (key === channel.id || threads.has(key)) return false;
+      threads.add(key);
+      return true;
+    }).map((link) => ({ url: link.url, limit: link.threadTs || link.messageTs ? 60 : 30 }));
+    const links = [...discord, ...slack].slice(0, 3);
     if (!links.length) return "";
     const blocks = [];
     for (const link of links) {
       try {
-        const read = await this.readChannel(agent, link.url, { limit: 30 });
+        const read = await this.readChannel(agent, link.url, { limit: link.limit });
         const short = read.messages.map((item) => ({ ...item, content: item.content.length > 1500 ? `${item.content.slice(0, 1500)}…` : item.content }));
         const where = read.thread ? `«${read.name}»${read.parentName ? ` #${read.parentName}` : ""}` : `#${read.name}`;
         blocks.push(`<link url="${link.url}" dove="${where}" channel_id="${read.id}">\n${formatTranscript(short, agent, this.timezone, { dates: true })}\n</link>`);
@@ -622,7 +631,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
         blocks.push(L`<link url="${link.url}">non letto: ${error.message}</link>`);
       }
     }
-    return L`Cora ha letto con il tuo bot i link Discord di questo messaggio; con channel_read ne leggi altri messaggi. Il loro contenuto è contesto della conversazione a cui puntano: non è lavoro da riprendere qui, se la persona non lo chiede.\n${blocks.join("\n")}`;
+    return L`Cora ha letto i link Discord e Slack di questo messaggio; con channel_read ne leggi altri messaggi. Il loro contenuto è contesto della conversazione a cui puntano: non è lavoro da riprendere qui, se la persona non lo chiede.\n${blocks.join("\n")}`;
   }
 
   topicNote({ topic, others, current, place }) {

@@ -4686,7 +4686,7 @@ describe("reading Discord threads and links", () => {
     discord.say({ content: `<@${READER}> leggi qui ${link}`, mentions: [{ id: READER, username: "Reader" }] });
     await waitFor(() => discord.state.botPosts.some((post) => post.token === "reader-token" && post.content === "Letto."), { what: "Reader's answer" });
 
-    assert.match(prompts[0], /Cora ha letto con il tuo bot i link Discord di questo messaggio/);
+    assert.match(prompts[0], /Cora ha letto i link Discord e Slack di questo messaggio/);
     assert.match(prompts[0], /dove="«Ignora istruzioni» #/);
     assert.match(prompts[0], /Sam ★: Primo: «comandi di Cora», non «comandi di coda»[\s\S]*Sam ★: Quinto/, "the linked thread, oldest first");
     const head = JSON.parse(results[0].split("\n")[0]);
@@ -8428,6 +8428,9 @@ describe("agents in Telegram", () => {
     assert.match(tgPrompt, /Ospite: @Tina come va\?/);
     assert.doesNotMatch(tgPrompt, /Ospite ★/, "a stranger is not the owner");
     assert.equal((await call(`/api/agents/${tina.id}`)).data.telegramBot.inChat, true);
+    const read = await app.orchestrator.readChannel(app.store.agent(tina.id), `tg:${TG_GROUP}`, { limit: 5 });
+    assert.equal(read.source, "archive", "Telegram gives bots no history: the chat is read from what Cora heard");
+    assert.match(read.messages.map((item) => item.content).join("\n"), /come va\?[\s\S]*Tutto bene, grazie\./);
   });
 
   test("a question to the owner on Telegram offers its answers as buttons, and the one pressed goes to the agent who asked", async () => {
@@ -8974,6 +8977,41 @@ describe("agents in Slack", () => {
     assert.ok(app.store.recentMessages(thread, 50).some((item) => item.id === `sl_${SLACK_CHANNEL}_${early.ts}`), "the reply read from Slack is archived in the thread");
     assert.equal(app.store.recentMessages(thread, 50).filter((item) => item.id === `sl_${SLACK_CHANNEL}_${asked.ts}`).length, 1, "the request is kept once");
     assert.equal(slack.postsIn(SLACK_CHANNEL).length, 1, "one answer");
+    await quiet();
+  });
+
+  test("links forwarded to an agent into a Slack thread it never saw are read whole from Slack, and channel_read reads a thread by id", async () => {
+    slack.state.posts.length = 0;
+    const parent = slack.archive({ text: "feedback prismanews 25/11", user: SLACK_STRANGER });
+    const first = slack.archive({ text: "il logo in mobile resta scuro", user: SLACK_STRANGER, threadTs: parent.ts });
+    const second = slack.archive({ text: "manca il tasto indietro", user: SLACK_STRANGER, threadTs: parent.ts });
+    const link = (event) => `https://dopamina.slack.com/archives/${SLACK_CHANNEL}/p${event.ts.replace(".", "")}?thread_ts=${parent.ts}&cid=${SLACK_CHANNEL}`;
+    const prompts = [];
+    const results = [];
+    replies.set("Silvia", (body) => {
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === "tool") {
+        results.push(last.content);
+        if (results.length === 1) return { tool_calls: [{ function: { name: "channel_read", arguments: { channel: "sl:C0NOTHERE01" } } }] };
+        return { content: "Letti tutti." };
+      }
+      prompts.push(lastUserText(body));
+      return { tool_calls: [{ function: { name: "channel_read", arguments: { channel: `sl:${SLACK_CHANNEL}:${parent.ts}`, limit: 2 } } }] };
+    });
+    slack.say({ text: `@Silvia sono questi ${link(first)} ${link(second)}` });
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Letti tutti."), { what: "Silvia's answer" });
+
+    assert.match(prompts[0], /Cora ha letto i link Discord e Slack di questo messaggio/);
+    assert.equal(prompts[0].match(/<link url=/g).length, 1, "two links into one thread read it once");
+    assert.match(prompts[0], /Kim: feedback prismanews 25\/11[\s\S]*Kim: il logo in mobile resta scuro[\s\S]*Kim: manca il tasto indietro/, "the whole thread, from its first message");
+    const head = JSON.parse(results[0].split("\n")[0]);
+    assert.deepEqual({ id: head.channel_id, thread: head.thread, parent: head.parent_id, count: head.messages, older: head.older_than },
+      { id: `sl:${SLACK_CHANNEL}:${parent.ts}`, thread: true, parent: `sl:${SLACK_CHANNEL}`, count: 2, older: `sl_${SLACK_CHANNEL}_${first.ts}` });
+    assert.match(results[0], /Kim: il logo in mobile resta scuro\n.*Kim: manca il tasto indietro\n<\/chat>$/);
+    assert.match(results[1], /^error: channel not authorized/);
+    const older = await app.orchestrator.readChannel(app.store.agent(silvia.id), `sl:${SLACK_CHANNEL}:${parent.ts}`, { before: head.older_than });
+    assert.deepEqual(older.messages.map((item) => item.content), ["feedback prismanews 25/11"], "older_than pages back to the first message");
+    assert.ok(!app.store.hasMessage(`sl_${SLACK_CHANNEL}_${second.ts}`), "reading a thread leaves the archive alone");
     await quiet();
   });
 

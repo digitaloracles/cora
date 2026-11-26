@@ -274,11 +274,11 @@ export class SlackBots {
   }
 
   /** Read a channel's recent messages with any app that is in it. */
-  async fetchMessages(channelId, limit, threadTs = "") {
+  async fetchMessages(channelId, limit, threadTs = "", latest = "") {
     for (const [agentId, { client }] of this.clients) {
       if (!client.user || !(await this.inChannel(agentId, channelId))) continue;
       try {
-        return await client.fetchMessages(channelId, limit, threadTs);
+        return await client.fetchMessages(channelId, limit, threadTs, latest);
       } catch {}
     }
     return null;
