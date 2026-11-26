@@ -1208,11 +1208,15 @@ export class Orchestrator {
       content: await this.slackText(event, client),
     };
     const files = [...(event.files || []), ...slackShares(event).flatMap((shared) => shared.files || [])];
-    if (images && (item.kind === "owner" || item.kind === "human") && files.length) {
-      const picture = files.find((file) => String(file.mimetype || "").startsWith("image/") && (!file.size || file.size <= IMAGE_LIMIT_BYTES));
-      const data = picture && await client.download(picture, IMAGE_LIMIT_BYTES).catch(() => null);
-      if (data) item.images = [data.toString("base64")];
+    // A message heard brings its first picture when a person sent it; a thread being read brings as many as asked, from anyone.
+    const wanted = images === true ? (item.kind === "owner" || item.kind === "human" ? 1 : 0) : Math.max(0, Math.floor(Number(images) || 0));
+    const pictures = files.filter((file) => String(file.mimetype || "").startsWith("image/") && (!file.size || file.size <= IMAGE_LIMIT_BYTES)).slice(0, wanted);
+    const data = [];
+    for (const picture of pictures) {
+      const bytes = await client.download(picture, IMAGE_LIMIT_BYTES).catch(() => null);
+      if (bytes) data.push(bytes.toString("base64"));
     }
+    if (data.length) item.images = data;
     return item;
   }
 
@@ -2101,10 +2105,10 @@ export class Orchestrator {
    * agent has none), as say does: by id or link, its latest messages, those before one, or around a linked one.
    * A Slack conversation or thread is read from Slack, a Telegram chat from the archive.
    */
-  async readChannel(agent, target, { limit = 30, before = "", around = "" } = {}) {
+  async readChannel(agent, target, { limit = 30, before = "", around = "", images = 0 } = {}) {
     const value = String(target || "").trim();
     const slack = slackLink(value) || (isSlackChannel(value) ? { ...slackIds(value), messageTs: "" } : null);
-    if (slack) return this.readSlack(agent, slack, { limit, before });
+    if (slack) return this.readSlack(agent, slack, { limit, before, images });
     if (isTelegramChannel(value)) return this.readArchived(agent, value, { limit, before });
     const link = discordLink(target);
     const channelId = link?.channelId || String(target || "").trim();
@@ -2124,13 +2128,19 @@ export class Orchestrator {
     const archived = new Map(this.store.recentMessages(channelId, 500).map((item) => [item.id, item]));
     const read = await Promise.all((Array.isArray(raw) ? raw : []).map(async (message) =>
       (!archived.has(message.id) && blankHumanMessage(message) && await this.readAsMentioned(message, channelId)) || message));
-    const messages = read.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
-      .filter((message) => discordConversationMessage(message, archived.get(message.id)))
-      .map((message) => {
-        const item = this.toItem(message);
-        const kept = archived.get(message.id);
-        return !message.content?.trim() && kept?.content?.trim() ? { ...item, content: kept.content } : item;
-      });
+    let budget = Math.max(0, Math.floor(Number(images) || 0));
+    const messages = [];
+    for (const message of read.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1)).filter((message) => discordConversationMessage(message, archived.get(message.id)))) {
+      const item = this.toItem(message);
+      const kept = archived.get(message.id);
+      const shown = !message.content?.trim() && kept?.content?.trim() ? { ...item, content: kept.content } : item;
+      if (budget > 0) {
+        await this.attachImages(shown, message);
+        if (shown.images) shown.images = shown.images.slice(0, budget);
+        budget -= shown.images?.length || 0;
+      }
+      messages.push(shown);
+    }
     const parentId = info.thread ? info.parentId || "" : "";
     return {
       id: channelId, name: info.name || "", guildId: info.guildId, thread: Boolean(info.thread), parentId,
@@ -2144,7 +2154,7 @@ export class Orchestrator {
    * from its first message (also what was written before the agent joined), or the channel's latest
    * messages up to a linked one. The archive answers when Slack cannot.
    */
-  async readSlack(agent, { channelId, threadTs = "", messageTs = "" }, { limit, before = "" } = {}) {
+  async readSlack(agent, { channelId, threadTs = "", messageTs = "" }, { limit, before = "", images = 0 } = {}) {
     if (!this.channels.on("slack")) throw new Error("Slack is not switched on here");
     const parentId = slackChannel(channelId);
     const listed = this.channels.listFor(agent);
@@ -2172,8 +2182,11 @@ export class Orchestrator {
         .sort((a, b) => Number(a.ts) - Number(b.ts))
         .slice(-count);
       messages = [];
+      // The pictures in what is read come with it, up to the budget asked, with the token of the app that reads.
+      let budget = Math.max(0, Math.floor(Number(images) || 0));
       for (const event of kept) {
-        const item = await this.slackItem({ ...event, channel: channelId }, client, { images: false });
+        const item = await this.slackItem({ ...event, channel: channelId }, client, { images: Math.min(4, budget) });
+        budget -= item.images?.length || 0;
         const speaker = this.skBots?.agentIdForBot(event.bot_id) || (this.slack?.isOwnMessage(event) ? this.store.agents().find((other) => other.name === event.username)?.id : null);
         const who = speaker && this.store.agent(speaker);
         messages.push(who ? { ...item, kind: "agent", agentId: who.id, authorName: who.name } : item);

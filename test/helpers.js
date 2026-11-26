@@ -1374,9 +1374,13 @@ export async function fakeSlack() {
       return event;
     },
     /** A message written while Cora was down: in the archive, never delivered. */
-    archive({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, at = null, threadTs = "", attachments = null }) {
+    archive({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, at = null, threadTs = "", attachments = null, files = null }) {
       const event = { type: "message", channel, user, text, ts: at || ts(), channel_type: "channel" };
       if (attachments) event.attachments = attachments;
+      if (files) {
+        event.files = files;
+        event.subtype = "file_share";
+      }
       if (threadTs) {
         event.thread_ts = threadTs;
         markReply(channel, threadTs, event.ts);
