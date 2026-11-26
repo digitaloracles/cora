@@ -154,7 +154,16 @@ export const TOOL_DEFS = [
     description: "Tell the librarian something the whole company should know: a decision, a client's preference, who does what, a deadline. It queues immediate consolidation into the company brain, with you as its source. Your own memory stays remember.",
     parameters: { type: "object", properties: { text: { type: "string", description: "the fact, short and specific, with who decided and when if you know" } }, required: ["text"] },
   },
-  { name: "meet_join", description: "When the person asks you to attend and transcribe a Google Meet, join their link on your signed-in desktop. Use the meetings/project folder they selected. The transcript is sent back to this conversation.", parameters: { type: "object", properties: { link: { type: "string" }, folder: { type: "string" } }, required: ["link", "folder"] } },
+  { name: "meet_join", description: "When the person asks you to attend and transcribe a Google Meet, join their link with the Google account signed in on your desktop's Meet browser: Meet refuses guests, so you never join without it. Use the meetings/project folder they selected. The transcript is sent back to this conversation. If you are not signed in, run meet_setup yourself first instead of asking the person how.", parameters: { type: "object", properties: { link: { type: "string" }, folder: { type: "string" } }, required: ["link", "folder"] } },
+  {
+    name: "meet_setup",
+    description: "Sign your own Google account, on your own email address, into the Meet browser on your desktop, and carry it through yourself: step start prepares your Google password in the vault and in your hush, opens Google's sign-in and returns the steps (it creates the account when there is none); check confirms the browser holds your address. Ask the person only for what Google makes impossible from your desktop, once, with needs-human.",
+    parameters: { type: "object", properties: {
+      step: { type: "string", enum: ["start", "check", "needs-human", "failed"], description: "start first; check when Google shows your account; needs-human or failed with a note when you are stuck" },
+      secret: { type: "string", description: "optional: the vault name of a Google password you already have for this address; default GOOGLE_<YOUR NAME>_PASSWORD, made for you when missing" },
+      note: { type: "string", description: "with needs-human or failed: what is missing, in one line" },
+    }, required: ["step"] },
+  },
   { name: "meet_leave", description: "Leave the Google Meet call you are attending when asked and finish the transcript.", parameters: { type: "object", properties: {} } },
   {
     name: "voice_join",
@@ -886,7 +895,20 @@ export async function executeTool(call, ctx) {
       case "meet_leave": {
         const action = call.name === "meet_join" ? ctx.meetJoin : ctx.meetLeave;
         if (!action) return { text: "error: Google Meet is unavailable for this request" };
-        return { text: JSON.stringify(await action(args)) };
+        try {
+          return { text: JSON.stringify(await action(args)) };
+        } catch (error) {
+          if (error.code === "sign-in" && ctx.meetSetup) return { text: `error: ${error.message} Run meet_setup with step start to sign in yourself, then join again.` };
+          throw error;
+        }
+      }
+      case "meet_setup": {
+        if (!ctx.meetSetup) return { text: "error: Google Meet is unavailable for this request" };
+        try {
+          return { text: JSON.stringify(await ctx.meetSetup({ step: String(args.step || "start"), secret: String(args.secret || ""), note: String(args.note || "") })) };
+        } catch (error) {
+          return { text: `error: ${error.message}` };
+        }
       }
       case "voice_join": {
         if (!ctx.voiceJoin) return { text: "error: voice calls are not available here" };
