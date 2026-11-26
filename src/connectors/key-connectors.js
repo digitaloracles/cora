@@ -162,7 +162,9 @@ export class KeyConnectors {
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
       const rejected = [401, 403].includes(response.status);
-      throw new KeyConnectorError(rejected ? "Il servizio rifiuta questa credenziale: controllala e riprova." : "Il servizio ha rifiutato la richiesta. Riprova tra poco.", rejected ? 400 : 502);
+      const error = new KeyConnectorError(rejected ? "Il servizio rifiuta questa credenziale: controllala e riprova." : "Il servizio ha rifiutato la richiesta. Riprova tra poco.", rejected ? 400 : 502);
+      error.answer = { status: response.status, message: clean(data?.errors?.[0]?.message || data?.error_description || data?.error?.message || data?.message || "", 300) };
+      throw error;
     }
     return data;
   }
@@ -170,12 +172,22 @@ export class KeyConnectors {
   async checkLinear(workspace, token) {
     const query = "query { viewer { name email organization { id name urlKey } } }";
     const call = (authorization) => this.request(this.linearApi, { method: "POST", headers: { Authorization: authorization, "Content-Type": "application/json" }, body: { query } });
-    let data;
-    try { data = await call(`Bearer ${token}`); }
-    catch (error) {
-      // Linear takes a personal API key either as a bearer token or bare in the header.
-      if (error.status !== 400) throw error;
-      data = await call(token);
+    // A personal API key (lin_api_…) goes bare in the header: Linear answers 400 to one sent as a Bearer token.
+    const tries = token.startsWith("lin_api_") ? [token] : [`Bearer ${token}`, token];
+    let data, refusal;
+    for (const authorization of tries) {
+      try { data = await call(authorization); refusal = null; break; }
+      catch (error) {
+        if (!error.answer) throw error;
+        if (!refusal || [401, 403].includes(error.answer.status)) refusal = error.answer;
+      }
+    }
+    if (refusal) {
+      const { status, message } = refusal;
+      const said = message ? ` Linear risponde: «${message}».` : "";
+      throw new KeyConnectorError([401, 403].includes(status)
+        ? `Linear non ha riconosciuto la chiave: crea una chiave API personale e incollala di nuovo.${said}`
+        : `Linear ha rifiutato la richiesta (HTTP ${status}).${said}`, status < 500 ? 400 : 502);
     }
     const viewer = data?.data?.viewer;
     if (!viewer?.organization?.urlKey) throw new KeyConnectorError("Linear non ha riconosciuto la chiave: crea una chiave API personale e incollala di nuovo.");

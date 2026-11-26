@@ -476,7 +476,7 @@ export const linear = {
       rows: [
         { title: "1. Il workspace", hint: "Il nome che compare in linear.app/<workspace>, per esempio turinglabs.", field: { name: "workspace", type: "text", placeholder: "turinglabs", label: "Workspace di Linear" } },
         { title: "2. La chiave API", steps: [
-          ["apri ", { href: "https://linear.app/settings/security", text: "linear.app/settings/security" }, " → Sicurezza → Chiavi API e crea una chiave personale;"],
+          ["apri ", { href: "https://linear.app/settings/account/security", text: "linear.app/settings/account/security" }, " → Security & access → Personal API keys → New API key;"],
           "copia la chiave;",
           ["incollala qui: Cora la verifica su Linear e la salva separatamente nella cassaforte (prefisso ", { code: "CORA_LINEAR_KEY" }, "), senza mostrarla più."],
         ], field: { name: "token", type: "password", label: "Chiave API di Linear" }, submit: "Verifica e collega" },
