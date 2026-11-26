@@ -9,7 +9,7 @@ const KEY = "lin_api_fixture";
 /** A small Linear GraphQL endpoint: answers by the root field each query asks for and records the variables. */
 async function fakeLinear(t) {
   const calls = [];
-  const team = { id: "team-ref", key: "REF", name: "Refracto", activeCycle: { id: "cyc-7", number: 7 }, states: { nodes: [{ id: "st-b", name: "Backlog", type: "backlog", position: 0 }, { id: "st-t", name: "Todo", type: "unstarted", position: 1 }, { id: "st-p", name: "In Progress", type: "started", position: 2 }, { id: "st-r", name: "In Review", type: "started", position: 3 }, { id: "st-d", name: "Done", type: "completed", position: 4 }] }, labels: { nodes: [{ id: "lb-bug", name: "Bug" }, { id: "lb-ui", name: "UI" }] } };
+  const team = { id: "team-ref", key: "REF", name: "Refracto", activeCycle: { id: "cyc-7", number: 7 }, states: { nodes: [{ id: "st-b", name: "Backlog", type: "backlog", position: 0 }, { id: "st-t", name: "Todo", type: "unstarted", position: 1 }, { id: "st-p", name: "In Progress", type: "started", position: 2 }, { id: "st-r", name: "In Review", type: "started", position: 3 }, { id: "st-d", name: "Done", type: "completed", position: 4 }] }, labels: { nodes: [{ id: "lb-bug", name: "Bug" }, { id: "lb-ui", name: "UI" }, { id: "lb-ws", name: "Customer" }] } };
   const issues = { "REF-62": { id: "iss-62", identifier: "REF-62", team: { key: "REF" } }, "REF-23": { id: "iss-23", identifier: "REF-23", team: { key: "REF" } } };
   const answer = (query, variables) => {
     const ok = (field, value) => ({ data: { [field]: value } });

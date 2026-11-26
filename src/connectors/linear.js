@@ -82,7 +82,7 @@ async function stateOf(value, team) {
 async function labelIds(names, team, ctx) {
   if (!names.length) return [];
   ctx.workspaceLabels ||= flat((await ctx.linear.gql("{ issueLabels(first: 250, filter: { team: { null: true } }) { nodes { id name } } }")).issueLabels);
-  const labels = [...team.labels, ...ctx.workspaceLabels];
+  const labels = [...new Map([...team.labels, ...ctx.workspaceLabels].map((label) => [label.id, label])).values()];
   return names.map((name) => pick(labels, name, { what: `label of ${team.key}` }).id);
 }
 
