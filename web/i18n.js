@@ -2086,6 +2086,7 @@ export const EN = {
   "Agente non trovato": "Agent not found",
   "Torna agli agenti": "Back to the agents",
   "Agente": "Agent",
+  "Chat con {name}": "Chat with {name}",
   "Scrivi a {name}…": "Write to {name}…",
   "È muto: accendilo per parlarci.": "It is muted: turn it on to talk to it.",
   "Spegni": "Turn off",

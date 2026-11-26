@@ -3262,17 +3262,26 @@ function agentMeetPane(agent) {
     }
     body.append(h("div", { class: "stack" }, h("strong", {}, account || agent.mailbox?.email || "Account Google da collegare"), actions));
     if (setup) {
-      let verification = null;
+      let verification = null, chatSlot = null;
       if (needsHuman) {
         const viewer = `/box/${agent.id}/vnc.html?autoconnect=true&reconnect=true&path=box/${agent.id}/websockify`;
+        chatSlot = h("div", { class: "meet-step-chat" }, skeleton("chat"));
         verification = h("div", { class: "meet-step-verification stack" },
           h("p", {}, data.setup.note ? raw(data.setup.note) : "Completa la verifica richiesta da Google sul desktop dell’agente."),
           h("div", { class: "actions" }, btn("Apri desktop a schermo intero", { href: viewer + "&resize=off", target: "_blank", icon: "maximize", cls: "primary" })),
           h("div", { class: "monitor-frame" }, h("div", { class: "screen" },
             h("iframe", { title: "Accesso Google sul desktop", src: viewer + "&resize=scale" }))),
+          h("section", { class: "stack-sm", "aria-label": tr("Chat con {name}", { name: agent.name }) },
+            h("h3", {}, raw(tr("Chat con {name}", { name: agent.name }))), chatSlot),
           h("div", { class: "actions" }, btn("Ho completato la verifica", { onclick: () => request("/setup", {}) })));
       }
       body.append(meetSetupChecklist(data.setup, verification));
+      if (chatSlot) {
+        const isCurrent = () => chatSlot.isConnected && route()[3] === "meet";
+        void chatPanel(`web-${agent.id}`, { placeholder: tr("Scrivi a {name}…", { name: agent.name }), isCurrent }).then((chat) => {
+          if (chat && isCurrent()) chatSlot.replaceChildren(chat);
+        });
+      }
     }
     if ((running || needsHuman) && data.setup.canStop) body.append(h("div", { class: "actions" },
       btn("Ferma collegamento", { cls: "sm", onclick: () => request("/stop-setup", {}) })));
