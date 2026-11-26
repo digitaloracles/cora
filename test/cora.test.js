@@ -9015,6 +9015,52 @@ describe("agents in Slack", () => {
     await quiet();
   });
 
+  test("the screenshots in a Slack thread come with channel_read and with forwarded links, and read_attachment opens them", async () => {
+    slack.state.posts.length = 0;
+    const shot = encodePng(1, 1, Buffer.from([12, 34, 56, 255]));
+    const logo = encodePng(1, 1, Buffer.from([200, 10, 10, 255]));
+    const parent = slack.archive({ text: "feedback prismanews", user: SLACK_STRANGER });
+    slack.archive({ text: "guarda qui", user: SLACK_STRANGER, threadTs: parent.ts, files: [slack.file("schermata.png", shot, "image/png")] });
+    slack.archive({ text: "e il logo", user: SLACK_STRANGER, threadTs: parent.ts, files: [slack.file("logo.png", logo, "image/png")] });
+    const link = `https://dopamina.slack.com/archives/${SLACK_CHANNEL}/p${parent.ts.replace(".", "")}`;
+    const capabilities = app.llm.capabilities;
+    app.llm.capabilities = async (model, host) => ({ ...(await capabilities.call(app.llm, model, host)), vision: true });
+    try {
+      const prompts = [];
+      const results = [];
+      let images = "";
+      replies.set("Silvia", (body) => {
+        const done = body.messages.filter((message) => message.role === "tool").map((message) => message.content);
+        if (!done.length) {
+          prompts.push(lastUserText(body));
+          return { tool_calls: [{ function: { name: "channel_read", arguments: { channel: `sl:${SLACK_CHANNEL}:${parent.ts}` } } }] };
+        }
+        results.splice(0, results.length, ...done);
+        if (done.length === 1) {
+          const id = /images":"(img-\d+)/.exec(done[0])?.[1];
+          return { tool_calls: [{ function: { name: "read_attachment", arguments: { attachment_id: id } } }] };
+        }
+        images = JSON.stringify(body.messages.slice(body.messages.findLastIndex((message) => message.role === "tool")));
+        return { content: "Viste le schermate." };
+      });
+      slack.say({ text: `@Silvia leggi le schermate di ${link}` });
+      await waitFor(() => slack.postsIn(SLACK_CHANNEL).some((post) => post.text === "Viste le schermate."), { what: "Silvia's answer" });
+
+      const pictured = `sl_${SLACK_CHANNEL}_`;
+      assert.match(prompts[0], new RegExp(`Kim: guarda qui \\[immagine\\] \\[${pictured}\\d+\\.\\d+\\]`), "the forwarded link's thread marks the message with a picture");
+      assert.match(prompts[0], new RegExp(`img-\\d+: Kim · ${pictured}`), "its pictures are in the turn's attachment list");
+      const head = JSON.parse(results[0].split("\n")[0]);
+      assert.match(head.images, /^img-\d+, img-\d+: the pictures in these messages/, "channel_read names the two pictures");
+      const [first, second] = head.images.split(":")[0].split(", ");
+      assert.match(results[0], new RegExp(`Kim: guarda qui \\[immagine\\] \\[${first}\\]\\n.*Kim: e il logo \\[immagine\\] \\[${second}\\]`), "each picture is marked on its message");
+      assert.match(results[1], new RegExp(`^Image ${first}: Kim · ${pictured}`));
+      assert.ok(images.includes(shot.toString("base64")), "the screenshot itself reaches the model");
+    } finally {
+      app.llm.capabilities = capabilities;
+    }
+    await quiet();
+  });
+
   test("in a channel only an agent's app is in, a thread opened from the panel and Cora's own words go through that app", async () => {
     const ALONE = "C0ALONE0001";
     slack.state.channels.set(ALONE, { id: ALONE, name: "testnew", is_private: true });
