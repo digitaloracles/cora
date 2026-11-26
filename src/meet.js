@@ -14,6 +14,22 @@ const ACTIVE = new Set(["starting", "waiting", "joined", "transcribing"]);
 const FOLDER = /^meetings\/[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){0,3}$/;
 const AUDIO_LIMIT = 300 * 1024 * 1024;
 const KEEP = 12;
+const SETUP = new Set(["running", "needs-human", "done", "failed"]);
+
+/** A password Google accepts: letters, digits and symbols, never starting with a dash. */
+const googlePassword = () => `Cm${randomBytes(15).toString("base64url")}#7`;
+
+/** What the agent does in the Meet browser after meet_setup start, in its own hands. */
+const setupSteps = ({ email, secret, created, name }) => [
+  "The Meet browser window on your desktop shows Google sign-in. Work only in that window, with screenshot and mouse/keyboard; never drive it over its debugging port and never open another browser for this.",
+  `Type ${email} and continue.`,
+  `If Google finds the account, enter the password and go on. If it cannot find it, choose Create account, For my personal use: first name ${name}, last name Cora; for birthday and gender use what the owner set for you, otherwise 1 January 2000 and Rather not say. At the address step choose Use your existing email and type ${email}.`,
+  "Google's confirmation code arrives in your mailbox: find the message with ambox inbox, click the code field, then type the code without showing it: ambox read <message-id> | grep -oE '\\b[0-9]{6}\\b' | head -1 | xargs -r xdotool type --delay 60 --. Never print, repeat or post a code.",
+  `Password fields: click the field, then type it only with: hush run --name ${secret} --env P --redact -- sh -c 'xdotool type --delay 60 -- "$P"'. Never print, read or write it anywhere else.${created ? " This password is new: use it for a new account. If the account already exists with another password, call meet_setup with step needs-human." : ""}`,
+  "Skip what is optional: phone number, recovery email, Not now, Skip. Accept the terms.",
+  "If Google insists on something only a person can give (a phone, a QR code to scan, a personal verification, a captcha you cannot pass), leave the page as it is and call meet_setup with step needs-human and a one-line note: the panel shows the person your desktop and asks for that one step. Do not post screenshots, QR codes or codes in chat. When they are done, call meet_setup with step check and go on from where Google is.",
+  `When the page shows your Google Account, call meet_setup with step check: you are done only when it returns status done with ${email}. Then say it in one line.`,
+];
 
 export class MeetError extends Error {
   constructor(message, status = 400) {
@@ -233,7 +249,7 @@ export class Meet {
         prompt: "Connect Google Meet using your own currently configured mailbox. First use meet_setup check to verify the signed-in identity. If setup is required, use meet_setup start and follow its instructions to sign in or register using that mailbox. Reuse any existing account and progress. Obtain mailbox verification yourself. Only request a specific action if Google requires a human. Never include passwords or verification codes in chat. Finish only when meet_setup check confirms the expected address. Report the outcome here.",
       };
       const routine = existing ? this.store.updateRoutine(existing.id, input) : this.store.createRoutine(agent.id, input);
-      this.save(agent.id, { setupRoutineId: routine.id, setup: { status: "running" } });
+      this.save(agent.id, { setupRoutineId: routine.id, setup: { ...config.setup, email: mailbox.email, note: "", status: "running" } });
     });
   }
 
@@ -283,6 +299,66 @@ export class Meet {
     return job;
   }
 
+  /** The vault name of the agent's Google password when nobody chose another. */
+  setupSecret(agent) {
+    const base = String(agent.name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase();
+    return `GOOGLE_${base || "AGENT"}_PASSWORD`;
+  }
+
+  recordSetup(agent, change) {
+    const setup = { ...(this.config(agent.id).setup || {}), ...change, updatedAt: Date.now() };
+    this.save(agent.id, { setup });
+    this.emit({ type: "meet", agentId: agent.id, setup });
+    return setup;
+  }
+
+  /**
+   * The agent signs its own Google account into its Meet browser: start prepares the
+   * password in the vault and the sign-in page, the agent does the rest on its desktop,
+   * check confirms the account the browser holds is the agent's own address.
+   */
+  async setup(agent, { step = "start", email = "", secret = "", note = "", vault = null } = {}) {
+    const current = this.config(agent.id).setup || {};
+    const expected = String(email || current.email || "").trim().toLowerCase();
+    if (step === "needs-human" || step === "failed") {
+      const text = String(note || "").trim().slice(0, 300);
+      if (!text) throw new MeetError("Say in one line what is missing.", 400);
+      const setup = this.recordSetup(agent, { status: step, note: text });
+      this.log({ type: "meet", agentId: agent.id, text: `Google Meet di ${agent.name}: ${step === "failed" ? "accesso fallito" : "serve una persona"} (${text})` });
+      return { status: setup.status, note: setup.note };
+    }
+    if (!expected) throw new MeetError("You have no mailbox of your own, and the Google account uses it: ask the owner to set up your email.", 409);
+    if (step === "check") {
+      const account = (await this.check(agent)).account;
+      const done = Boolean(account?.email && account.email.toLowerCase() === expected);
+      const setup = this.recordSetup(agent, done ? { status: "done", email: expected, note: "", doneAt: Date.now() } : { status: SETUP.has(current.status) && current.status !== "done" ? current.status : "running", email: expected });
+      if (done) this.log({ type: "meet", agentId: agent.id, text: `${agent.name} ha collegato ${expected} a Google Meet` });
+      return { status: setup.status, account: account?.email || null, expected, ...(done ? {} : { next: account?.email ? `The Meet browser holds ${account.email}, not ${expected}.` : "The Meet browser is not signed in yet: finish Google's steps, then check again." }) };
+    }
+    if (step !== "start") throw new MeetError("step is start, check, needs-human or failed.", 400);
+    await this.desk(agent);
+    if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("You are in a call or joining one: leave it first.", 409);
+    const signed = (await this.check(agent)).account;
+    if (signed?.email?.toLowerCase() === expected) {
+      this.recordSetup(agent, { status: "done", email: expected, note: "", doneAt: Date.now() });
+      return { status: "done", account: signed.email, expected };
+    }
+    if (signed?.email) {
+      const setup = this.recordSetup(agent, { status: "needs-human", email: expected, note: `Il browser Meet è collegato a ${signed.email}` });
+      return { status: setup.status, account: signed.email, expected, next: `The Meet browser is signed in as ${signed.email}, not your address: tell the person and ask whether to sign it out from Settings → Google Meet.` };
+    }
+    if (!vault?.enabled) throw new MeetError("The vault is off in this space, and the Google password lives there.", 409);
+    const name = secret ? vault.cleanName(secret) : this.setupSecret(agent);
+    if (secret && !this.store.vaultSecret(name)) throw new MeetError(`There is no secret ${name}: secret_list shows the names.`, 404);
+    const created = !this.store.vaultSecret(name);
+    if (created) vault.put({ name, value: googlePassword(), description: `Password Google di ${agent.name} (${expected}) per Google Meet`, agents: [agent.id], by: { kind: "agent", id: agent.id, name: agent.name }, source: "meet" });
+    await vault.importInto(agent, name);
+    await this.boxes.meet(agent.id, ["signin"]);
+    this.recordSetup(agent, { status: "running", email: expected, secret: name, note: "", startedAt: Date.now(), doneAt: 0 });
+    this.log({ type: "meet", agentId: agent.id, text: `${agent.name} collega ${expected} a Google Meet` });
+    return { status: "running", email: expected, secret: name, newPassword: created, steps: setupSteps({ email: expected, secret: name, created, name: agent.name }) };
+  }
+
   async signOut(agent) {
     await this.desk(agent);
     if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("L’agente sta entrando in una riunione o è già dentro.", 409);
@@ -314,7 +390,7 @@ export class Meet {
     if (!target || !this.artifacts.canWrite(target, agent) || encryptedFolder(this.store, target.id)) throw new MeetError("Scegli una cartella meetings/ disponibile per questo agente.", 404);
     this.artifacts.checkMember(target, memberUserId, true);
     const account = (await this.check(agent)).account;
-    if (!account) throw new MeetError("L'agente non è collegato a Google: senza un account Meet rifiuta l'ingresso. Collegalo in Impostazioni → Google Meet.", 409);
+    if (!account) throw Object.assign(new MeetError("L'agente non è collegato a Google: senza un account Meet rifiuta l'ingresso. Collegalo in Impostazioni → Google Meet.", 409), { code: "sign-in" });
     const session = {
       id: `ms_${randomBytes(6).toString("hex")}`, agentId: agent.id, memberUserId, panelOrigin, language: spokenLanguage, link: url.split(/[?#]/)[0], folder: path, folderId: target.id, by, channelId: String(channelId || ""),
       phase: "starting", reason: "", startedAt: Date.now(), joinedAt: 0, endedAt: 0, people: 0, names: [], audioBytes: 0, account: account.email, self: account.name || "",
