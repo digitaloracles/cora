@@ -25,11 +25,12 @@ const NONE = [/^docs\//, /\.md$/, /^LICENSE$/, /^\.gitignore$/, /^deploy\//, /^b
 
 const PANEL = {
   files: ["connections", "key-connectors", "hermes-keys", "access", "permissions", "appearance"],
-  cora: ["agent remote access", "security seal autosaves", "external configuration MCP", "shared owner controls", "panel auth", "routine workspaces", "subscription preparation", "manual subscription codes", "connector setup", "Linear workspace", "Claude OAuth", "device-code"],
+  cora: ["Meet setup stops", "agent remote access", "security seal autosaves", "external configuration MCP", "shared owner controls", "panel auth", "routine workspaces", "subscription preparation", "manual subscription codes", "connector setup", "Linear workspace", "Claude OAuth", "device-code"],
 };
 
 // Each area: the paths it owns, the test files that cover it and the cora.test.js groups (name prefixes).
 const AREAS = [
+  { name: "Google Meet", paths: [/^src\/(meet\.js|desktop-meet\.mjs)$/], files: ["meet", "reminders"], cora: ["Meet setup stops"] },
   { name: "storage maintenance", paths: [/^src\/storage-(maintenance|backups|backup-worker|grok|measure)\.(js|py)$/], files: ["storage-maintenance", "artifacts", "brain", "panel-mcp-tools"], cora: [] },
   { name: "Firecrawl connector", paths: [/^src\/connectors\/firecrawl\//, /^src\/connectors\/remote-mcp\.js$/, /^test\/firecrawl-fixtures\.js$/, /^test\/connector-firecrawl\.test\.js$/], files: ["connector-firecrawl", "connector-lovable", "key-connectors"], cora: ["Firecrawl connector"] },
   { name: "tool budget", paths: [/^src\/tool-budget\.js$/, /^test\/tool-budget\.test\.js$/], files: ["tool-budget"], cora: ["a Gemini subscription"] },

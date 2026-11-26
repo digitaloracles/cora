@@ -122,6 +122,40 @@ test("the Meet panel queues a private one-time setup and resumes the same remind
   assert.equal(final.data.account.email, "setup@example.test");
 });
 
+test("stopping setup fences an in-flight check, permits a fresh run and leaves other rooms alone", async (t) => {
+  const f = await knowledgeWorld();
+  t.after(f.close);
+  const { meet, store, boxes } = f.app;
+  const agent = store.createAgent({ name: "Stop setup", brainOwnerId: f.alice.user.id, tools: true, enabled: true });
+  const email = "stop@example.test";
+  const endpoint = `/api/agents/${agent.id}/meet`;
+  const stop = (actor) => f.request(actor, endpoint + "/stop-setup", { method: "POST", body: {} });
+  boxes.ensure = async () => {};
+  store.setValue(`agentMailbox:${agent.id}`, { status: "ready", email });
+  meet.setEnabled(agent, true);
+  await meet.queueSetup(agent);
+  const routineId = meet.config(agent.id).setupRoutineId;
+  let release, entered;
+  const checking = new Promise((resolve) => { entered = resolve; });
+  boxes.meet = () => new Promise((resolve) => { release = resolve; entered(); });
+  const pending = meet.setup(agent, { step: "check", email, routineId });
+  await checking;
+  assert.equal((await stop(f.bob)).status, 403);
+  assert.equal((await stop(f.alice)).data.setup.status, "stopped");
+  assert.equal((await stop(f.alice)).status, 200);
+  assert.equal(store.routine(routineId, { archived: true }).archiveReason, "meet-setup-stopped");
+  await meet.queueSetup(agent);
+  assert.notEqual(meet.config(agent.id).setupRoutineId, routineId);
+  release({ email });
+  await assert.rejects(pending, /stopped/);
+  assert.equal(meet.view(agent).setup.status, "running");
+  await assert.rejects(meet.setup(agent, { step: "progress", activity: "registration", routineId }), /stopped/);
+  const activity = { step: "progress", activity: "registration", routineId: meet.config(agent.id).setupRoutineId };
+  await meet.setup(agent, activity);
+  await meet.setup(agent, activity);
+  assert.deepEqual(meet.view(agent).setup.activities, ["registration"]);
+});
+
 test("updated Meet captions produce one timed turn per block", () => {
   const partial = { at: 2, block: 4, speaker: "Host", text: "Hello" };
   assert.deepEqual(captionTurns([partial, { ...partial, at: 30, text: "Hello. Goodbye." }]), [{ name: "Host", start: 2, text: "Hello" }, { name: "Host", start: 30, text: "Goodbye." }]);

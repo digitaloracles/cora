@@ -1171,7 +1171,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       // A voice call joins where the person asking is, unless a channel is named.
       meetJoin: canUseMeet ? ({ link, folder }) => this.meet.join(agent, { link, folder, by: requester, channelId: channel.id, memberUserId: isWebRoom(channel.id) ? requester.id : "" }) : null,
       meetLeave: canUseMeet ? () => this.meet.leave(agent) : null,
-      meetSetup: canSetupMeet ? (options) => { const mailbox = this.mailboxFor(agent); return this.meet.setup(agent, { ...options, email: mailbox?.status === "ready" ? mailbox.email || "" : "", vault: this.vault }); } : null,
+      meetSetup: canSetupMeet ? (options) => { const mailbox = this.mailboxFor(agent); return this.meet.setup(agent, { ...options, routineId: routine?.id, email: mailbox?.status === "ready" ? mailbox.email || "" : "", vault: this.vault }); } : null,
       voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true), origin: channel.id }) : null,
       voiceLeave: this.voiceCalls ? () => this.voiceCalls.leave(agent) : null,
       threadFor: this.threadFor ? (threadId) => this.threadFor(agent, threadId) : null,
@@ -1626,6 +1626,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       if (!controller.signal.aborted) controller.abort();
     };
     if (task) this.activeTurns.set(channel.id, agent.id, control);
+    if (routine?.id && this.store.routine(routine.id, { archived: true })?.archiveReason === "meet-setup-stopped") control.stop();
     const controlTimer = setInterval(collectNews, 100);
     try {
       await settleNews();
