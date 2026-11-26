@@ -7,7 +7,7 @@ import { OpenChoices } from "./open-choices.js";
 import { ThreadSessions, killPid, noteChildPid, pidAlive, recoverHarness, sessionFailure } from "./thread-sessions.js";
 import { ProcessUsage } from "./process-usage.js";
 import { escapeSlack, isDirectChannel } from "./slack.js";
-import { TRANSPORT_LABELS, discordLink, isSlackChannel, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
+import { TRANSPORT_LABELS, discordLink, isSlackChannel, slackLink, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
 import { MEMORY_TOOLS } from "./tools.js";
 import { userName } from "./telegram.js";
@@ -1315,11 +1315,11 @@ export class Orchestrator {
   }
 
   /** Recent messages of a Slack conversation, read by any app that is in it. */
-  async slackHistory(channelId, limit, threadTs = "") {
+  async slackHistory(channelId, limit, threadTs = "", latest = "") {
     if (this.slack?.user) {
-      try { return await this.slack.fetchMessages(channelId, limit, threadTs); } catch {}
+      try { return await this.slack.fetchMessages(channelId, limit, threadTs, latest); } catch {}
     }
-    return this.skBots?.fetchMessages(channelId, limit, threadTs) || null;
+    return this.skBots?.fetchMessages(channelId, limit, threadTs, latest) || null;
   }
 
   schedule(state, delay) {
@@ -2099,8 +2099,13 @@ export class Orchestrator {
   /**
    * A Discord channel or thread an agent may write to, read with its own bot (the main one only when the
    * agent has none), as say does: by id or link, its latest messages, those before one, or around a linked one.
+   * A Slack conversation or thread is read from Slack, a Telegram chat from the archive.
    */
   async readChannel(agent, target, { limit = 30, before = "", around = "" } = {}) {
+    const value = String(target || "").trim();
+    const slack = slackLink(value) || (isSlackChannel(value) ? { ...slackIds(value), messageTs: "" } : null);
+    if (slack) return this.readSlack(agent, slack, { limit, before });
+    if (isTelegramChannel(value)) return this.readArchived(agent, value, { limit, before });
     const link = discordLink(target);
     const channelId = link?.channelId || String(target || "").trim();
     if (!/^\d{5,30}$/.test(channelId)) throw new Error("give a Discord channel or thread id, or its discord.com/channels link");
@@ -2132,6 +2137,68 @@ export class Orchestrator {
       parentName: parentId ? this.channels.listFor(agent).find((channel) => channel.id === parentId)?.name || "" : "",
       around: query.has("around") ? anchor : "", messages,
     };
+  }
+
+  /**
+   * A Slack conversation the agent is in, or a thread inside it, read from Slack: the whole thread
+   * from its first message (also what was written before the agent joined), or the channel's latest
+   * messages up to a linked one. The archive answers when Slack cannot.
+   */
+  async readSlack(agent, { channelId, threadTs = "", messageTs = "" }, { limit, before = "" } = {}) {
+    if (!this.channels.on("slack")) throw new Error("Slack is not switched on here");
+    const parentId = slackChannel(channelId);
+    const listed = this.channels.listFor(agent);
+    const parent = listed.find((channel) => channel.id === parentId);
+    if (!parent && this.dmAgentId(parentId) !== agent.id) throw new Error("channel not authorized: choose a Slack channel from list_channels or a thread under one");
+    let thread = threadTs;
+    if (!thread && messageTs) {
+      // A link to a thread's first message opens the thread; one to a plain message reads the channel around it.
+      const replies = await this.slackHistory(channelId, 2, messageTs).catch(() => null);
+      if ((replies || []).some((event) => event.ts !== messageTs && event.thread_ts === messageTs)) thread = messageTs;
+    }
+    const id = thread ? slackChannel(channelId, thread) : parentId;
+    const older = /(\d{10}\.\d{1,8})$/.exec(String(before || ""))?.[1] || "";
+    const count = Math.max(1, Math.min(100, Math.round(Number(limit) || (thread ? 100 : 30))));
+    const events = thread
+      ? await this.slackHistory(channelId, 2000, thread).catch(() => null)
+      : await this.slackHistory(channelId, older ? count + 1 : count, "", older || messageTs).catch(() => null);
+    let messages;
+    if (events) {
+      const client = this.skBots?.client(agent.id) || (this.slack?.user ? this.slack : await this.skBots?.clientIn(channelId)) || this.slack;
+      const kept = events
+        .filter((event) => (thread ? event.ts === thread || event.thread_ts === thread : !event.thread_ts || event.thread_ts === event.ts))
+        .filter((event) => !event.subtype || SLACK_SUBTYPES.has(event.subtype))
+        .filter((event) => !older || Number(event.ts) < Number(older))
+        .sort((a, b) => Number(a.ts) - Number(b.ts))
+        .slice(-count);
+      messages = [];
+      for (const event of kept) {
+        const item = await this.slackItem({ ...event, channel: channelId }, client, { images: false });
+        const speaker = this.skBots?.agentIdForBot(event.bot_id) || (this.slack?.isOwnMessage(event) ? this.store.agents().find((other) => other.name === event.username)?.id : null);
+        const who = speaker && this.store.agent(speaker);
+        messages.push(who ? { ...item, kind: "agent", agentId: who.id, authorName: who.name } : item);
+      }
+    } else {
+      const archived = this.store.recentMessages(id, 500);
+      const cut = older ? Number(older) * 1000 : Infinity;
+      messages = archived.filter((item) => item.at < cut).slice(-count);
+    }
+    const info = this.channels.info(parentId);
+    return {
+      id, name: info?.name || channelId, thread: Boolean(thread), parentId: thread ? parentId : "",
+      parentName: thread ? info?.name || "" : "", around: messageTs && !thread ? messageTs : "", messages, ...(events ? {} : { source: "archive" }),
+    };
+  }
+
+  /** A Telegram chat the agent is in: bots get no history from Telegram, so it is what Cora heard. */
+  async readArchived(agent, channelId, { limit, before = "" } = {}) {
+    const allowed = this.channels.listFor(agent).some((channel) => channel.id === channelId) || telegramBotAgent(channelId) === agent.id;
+    if (!allowed || !this.channels.isActive(channelId)) throw new Error("channel not authorized: choose a channel from list_channels");
+    const count = Math.max(1, Math.min(100, Math.round(Number(limit) || 30)));
+    const archived = this.store.recentMessages(channelId, 2000);
+    const end = before ? archived.findIndex((item) => item.id === String(before)) : -1;
+    const messages = (end >= 0 ? archived.slice(0, end) : archived).slice(-count);
+    return { id: channelId, name: this.channels.info(channelId)?.name || channelId, thread: false, parentId: "", parentName: "", around: "", messages, source: "archive" };
   }
 
   /**

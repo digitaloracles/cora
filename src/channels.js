@@ -323,6 +323,28 @@ export function discordLink(text) {
   return match ? { guildId: match[1] === "@me" ? "" : match[1], channelId: match[2], messageId: match[3] || "", url: match[0] } : null;
 }
 
+/**
+ * The conversation, message and thread of a <team>.slack.com/archives link, or null. A reply's link
+ * carries its thread in ?thread_ts=; a link to a channel alone has no message.
+ */
+export function slackLink(text) {
+  const match = /https?:\/\/[a-z0-9-]+\.(?:enterprise\.)?slack\.com\/archives\/([A-Z0-9]{5,})(?:\/p(\d{10})(\d{6}))?(\?[^\s)>|]*)?/i.exec(String(text || ""));
+  if (!match) return null;
+  const threadTs = /[?&]thread_ts=(\d{10}\.\d{1,8})/.exec(match[4] || "")?.[1] || "";
+  return { channelId: match[1].toUpperCase(), messageTs: match[2] ? `${match[2]}.${match[3]}` : "", threadTs, url: match[0] };
+}
+
+/** Every distinct Slack message or channel link in a text, in order. */
+export function slackLinks(text) {
+  const found = new Map();
+  for (const [url] of String(text || "").matchAll(/https?:\/\/[a-z0-9-]+\.(?:enterprise\.)?slack\.com\/archives\/[A-Z0-9]{5,}(?:\/p\d{16})?(?:\?[^\s)>|]*)?/gi)) {
+    const link = slackLink(url);
+    const key = link && `${link.channelId}/${link.threadTs}/${link.messageTs}`;
+    if (link && !found.has(key)) found.set(key, link);
+  }
+  return [...found.values()];
+}
+
 /** Every distinct discord.com/channels link in a text, in order. */
 export function discordLinks(text) {
   const found = new Map();
