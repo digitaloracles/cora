@@ -26,6 +26,7 @@ async function fakeServices(t) {
     const send = (status, value) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     if (req.url === "/linear") {
       linear.push({ authorization: req.headers.authorization, body });
+      if (/^Bearer lin_api_/.test(String(req.headers.authorization || ""))) return send(400, { errors: [{ message: "It looks like you're trying to use an API key as a Bearer token. Remove the Bearer prefix from the Authorization header." }] });
       const token = String(req.headers.authorization || "").replace(/^Bearer /, "");
       if ([LINEAR_APP_TOKEN, OTHER_APP_TOKEN].includes(token)) {
         const other = token === OTHER_APP_TOKEN;
@@ -34,7 +35,7 @@ async function fakeServices(t) {
         if (/commentCreate/.test(body.query)) return send(200, { data: { commentCreate: { success: true, comment: { id: "c-1", url: "https://linear.app/c", user: { name: "Cora" } } } } });
         return send(200, { data: null, errors: [{ message: "fixture: no answer" }] });
       }
-      if (token !== LINEAR_KEY) return send(401, { errors: [{ message: "Authentication required" }] });
+      if (token !== LINEAR_KEY) return send(401, { errors: [{ message: "Authentication required, not authenticated" }] });
       if (/issueCreate/.test(body.query)) return send(200, { data: { issueCreate: { success: true, issue: { identifier: "TL-7", title: body.variables?.input?.title } } } });
       if (/broken/.test(body.query)) return send(400, { errors: [{ message: "Cannot query field broken" }] });
       return send(200, { data: { viewer: { name: "Sebastiano", email: "seb@example.test", organization: { name: "Turing Labs", urlKey: "turinglabs" } } } });
@@ -105,6 +106,7 @@ test("key connectors verify the service, keep values in the vault and authorise 
   assert.equal(connected.data.record.status, "connected");
   assert.equal(connected.data.record.workspace, "turinglabs");
   assert.equal(connected.data.record.account, "Sebastiano");
+  assert.equal(f.services.linear.at(-1).authorization, LINEAR_KEY, "the personal API key is verified bare, as Linear requires");
   assert.doesNotMatch(JSON.stringify(connected.data), new RegExp(LINEAR_KEY));
   const secret = f.app.vault.list().find((item) => item.name === "CORA_LINEAR_KEY");
   assert.ok(secret, "the API key is in the vault");
@@ -148,7 +150,7 @@ test("key connectors explain a service that refuses the credential and one that 
   const f = await connectorWorld(t);
   const refused = await f.call("/api/connectors/keys/linear", { method: "POST", body: { workspace: "turinglabs", token: "lin_api_wrong" } });
   assert.equal(refused.status, 400);
-  assert.match(refused.data.error, /rifiuta questa credenziale/);
+  assert.match(refused.data.error, /Linear non ha riconosciuto la chiave.*Authentication required, not authenticated/);
   assert.equal((await f.call("/api/connectors/keys/asana", { method: "POST", body: { mode: "pat", token: "wrong" } })).status, 400);
   f.app.keyConnectors.asanaApi = "http://127.0.0.1:9/asana";
   const down = await f.call("/api/connectors/keys/asana", { method: "POST", body: { mode: "pat", token: ASANA_TOKEN } });
