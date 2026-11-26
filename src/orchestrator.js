@@ -702,7 +702,8 @@ export class Orchestrator {
   async catchUp() {
     if (this.channels.on("slack")) await this.catchUpSlack();
     if (!this.channels.on("discord")) return;
-    for (const channel of this.channels.list().filter((item) => item.kind === "discord")) {
+    // Also the channels only an agent's own bot sees: the main bot is not in them, the agents are.
+    for (const channel of this.channels.known().filter((item) => item.kind === "discord")) {
       const state = this.state(channel.id);
       if (state.running || state.nextRoundAt) continue;
       state.loaded = false;
