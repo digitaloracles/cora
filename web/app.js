@@ -3271,12 +3271,20 @@ function agentMeetPane(agent) {
           h("div", { class: "actions" }, btn("Apri desktop a schermo intero", { href: viewer + "&resize=off", target: "_blank", icon: "maximize", cls: "primary" })),
           h("div", { class: "monitor-frame" }, h("div", { class: "screen" },
             h("iframe", { title: "Accesso Google sul desktop", src: viewer + "&resize=scale" }))),
-          h("section", { class: "stack-sm", "aria-label": tr("Chat con {name}", { name: agent.name }) },
-            h("h3", {}, raw(tr("Chat con {name}", { name: agent.name }))), chatSlot),
           h("div", { class: "actions" }, btn("Ho completato la verifica", { onclick: () => request("/setup", {}) })));
       }
       body.append(meetSetupChecklist(data.setup, verification));
       if (chatSlot) {
+        const title = tr("Chat con {name}", { name: agent.name });
+        const launcher = h("summary", { class: "btn primary" }, icon("chat"), h("span", {}, raw(title)));
+        const close = () => { widget.open = false; launcher.focus({ preventScroll: true }); };
+        const widget = h("details", { class: "meet-chat-widget", onkeydown: (event) => {
+          if (event.key === "Escape" && widget.open) { event.preventDefault(); close(); }
+        } }, launcher,
+          h("section", { class: "meet-chat-window", "aria-label": title },
+            h("header", {}, h("strong", {}, raw(title)), btn("", { icon: "close", title: "Chiudi", cls: "sm ghost", onclick: close })),
+            chatSlot));
+        body.append(widget);
         const isCurrent = () => chatSlot.isConnected && route()[3] === "meet";
         void chatPanel(`web-${agent.id}`, { placeholder: tr("Scrivi a {name}…", { name: agent.name }), isCurrent }).then((chat) => {
           if (chat && isCurrent()) chatSlot.replaceChildren(chat);
