@@ -193,6 +193,12 @@ function discordConversationMessage(raw, archived = null) {
       || Boolean(archived?.content?.trim()));
 }
 
+/** A person's message that reached a bot without Message Content: no words, nothing attached, yet it may name an agent. */
+function blankHumanMessage(raw) {
+  return (raw.type === undefined || raw.type === 0 || raw.type === 19) && !raw.author?.bot && !raw.webhook_id
+    && !raw.content?.trim() && !raw.attachments?.length && !raw.embeds?.length && !raw.sticker_items?.length;
+}
+
 function describeMessage(raw, nameFor = () => null) {
   const parts = [];
   if (raw.content) {
@@ -503,8 +509,9 @@ export class Orchestrator {
           // A voice message comes back as the words it was heard as, not as its attachment.
           const items = [];
           let blank = 0;
-          for (const raw of messages) {
+          for (let raw of messages) {
             const kept = archived.get(raw.id);
+            if (!kept && blankHumanMessage(raw)) raw = await this.readAsMentioned(raw, state.id) || raw;
             if (!discordConversationMessage(raw, kept)) continue;
             if (raw.id === exclude || this.arriving.has(raw.id)) continue;
             // A bot without Message Content reads other people's messages as empty: the archive keeps their words.
@@ -527,6 +534,30 @@ export class Orchestrator {
     await state.loading;
   }
 
+  /** The one agent a person's message names, when that agent has a bot of its own to read it with. */
+  mentionedAgent(raw) {
+    const targets = (raw.mentions || []).map((user) => this.bots?.agentIdForUser(user.id)).filter(Boolean);
+    const agent = !raw.author?.bot && targets.length === 1 ? this.store.agent(targets[0]) : null;
+    return agent?.enabled ? agent : null;
+  }
+
+  /**
+   * Discord gives a bot without Message Content the words of a message only when it names that bot:
+   * read a blank message that names an agent again with that agent's own bot, which sees its words.
+   */
+  async readAsMentioned(raw, channelId) {
+    const agent = this.mentionedAgent(raw);
+    const own = agent && this.bots?.client(agent.id);
+    if (!own) return null;
+    try {
+      const message = await own.request("GET", `/channels/${channelId}/messages/${raw.id}`);
+      return message?.content?.trim() ? { ...message, guild_id: message.guild_id || raw.guild_id } : null;
+    } catch (error) {
+      if (error.status !== 403 && error.status !== 404) this.log({ type: "warning", channelId, text: `rilettura del messaggio ${raw.id}: ${error.message}` });
+      return null;
+    }
+  }
+
   async attachImages(item, raw) {
     const images = [];
     for (const attachment of raw.attachments || []) {
@@ -545,15 +576,16 @@ export class Orchestrator {
     const guildId = raw.guild_id || this.channels.discordInfo(raw.channel_id)?.guildId;
     if (!guildId || !this.allowedGuild(guildId)) return;
     // Only real messages and replies: joins, pins, boosts and the like have no text for the agents.
-    if (!discordConversationMessage(raw)) return;
+    // A blank one that names an agent is a message this bot may not read: the named agent's bot reads it below.
+    const target = this.mentionedAgent(raw);
+    const unreadable = blankHumanMessage(raw) && target && viaAgentId !== target.id;
+    if (!discordConversationMessage(raw) && !unreadable) return;
     if (this.discord.isOwnMessage(raw) || this.bots?.isOwnMessage(raw)) return;
     // What an agent's own bot posts is already in the history (Cora posted it); the gateway echo can arrive first.
     if (raw.author?.id && this.bots?.agentIdForUser(raw.author.id)) return;
     const state = this.state(raw.channel_id);
     if (state.seen.has(raw.id) || this.store.hasMessage(raw.id) || this.arriving.has(raw.id)) return;
-    const targets = (raw.mentions || []).map((user) => this.bots?.agentIdForUser(user.id)).filter(Boolean);
-    const target = !raw.author?.bot && targets.length === 1 ? this.store.agent(targets[0]) : null;
-    if (target?.enabled && viaAgentId !== target.id) {
+    if (target && viaAgentId !== target.id) {
       // A different gateway is a wake-up signal. The addressed bot reads the message itself.
       // Its own gateway delivery can still win while the REST read is in flight.
       if (this.readingMentions.has(raw.id)) return;
@@ -2032,7 +2064,9 @@ export class Orchestrator {
     const raw = await client.request("GET", `/channels/${channelId}/messages?${query}`);
     // A bot without Message Content reads other people's messages as empty: the archive keeps their words.
     const archived = new Map(this.store.recentMessages(channelId, 500).map((item) => [item.id, item]));
-    const messages = (Array.isArray(raw) ? raw : []).slice().sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+    const read = await Promise.all((Array.isArray(raw) ? raw : []).map(async (message) =>
+      (!archived.has(message.id) && blankHumanMessage(message) && await this.readAsMentioned(message, channelId)) || message));
+    const messages = read.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
       .filter((message) => discordConversationMessage(message, archived.get(message.id)))
       .map((message) => {
         const item = this.toItem(message);

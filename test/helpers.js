@@ -114,6 +114,8 @@ export async function fakeDiscord() {
     webhookAllowed: true,
     // channel id -> the only bot token allowed to read it (a private channel).
     privateTo: new Map(),
+    // Bot tokens without Message Content: like Discord, they read only the words of messages that name them.
+    contentBlind: new Set(),
     deniedPosts: new Map(),
     botUsers: new Map(),
     intentPatches: [],
@@ -155,7 +157,9 @@ export async function fakeDiscord() {
       const asking = String(req.headers.authorization || "").replace(/^Bot /, "");
       state.reads.push({ channel: match[1], token: asking, query: Object.fromEntries(url.searchParams) });
       if (only && only !== asking) return json(res, 403, { message: "Missing Access", code: 50001 });
-      const messages = state.history.get(match[1]) || [];
+      const reader = state.botUsers.get(asking)?.id || (asking === MAIN_TOKEN ? BOT : "");
+      const messages = (state.history.get(match[1]) || []).map((item) => state.contentBlind.has(asking) && item.author?.id !== reader
+        && !(item.mentions || []).some((user) => user.id === reader) ? { ...item, content: "" } : item);
       if (match[2]) {
         const message = messages.find((item) => item.id === match[2]);
         return message ? json(res, 200, message) : json(res, 404, { message: "Unknown Message" });
