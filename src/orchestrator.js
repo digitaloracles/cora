@@ -34,6 +34,8 @@ const SLACK_SUBTYPES = new Set(["bot_message", "file_share", "me_message", "thre
 
 const isAudio = (type) => String(type || "").startsWith("audio/");
 const slackAudio = (file) => isAudio(file.mimetype) || file.subtype === "slack_audio" || file.media_display_type === "audio";
+const slackFileLabel = (file) => String(file.mimetype || "").startsWith("image/") ? "[immagine]" : slackAudio(file) ? "[messaggio vocale]" : `[allegato: ${file.name || "file"}]`;
+const slackShares = (event) => (event.attachments || []).filter((item) => item?.is_share || item?.is_msg_unfurl);
 
 function normalize(text) {
   return String(text || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -487,11 +489,16 @@ export class Orchestrator {
   async ensureHistory(state, { exclude = null } = {}) {
     if (state.loaded) return;
     if (isWebRoom(state.id) || isTelegramChannel(state.id) || isSlackChannel(state.id) || this.dmAgentId(state.id)) {
-      const existing = state.history;
-      state.history = [];
-      state.seen = new Set();
-      for (const item of [...this.store.recentMessages(state.id, this.store.settings.historySize), ...existing]) this.push(state, item);
-      state.loaded = true;
+      if (!state.loading) {
+        const existing = state.history;
+        state.history = [];
+        state.seen = new Set();
+        for (const item of [...this.store.recentMessages(state.id, this.store.settings.historySize), ...existing]) this.push(state, item);
+        state.loading = this.slackBackfill(state, exclude)
+          .catch((error) => this.log({ type: "error", channelId: state.id, text: `cronologia Slack: ${error.message}` }))
+          .finally(() => { state.loaded = true; });
+      }
+      await state.loading;
       return;
     }
     if (!state.loading) {
@@ -532,6 +539,36 @@ export class Orchestrator {
         .finally(() => { state.loaded = true; });
     }
     await state.loading;
+  }
+
+  /**
+   * The archive holds only what Cora heard: a thread written before an agent's app was
+   * in the channel, or while Cora was away, is read from Slack once, as context only.
+   */
+  async slackBackfill(state, exclude = null) {
+    const slack = slackIds(state.id);
+    if (!slack || slack.channelId.startsWith("D") || !this.channels.on("slack")) return;
+    const events = await this.slackHistory(slack.channelId, this.store.settings.historySize, slack.threadTs);
+    if (!events?.length) return;
+    const client = this.slack?.user ? this.slack : await this.skBots?.clientIn(slack.channelId) || this.slack;
+    if (!client) return;
+    const skip = exclude instanceof Set ? exclude : new Set(exclude ? [exclude] : []);
+    let added = 0;
+    for (const event of events) {
+      if (slack.threadTs ? event.thread_ts !== slack.threadTs && event.ts !== slack.threadTs : event.thread_ts && event.thread_ts !== event.ts) continue;
+      if (event.subtype && !SLACK_SUBTYPES.has(event.subtype)) continue;
+      if (this.skBots?.isOwnMessage(event) || this.slack?.isOwnMessage(event) || this.skBots?.agentIdForBot(event.bot_id)) continue;
+      const id = `sl_${slack.channelId}_${event.ts}`;
+      if (skip.has(id) || this.arriving.has(id) || state.seen.has(id)) continue;
+      // A thread's first message is archived with the channel: here it is context only.
+      const opening = slack.threadTs && event.ts === slack.threadTs;
+      if (!opening && this.store.hasMessage(id)) continue;
+      const item = await this.slackItem({ ...event, channel: slack.channelId }, client, { images: false });
+      if (!this.push(state, item)) continue;
+      if (!this.store.hasMessage(id)) this.store.appendArchive(state.id, item);
+      added += 1;
+    }
+    if (added) state.history.sort((a, b) => a.at - b.at);
   }
 
   /** The one agent a person's message names, when that agent has a bot of its own to read it with. */
@@ -1125,28 +1162,41 @@ export class Orchestrator {
   }
 
   /** Slack writes ids where people read names: mentions, channels and links come back as words. */
-  async slackText(event, client) {
-    const parts = [];
-    let text = String(event.text || "");
+  async slackWords(raw, client) {
+    let text = String(raw || "");
     for (const [match, userId] of [...text.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)]) {
       const agentId = this.skBots?.agentIdForUser(userId);
       const name = agentId ? this.store.agent(agentId)?.name : await client.userName(userId);
       if (name && !agentId) this.learnPerson("slack", userId, [name]);
       if (name) text = text.split(match).join(`@${name}`);
     }
-    text = text
+    return text
       .replace(/<#[A-Z0-9]+\|([^>]+)>/g, "#$1")
       .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, "$2 ($1)")
       .replace(/<(https?:\/\/[^>]+)>/g, "$1")
-      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-    if (text.trim()) parts.push(text.trim());
-    for (const file of event.files || []) {
-      parts.push(String(file.mimetype || "").startsWith("image/") ? "[immagine]" : slackAudio(file) ? "[messaggio vocale]" : `[allegato: ${file.name || "file"}]`);
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+      .trim();
+  }
+
+  /**
+   * A forwarded message, or a Slack message link Slack unfolds, has no text of its own:
+   * its words, author and files travel in an attachment.
+   */
+  async slackText(event, client) {
+    const parts = [];
+    const text = await this.slackWords(event.text, client);
+    if (text) parts.push(text);
+    for (const file of event.files || []) parts.push(slackFileLabel(file));
+    for (const shared of slackShares(event)) {
+      const words = await this.slackWords(shared.text, client) || (shared.files?.length ? "" : String(shared.fallback || "").trim());
+      const body = [words, ...(shared.files || []).map(slackFileLabel)].filter(Boolean).join(" ");
+      const author = shared.author_name || shared.author_subname || "";
+      parts.push(`[messaggio inoltrato${author ? ` di ${author}` : ""}: ${body || "senza testo"}]`);
     }
     return parts.join(" ").slice(0, 3000) || "(messaggio vuoto)";
   }
 
-  async slackItem(event, client) {
+  async slackItem(event, client, { images = true } = {}) {
     const bot = Boolean(event.bot_id || event.subtype === "bot_message");
     const item = {
       id: `sl_${event.channel}_${event.ts}`,
@@ -1157,8 +1207,9 @@ export class Orchestrator {
       agentId: null,
       content: await this.slackText(event, client),
     };
-    if ((item.kind === "owner" || item.kind === "human") && event.files?.length) {
-      const picture = event.files.find((file) => String(file.mimetype || "").startsWith("image/") && (!file.size || file.size <= IMAGE_LIMIT_BYTES));
+    const files = [...(event.files || []), ...slackShares(event).flatMap((shared) => shared.files || [])];
+    if (images && (item.kind === "owner" || item.kind === "human") && files.length) {
+      const picture = files.find((file) => String(file.mimetype || "").startsWith("image/") && (!file.size || file.size <= IMAGE_LIMIT_BYTES));
       const data = picture && await client.download(picture, IMAGE_LIMIT_BYTES).catch(() => null);
       if (data) item.images = [data.toString("base64")];
     }
@@ -1193,7 +1244,7 @@ export class Orchestrator {
     // Every app in the channel hears the same message: the first delivery wins.
     if (state.seen.has(id) || this.store.hasMessage(id)) return;
     await this.arrive(id, async () => {
-      await this.ensureHistory(state);
+      await this.ensureHistory(state, { exclude: id });
       await this.claimSlackOwner(event, client);
       const item = await this.slackItem(event, client);
       await this.hearSlack(state, item, event, client);
@@ -1214,7 +1265,7 @@ export class Orchestrator {
     this.dmAgent.set(id, agentId);
     const state = this.state(id);
     if (state.seen.has(`sl_${event.channel}_${event.ts}`) || this.store.hasMessage(`sl_${event.channel}_${event.ts}`)) return;
-    await this.ensureHistory(state);
+    await this.ensureHistory(state, { exclude: `sl_${event.channel}_${event.ts}` });
     const item = await this.slackItem(event, client);
     if (item.kind !== "owner" && item.kind !== "human") return;
     await this.hearSlack(state, item, event, client);
@@ -1247,7 +1298,8 @@ export class Orchestrator {
   async catchUpSlackConversation(id, channelId, events, client) {
     const state = this.state(id);
     if (state.running || state.nextRoundAt) return;
-    await this.ensureHistory(state);
+    // What is being caught up must stay new here, so that someone answers it.
+    await this.ensureHistory(state, { exclude: new Set(events.map((event) => `sl_${channelId}_${event.ts}`)) });
     const missed = [];
     for (const event of events) {
       if (event.subtype && !SLACK_SUBTYPES.has(event.subtype)) continue;

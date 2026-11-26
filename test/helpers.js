@@ -1343,11 +1343,12 @@ export async function fakeSlack() {
       return { id: `F${state.files.size}${name.length}`, name, mimetype, size: data.length, url_private: `http://127.0.0.1:${port}/files/${name}`, ...extra };
     },
     /** Deliver an event to every app in that channel, the way Slack does. */
-    say({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, threadTs = "", files = null, botId = "", username = "" }) {
+    say({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, threadTs = "", files = null, botId = "", username = "", attachments = null }) {
       const event = {
         type: "message", channel, user: botId ? undefined : user, text, ts: ts(),
         channel_type: channel.startsWith("D") ? "im" : "channel",
       };
+      if (attachments) event.attachments = attachments;
       if (threadTs) {
         event.thread_ts = threadTs;
         markReply(channel, threadTs, event.ts);
@@ -1373,8 +1374,9 @@ export async function fakeSlack() {
       return event;
     },
     /** A message written while Cora was down: in the archive, never delivered. */
-    archive({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, at = null, threadTs = "" }) {
+    archive({ text, channel = SLACK_CHANNEL, user = SLACK_OWNER, at = null, threadTs = "", attachments = null }) {
       const event = { type: "message", channel, user, text, ts: at || ts(), channel_type: "channel" };
+      if (attachments) event.attachments = attachments;
       if (threadTs) {
         event.thread_ts = threadTs;
         markReply(channel, threadTs, event.ts);

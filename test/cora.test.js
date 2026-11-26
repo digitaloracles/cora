@@ -8898,6 +8898,54 @@ describe("agents in Slack", () => {
     assert.equal(slack.state.posts.length, 0, "a second reconnect does not answer again");
   });
 
+  test("a forwarded Slack message reaches the agents with its author, its words and its files", async () => {
+    slack.state.posts.length = 0;
+    const share = (text, files = []) => ({ is_share: true, is_msg_unfurl: true, author_name: "Gianmarco Valeri", text, files, fallback: `[November 25th, 2026 6:10 PM] gvaleri: ${text}` });
+    const forwarded = slack.say({ text: "", attachments: [share("", [{ mimetype: "image/png", name: "image.png" }])] });
+    const id = `sl_${SLACK_CHANNEL}_${forwarded.ts}`;
+    await waitFor(() => app.store.hasMessage(id), { what: "the forward archived" });
+    const kept = app.store.recentMessages(`sl:${SLACK_CHANNEL}`, 50).find((item) => item.id === id);
+    assert.equal(kept.content, "[messaggio inoltrato di Gianmarco Valeri: [immagine]]");
+    await quiet();
+
+    slack.state.posts.length = 0;
+    let seen = "";
+    replies.set("Silvia", (body) => {
+      seen = JSON.stringify(body.messages);
+      return { content: "Visto." };
+    });
+    slack.say({ text: "@Silvia guarda questo", attachments: [share("qui in mobile il logo <@U0000000101> resta scuro &amp; piccolo")] });
+    await waitFor(() => slack.postsIn(SLACK_CHANNEL)[0], { what: "Silvia's answer" });
+    assert.match(seen, /@Silvia guarda questo \[messaggio inoltrato di Gianmarco Valeri: qui in mobile il logo @Silvia resta scuro & piccolo\]/);
+    assert.match(seen, /messaggio inoltrato di Gianmarco Valeri: \[immagine\]/, "the earlier forward is in the history");
+    assert.doesNotMatch(seen, /messaggio vuoto/);
+    await quiet();
+  });
+
+  test("an agent called into a Slack thread written before Cora heard it reads the thread from Slack, once", async () => {
+    slack.state.posts.length = 0;
+    const parent = slack.archive({ text: "feedback prismanews", user: SLACK_STRANGER });
+    const early = slack.archive({ text: "il logo resta scuro", user: SLACK_STRANGER, threadTs: parent.ts });
+    slack.archive({ text: "", user: SLACK_STRANGER, threadTs: parent.ts, attachments: [{ is_share: true, author_name: "Gianmarco Valeri", text: "manca il tasto indietro" }] });
+    let seen = "";
+    replies.set("Silvia", (body) => {
+      seen = JSON.stringify(body.messages);
+      return { content: "Li vedo tutti." };
+    });
+    const asked = slack.say({ text: "@Silvia crea le issue da questi feedback", threadTs: parent.ts });
+    const reply = await waitFor(() => slack.postsIn(SLACK_CHANNEL)[0], { what: "Silvia in the thread" });
+    assert.equal(reply.thread_ts, parent.ts);
+    assert.match(seen, /feedback prismanews/, "the thread's first message");
+    assert.match(seen, /il logo resta scuro/);
+    assert.match(seen, /messaggio inoltrato di Gianmarco Valeri: manca il tasto indietro/);
+    assert.ok(seen.indexOf("il logo resta scuro") < seen.lastIndexOf("crea le issue"), "the old replies come before the request");
+    const thread = `sl:${SLACK_CHANNEL}:${parent.ts}`;
+    assert.ok(app.store.recentMessages(thread, 50).some((item) => item.id === `sl_${SLACK_CHANNEL}_${early.ts}`), "the reply read from Slack is archived in the thread");
+    assert.equal(app.store.recentMessages(thread, 50).filter((item) => item.id === `sl_${SLACK_CHANNEL}_${asked.ts}`).length, 1, "the request is kept once");
+    assert.equal(slack.postsIn(SLACK_CHANNEL).length, 1, "one answer");
+    await quiet();
+  });
+
   test("in a channel only an agent's app is in, a thread opened from the panel and Cora's own words go through that app", async () => {
     const ALONE = "C0ALONE0001";
     slack.state.channels.set(ALONE, { id: ALONE, name: "testnew", is_private: true });
