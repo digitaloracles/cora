@@ -2835,6 +2835,7 @@ a.thread-dependency-node:hover, a.thread-dependency-node:focus-visible { border-
 .thread-plan-mark { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--line-strong); border-radius: 50%; font: 11px "DM Mono", monospace; color: var(--muted); }
 .thread-plan-mark .ico { width: 14px; height: 14px; }
 .meet-step-verification { grid-column: 1 / -1; min-width: 0; padding: 8px; }
+.meet-step-chat .chat-log { min-height: 9rem; max-height: min(22rem, 42vh); }
 .meet-step-verification p { margin: 0; overflow-wrap: anywhere; }
 .meet-step-state { display: inline-flex; align-items: center; gap: 4px; max-width: 11ch; color: var(--muted); text-align: end; }
 .meet-step-state .ico { width: 14px; height: 14px; color: var(--ok-text); }
