@@ -14,6 +14,7 @@ const ACTIVE = new Set(["starting", "waiting", "joined", "transcribing"]);
 const FOLDER = /^meetings\/[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){0,3}$/;
 const AUDIO_LIMIT = 300 * 1024 * 1024;
 const KEEP = 12;
+const GOOGLE_ACTIVITY = new Set(["account-found", "registration", "email-check", "google-accepted"]);
 const SETUP = new Set(["running", "needs-human", "done", "failed"]);
 
 /** A password Google accepts: letters, digits and symbols, never starting with a dash. */
@@ -22,6 +23,7 @@ const googlePassword = () => `Cm${randomBytes(15).toString("base64url")}#7`;
 /** What the agent does in the Meet browser after meet_setup start, in its own hands. */
 const setupSteps = ({ email, secret, created, name }) => [
   "The Meet browser window on your desktop shows Google sign-in. Work only in that window, with screenshot and mouse/keyboard; never drive it over its debugging port and never open another browser for this.",
+  "Report progress with meet_setup: use step progress and activity account-found or registration when Google shows that route; email-check when Google requests an email code; google-accepted when Google accepts sign-in. Report only observed events, without passwords or codes.",
   `Type ${email} and continue.`,
   `If Google finds the account, enter the password and go on. If it cannot find it, choose Create account, For my personal use: first name ${name}, last name Cora; for birthday and gender use what the owner set for you, otherwise 1 January 2000 and Rather not say. At the address step choose Use your existing email and type ${email}.`,
   "If Google asks to verify it's you, choose the verification code sent to your own address. Every code arrives in your mailbox: find the message with ambox inbox, click the code field, then type the code without showing it: ambox read <message-id> | grep -oE '\\b[0-9]{6}\\b' | head -1 | xargs -r xdotool type --delay 60 --. Never print, repeat or post a code.",
@@ -230,8 +232,9 @@ export class Meet {
     if (!setup) return null;
     const routine = config.setupRoutineId && this.store.routine(config.setupRoutineId, { archived: true });
     const pending = routine?.enabled && !routine.archivedAt && [null, "running", "skipped"].includes(routine.lastStatus);
-    if (setup.status === "running" && config.setupRoutineId && !pending) return { status: "failed" };
-    return { status: setup.status, note: setup.note || "" };
+    const status = setup.status === "running" && config.setupRoutineId && !pending ? "failed" : setup.status;
+    const phase = setup.phase || (setup.startedAt ? "signin" : routine?.lastRunAt && routine.lastStatus !== "skipped" ? "inspect" : "queue");
+    return { status, phase, signedInAlready: status === "done" && !setup.startedAt, canStop: Boolean(config.setupRoutineId && routine && !routine.archivedAt), activities: setup.activities || [], note: setup.note || "", waitingForTurn: routine?.lastStatus === "skipped" };
   }
 
   async queueSetup(agent) {
@@ -246,11 +249,30 @@ export class Meet {
       const runAt = new Date().toISOString();
       const input = {
         kind: "reminder", enabled: true, runAt, name: "Google Meet · account", channelId: privateRoom(agent.id),
-        prompt: "Connect Google Meet using your own currently configured mailbox. First use meet_setup check to verify the signed-in identity. If setup is required, use meet_setup start and follow its instructions to sign in or register using that mailbox. Reuse any existing account and progress. Obtain mailbox verification yourself. Only request a specific action if Google requires a human. Never include passwords or verification codes in chat. Finish only when meet_setup check confirms the expected address. Report the outcome here.",
+        prompt: "Connect Google Meet using your own currently configured mailbox. First use meet_setup check to verify the signed-in identity. If setup is required, continue from the current Google screen when resuming a challenge, or use meet_setup start to open sign-in. Follow Google’s steps to sign in or register using that mailbox. Reuse any existing account and progress. Obtain mailbox verification yourself. Only request a specific action if Google requires a human. Never include passwords or verification codes in chat. Finish only when meet_setup check confirms the expected address. Report the outcome here.",
       };
       const routine = existing ? this.store.updateRoutine(existing.id, input) : this.store.createRoutine(agent.id, input);
-      this.save(agent.id, { setupRoutineId: routine.id, setup: { ...config.setup, email: mailbox.email, note: "", status: "running" } });
+      this.save(agent.id, { setupRoutineId: routine.id, setup: { ...(existing ? config.setup : {}), email: mailbox.email, note: "", status: "running" } });
     });
+  }
+
+  stopSetup(agent, orchestrator) {
+    const config = this.config(agent.id);
+    if (config.setup?.status === "stopped") return;
+    if (!["running", "needs-human"].includes(config.setup?.status)) throw new MeetError("Nessun collegamento in corso.", 409);
+    const id = config.setupRoutineId;
+    const channel = privateRoom(agent.id);
+    const routine = id && this.store.routine(id);
+    if (!routine || routine.agentId !== agent.id || routine.channelId !== channel) throw new MeetError("Comando non disponibile.", 409);
+    const phase = this.setupView(config).phase;
+    this.store.tx(() => {
+      this.store.deleteRoutine(id, "meet-setup-stopped");
+      this.save(agent.id, { setupRoutineId: null, setup: { ...config.setup, phase, status: "stopped", note: "" } });
+    });
+    if (orchestrator.routineRuns.has(id) && this.store.activeThreadSession(agent.id, channel)?.kind === "reminder") {
+      orchestrator.brain.activeTurns.get(channel, agent.id)?.stop();
+      orchestrator.sessions.stop(agent.id, channel);
+    }
   }
 
   setEnabled(agent, enabled) {
@@ -317,9 +339,19 @@ export class Meet {
    * password in the vault and the sign-in page, the agent does the rest on its desktop,
    * check confirms the account the browser holds is the agent's own address.
    */
-  async setup(agent, { step = "start", email = "", secret = "", note = "", vault = null } = {}) {
+  async setup(agent, { step = "start", email = "", secret = "", note = "", activity = "", routineId = null, vault = null } = {}) {
     const current = this.config(agent.id).setup || {};
     const expected = String(email || current.email || "").trim().toLowerCase();
+    const ensureCurrent = () => {
+      if (routineId && this.config(agent.id).setupRoutineId !== routineId) throw new MeetError("This setup command was stopped.", 409);
+    };
+    ensureCurrent();
+    if (step === "progress") {
+      if (current.status !== "running" || !GOOGLE_ACTIVITY.has(activity)) throw new MeetError("Report an observed Google sign-in activity.", 400);
+      const activities = [...new Set([...(current.activities || []), activity])];
+      this.recordSetup(agent, { phase: activity === "google-accepted" ? "verify" : "signin", activities });
+      return { status: "running", activity };
+    }
     if (step === "needs-human" || step === "failed") {
       const text = String(note || "").trim().slice(0, 300);
       if (!text) throw new MeetError("Say in one line what is missing.", 400);
@@ -329,16 +361,20 @@ export class Meet {
     }
     if (!expected) throw new MeetError("You have no mailbox of your own, and the Google account uses it: ask the owner to set up your email.", 409);
     if (step === "check") {
+      const phase = current.startedAt || current.phase === "verify" ? "verify" : "inspect";
+      this.recordSetup(agent, { phase });
       const account = (await this.check(agent)).account;
+      ensureCurrent();
       const done = Boolean(account?.email && account.email.toLowerCase() === expected);
       const setup = this.recordSetup(agent, done ? { status: "done", email: expected, note: "", doneAt: Date.now() } : { status: SETUP.has(current.status) && current.status !== "done" ? current.status : "running", email: expected });
       if (done) this.log({ type: "meet", agentId: agent.id, text: `${agent.name} ha collegato ${expected} a Google Meet` });
       return { status: setup.status, account: account?.email || null, expected, ...(done ? {} : { next: account?.email ? `The Meet browser holds ${account.email}, not ${expected}.` : "The Meet browser is not signed in yet: finish Google's steps, then check again." }) };
     }
-    if (step !== "start") throw new MeetError("step is start, check, needs-human or failed.", 400);
+    if (step !== "start") throw new MeetError("step is start, progress, check, needs-human or failed.", 400);
     await this.desk(agent);
     if (this.session(agent.id) || this.starting.has(agent.id)) throw new MeetError("You are in a call or joining one: leave it first.", 409);
     const signed = (await this.check(agent)).account;
+    ensureCurrent();
     if (signed?.email?.toLowerCase() === expected) {
       this.recordSetup(agent, { status: "done", email: expected, note: "", doneAt: Date.now() });
       return { status: "done", account: signed.email, expected };
@@ -353,8 +389,10 @@ export class Meet {
     const created = !this.store.vaultSecret(name);
     if (created) vault.put({ name, value: googlePassword(), description: `Password Google di ${agent.name} (${expected}) per Google Meet`, agents: [agent.id], by: { kind: "agent", id: agent.id, name: agent.name }, source: "meet" });
     await vault.importInto(agent, name);
+    ensureCurrent();
     await this.boxes.meet(agent.id, ["signin"]);
-    this.recordSetup(agent, { status: "running", email: expected, secret: name, note: "", startedAt: Date.now(), doneAt: 0 });
+    ensureCurrent();
+    this.recordSetup(agent, { phase: "signin", status: "running", email: expected, secret: name, note: "", startedAt: Date.now(), doneAt: 0 });
     this.log({ type: "meet", agentId: agent.id, text: `${agent.name} collega ${expected} a Google Meet` });
     return { status: "running", email: expected, secret: name, newPassword: created, steps: setupSteps({ email: expected, secret: name, created, name: agent.name }) };
   }

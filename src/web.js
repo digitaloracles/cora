@@ -1833,7 +1833,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
     }
 
-    match = /^\/api\/agents\/([\w-]+)\/meet(?:\/(setup|signin|account|signout|join|leave|retry))?$/.exec(path);
+    match = /^\/api\/agents\/([\w-]+)\/meet(?:\/(setup|stop-setup|signin|account|signout|join|leave|retry))?$/.exec(path);
     if (match && meet) {
       const agent = store.agent(match[1]);
       if (!agent) throw new HttpError(404, "Agente non trovato.");
@@ -1847,6 +1847,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       } else if (method === "POST" && action) {
         const body = await readJson(req, 4096);
         if (action === "setup") await meet.queueSetup(agent);
+        if (action === "stop-setup") meet.stopSetup(agent, orchestrator);
         if (action === "signin") await meet.signIn(agent);
         if (action === "account") await meet.check(agent);
         if (action === "signout") await meet.signOut(agent);

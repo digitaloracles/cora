@@ -135,6 +135,7 @@ export const TOOLS = [
   T("agents", "cora_agent_meet_get", "Read Google Meet", "GET", "/api/agents/{agent_id}/meet", "Read this agent's Google Meet settings, writable folders and recent calls.", { params: AGENT }),
   T("agents", "cora_agent_meet_set", "Enable Google Meet", "PUT", "/api/agents/{agent_id}/meet", "Change whether this agent can attend Google Meet calls on its desktop.", { params: AGENT, body: { enabled: bool("Enable or disable Meet.") }, required: ["enabled"] }),
   T("agents", "cora_agent_meet_setup", "Connect the agent’s own Google account", "POST", "/api/agents/{agent_id}/meet/setup", "Queue or resume a one-time setup command in the agent’s private conversation. Read its progress with cora_agent_meet_get.", { params: AGENT }),
+  T("agents", "cora_agent_meet_stop_setup", "Stop Google Meet setup", "POST", "/api/agents/{agent_id}/meet/stop-setup", "Stop only this agent’s queued or running Meet setup command.", { params: AGENT }),
   T("agents", "cora_agent_meet_signin", "Open Google sign-in", "POST", "/api/agents/{agent_id}/meet/signin", "Open Google sign-in on this agent’s desktop for the owner to complete.", { params: AGENT }),
   T("agents", "cora_agent_meet_account", "Check the Google account", "POST", "/api/agents/{agent_id}/meet/account", "Check which Google account is signed in on the agent's Meet desktop.", { params: AGENT }),
   T("agents", "cora_agent_meet_signout", "Sign out of Google Meet", "POST", "/api/agents/{agent_id}/meet/signout", "Sign out of the Google profile used for calls by this agent.", { params: AGENT }),

@@ -3169,28 +3169,74 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
   return controls;
 }
 
+function meetSetupChecklist(setup, verification) {
+  const phases = [
+    ["queue", "Comando all’agente", setup.waitingForTurn ? "La chat privata è occupata. Il comando riparte quando si libera." : "In coda nella chat privata dell’agente."],
+    ["inspect", "Controllo del browser Meet", "L’agente controlla quale account è aperto nel browser Meet."],
+    ["signin", "Accesso con la mail dell’agente", "Il browser è aperto sull’accesso Google."],
+    ["verify", "Conferma dell’indirizzo su Meet", "L’agente confronta l’indirizzo nel browser con la propria email."],
+  ];
+  const activityLabels = {
+    "account-found": "Google ha riconosciuto l’account.",
+    registration: "Google ha aperto la registrazione con l’indirizzo esistente.",
+    "email-check": "Google richiede un codice inviato alla casella dell’agente.",
+    "google-accepted": "Google ha accettato l’accesso.",
+  };
+  const complete = setup.status === "done";
+  const phase = Math.max(0, phases.findIndex(([key]) => key === setup.phase));
+  const activities = (setup.activities || []).map((key) => activityLabels[key]).filter(Boolean);
+  return h("ol", { class: "thread-plan-checklist", "aria-label": "Attività del collegamento" }, phases.map(([key, title, description], index) => {
+    const done = complete || index < phase;
+    const current = !complete && index === phase;
+    const state = done ? (key === "signin" && setup.signedInAlready ? "Già collegato" : "Completato") : !current ? "Da fare" : ({
+      "needs-human": "Serve il tuo intervento", stopped: "Fermo", failed: "Collegamento interrotto",
+    }[setup.status] || "In corso");
+    const details = key === "signin" && activities.length ? activities : current && setup.status === "running" ? [description] : [];
+    return h("li", { class: `thread-plan-step${done ? " done" : current ? " next" : ""}`, "aria-current": current ? "step" : null },
+      h("span", { class: "thread-plan-mark", "aria-hidden": "true" }, raw(String(index + 1))),
+      h("div", { class: "thread-plan-text" }, h("strong", {}, title), details.map((text) => h("small", { class: "thread-dependency-note" }, text))),
+      h("small", { class: "meet-step-state" }, done ? icon("check") : null, state), current ? verification : null);
+  }));
+}
+
 function agentMeetPane(agent) {
   const endpoint = `/api/agents/${agent.id}/meet`;
   const body = h("div", { class: "stack" });
   const message = h("p", { class: "muted", role: "status", "aria-live": "polite" });
   const node = panel({ icon: "mic", title: "Google Meet" }, body, message);
-  let busy = false, timer, linkValue = "", folderValue = "", languageValue = "";
+  let busy = false, pollInFlight = false, afterPoll, timer, lastSetupView = "", linkValue = "", folderValue = "", languageValue = "";
   const phases = { starting: "Ingresso in corso", waiting: "In attesa di ammissione", joined: "In riunione", transcribing: "Trascrizione in corso", ended: "Riunione conclusa", failed: "Ingresso non riuscito" };
   async function request(action = "", payload, method = "POST") {
-    if (busy) return;
+    if (busy) {
+      if (pollInFlight && method !== "GET") afterPoll = () => request(action, payload, method);
+      return;
+    }
     busy = true;
     clearTimeout(timer);
-    body.inert = true;
-    message.textContent = tr("Caricamento…");
+    const refresh = method === "GET" && body.childElementCount > 0;
+    pollInFlight = refresh;
+    if (!refresh) { body.inert = true; message.textContent = tr("Caricamento…"); }
     try {
       const data = await api(endpoint + action, { method, body: payload });
       if (action === "/join") linkValue = "";
-      render(data);
+      const snapshot = JSON.stringify(data);
+      if (refresh && data.setup?.status === "running" && snapshot === lastSetupView) poll();
+      else render(data);
+      lastSetupView = snapshot;
       message.textContent = "";
     } catch (error) {
       message.textContent = error.message;
       if (!body.childElementCount || method === "GET") message.append(" ", btn("Riprova", { onclick: node.load }));
-    } finally { busy = false; body.inert = false; }
+    } finally {
+      busy = pollInFlight = false;
+      body.inert = false;
+      const next = afterPoll;
+      afterPoll = null;
+      if (next && node.isConnected) void next();
+    }
+  }
+  function poll() {
+    timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
   }
   function render(data) {
     const enable = switchInput("meet-enabled", "Attiva Google Meet", data.enabled, "L’agente entra con microfono e videocamera spenti.");
@@ -3207,21 +3253,32 @@ function agentMeetPane(agent) {
     const actions = h("div", { class: "actions" });
     if (!data.active && !running) {
       const ownAccount = account && account.toLowerCase() === agent.mailbox?.email?.toLowerCase();
-      if (!ownAccount || needsHuman || setup === "failed") {
-        const label = needsHuman ? "Ho completato la verifica" : setup === "failed" ? "Riprova collegamento" : "Collega la mail dell’agente";
+      if (!needsHuman && (!ownAccount || setup === "failed")) {
+        const label = setup === "failed" ? "Riprova collegamento" : setup === "stopped" ? "Riprendi collegamento" : "Collega la mail dell’agente";
         actions.append(btn(label, { cls: "sm primary", disabled: !data.desktop || !data.onAir, onclick: () => request("/setup", {}) }));
       }
       if (account) actions.append(btn("Scollega account", { cls: "sm ghost", onclick: () => request("/signout", {}) }));
       if (!needsHuman && account) actions.append(btn("Verifica account", { cls: "sm", icon: "refresh", onclick: () => request("/account", {}) }));
     }
     body.append(h("div", { class: "stack" }, h("strong", {}, account || agent.mailbox?.email || "Account Google da collegare"), actions));
-    if (running) {
-      body.append(h("p", { role: "status" }, "L’agente sta collegando la sua email a Google Meet."));
-      timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
+    if (setup) {
+      let verification = null;
+      if (needsHuman) {
+        const viewer = `/box/${agent.id}/vnc.html?autoconnect=true&reconnect=true&path=box/${agent.id}/websockify`;
+        verification = h("div", { class: "meet-step-verification stack" },
+          h("p", {}, data.setup.note ? raw(data.setup.note) : "Completa la verifica richiesta da Google sul desktop dell’agente."),
+          h("div", { class: "actions" }, btn("Apri desktop a schermo intero", { href: viewer + "&resize=off", target: "_blank", icon: "maximize", cls: "primary" })),
+          h("div", { class: "monitor-frame" }, h("div", { class: "screen" },
+            h("iframe", { title: "Accesso Google sul desktop", src: viewer + "&resize=scale" }))),
+          h("div", { class: "actions" }, btn("Ho completato la verifica", { onclick: () => request("/setup", {}) })));
+      }
+      body.append(meetSetupChecklist(data.setup, verification));
     }
+    if ((running || needsHuman) && data.setup.canStop) body.append(h("div", { class: "actions" },
+      btn("Ferma collegamento", { cls: "sm", onclick: () => request("/stop-setup", {}) })));
+    if (setup === "stopped") body.append(h("p", { role: "status" }, "Collegamento fermato"));
+    if (running) poll();
     if (setup === "failed") body.append(h("p", { class: "err-text" }, data.setup.note || "Collegamento interrotto. Puoi riprendere dalla verifica dell’account."));
-    if (needsHuman) body.append(h("p", {}, data.setup.note || "Completa la verifica richiesta da Google sul desktop dell’agente."),
-      h("div", { class: "screen" }, h("iframe", { title: "Accesso Google sul desktop", src: `/box/${agent.id}/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=box/${agent.id}/websockify` })));
     if (data.active) {
       body.append(h("strong", { role: "status" }, phases[data.active.phase]), h("span", {}, data.active.link));
       if (data.active.phase !== "transcribing") body.append(btn("Esci dalla riunione", { onclick: () => request("/leave", {}) }));
