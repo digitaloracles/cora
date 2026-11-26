@@ -287,3 +287,21 @@ test("an interrupted reminder on an inactive transport records one failure and r
   f.app.scheduler.tick(new Date("2050-01-01T12:01:00Z"));
   assert.equal(f.app.store.routineHistory({ agentId: agent.id }).total, 1);
 });
+
+test("only the panel's Meet setup reminder in the agent's private chat offers meet_setup", async (t) => {
+  const f = await fixture(t);
+  const agent = f.app.store.createAgent({ name: "Mira", model: "ollama/test-model", tools: true, enabled: true, chattiness: 0 });
+  f.app.meet.save(agent.id, { enabled: true });
+  const offered = [];
+  f.control.reply = (body) => { offered.push((body.tools || []).map((tool) => tool.function?.name || tool.name)); return { content: "Fatto." }; };
+  const make = async (channelId) => (await f.request(`/api/agents/${agent.id}/routines`, { method: "POST", body: { kind: "reminder", name: "Google Meet", runAt: "2050-02-03T09:30:00+01:00", channelId, prompt: "Collega il tuo account Google al browser Meet." } })).data;
+  const other = await make(`web-${agent.id}`);
+  await f.app.orchestrator.runRoutine(other);
+  const setup = await make(`web-${agent.id}`);
+  f.app.meet.save(agent.id, { setupRoutineId: setup.id });
+  await f.app.orchestrator.runRoutine(setup);
+  assert.equal(offered.length, 2);
+  assert.ok(offered[0].length > 0 && !offered[0].includes("meet_setup"), "another reminder does not get meet_setup");
+  assert.ok(offered[1].includes("meet_setup"), "the setup reminder gets meet_setup");
+  assert.ok(!offered[1].includes("meet_join") && !offered[1].includes("meet_leave"), "joining a call stays a chat request");
+});
