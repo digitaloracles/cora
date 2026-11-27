@@ -41,7 +41,14 @@ body { margin: 0; background: var(--paper); color: var(--ink); font: 400 16px/1.
 .pv-file-kind { flex: none; width: 42px; height: 48px; display: grid; place-items: end center; padding-bottom: 7px; border-radius: 6px 14px 6px 6px; background: var(--cobalt); color: #fff; font: 600 10px/1 var(--display); letter-spacing: 0.02em; }
 .pv-file-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-file-get { flex: none; color: var(--cobalt); font-weight: 600; font-size: 15px; }
-.pv-msg.writing { color: var(--slate); font-style: italic; }
+.pv-msg.writing { color: var(--slate); font-style: italic; display: inline-flex; align-items: baseline; gap: 6px; }
+.pv-dots { display: inline-flex; gap: 4px; }
+.pv-dots i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.3; animation: pv-dot 1.2s ease-in-out infinite; }
+.pv-dots i:nth-child(2) { animation-delay: 0.15s; }
+.pv-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes pv-dot { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .pv-dots i { animation-name: pv-dot-fade; } }
+@keyframes pv-dot-fade { 0%, 60%, 100% { opacity: 0.3; } 30% { opacity: 1; } }
 .pv-intro { margin: auto 0 4px; padding: 4px 2px; }
 .pv-intro h1 { font: 600 clamp(22px, 4.6vw, 30px)/1.2 var(--display); letter-spacing: -0.015em; margin: 0 0 10px; text-wrap: balance; }
 .pv-intro p { margin: 0 0 18px; color: var(--slate); max-width: 56ch; }

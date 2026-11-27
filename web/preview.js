@@ -2,13 +2,13 @@
 // The browser's language until the demo says which language the company asked in; then the frame speaks that one.
 let LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
 const TEXTS = {
-  en: { send: "Send", download: "Download", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing…`,
+  en: { send: "Send", download: "Download", message: "Message", placeholder: (n) => `Write to ${n}…`, left: (m) => (m <= 1 ? "1 minute left" : `${m} minutes left`), notStarted: (m) => `${m} minutes from your first message`, over: "Preview ended", writing: (n) => `${n} is writing`,
     hello: (n, r, c) => `Hi, I'm ${n}, the ${r.toLowerCase()} at ${c}.`, intro: "I already know your company from its website. Ask me something real: I'll answer with drafts and plans you can use.", ended: "Your hour is over. Write to us at usecora.space to keep your agent.", failed: "The message did not go through. Try again.", away: "This page is for the people a preview was sent to. Open the link in your email." },
-  it: { send: "Invia", download: "Scarica", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo…`,
+  it: { send: "Invia", download: "Scarica", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, left: (m) => (m <= 1 ? "Manca 1 minuto" : `Mancano ${m} minuti`), notStarted: (m) => `${m} minuti dal tuo primo messaggio`, over: "Anteprima finita", writing: (n) => `${n} sta scrivendo`,
     hello: (n, r, c) => `Ciao, sono ${n}: ${r.toLowerCase()} di ${c}.`, intro: "Conosco già la tua azienda dal suo sito. Chiedimi qualcosa di concreto: ti rispondo con bozze e piani che puoi usare.", ended: "La tua ora è finita. Scrivici su usecora.space per tenere il tuo agente.", failed: "Il messaggio non è partito. Riprova.", away: "Questa pagina è per chi ha ricevuto un'anteprima. Apri il link nella tua email." },
-  es: { send: "Enviar", download: "Descargar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, left: (m) => (m <= 1 ? "Queda 1 minuto" : `Quedan ${m} minutos`), notStarted: (m) => `${m} minutos desde tu primer mensaje`, over: "Vista previa terminada", writing: (n) => `${n} está escribiendo…`,
+  es: { send: "Enviar", download: "Descargar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, left: (m) => (m <= 1 ? "Queda 1 minuto" : `Quedan ${m} minutos`), notStarted: (m) => `${m} minutos desde tu primer mensaje`, over: "Vista previa terminada", writing: (n) => `${n} está escribiendo`,
     hello: (n, r, c) => `Hola, soy ${n}: ${r.toLowerCase()} de ${c}.`, intro: "Ya conozco tu empresa por su web. Pídeme algo real: te respondo con borradores y planes que puedes usar.", ended: "Tu hora ha terminado. Escríbenos en usecora.space para quedarte con tu agente.", failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", away: "Esta página es para quien recibió una vista previa. Abre el enlace de tu correo." },
-  de: { send: "Senden", download: "Herunterladen", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt…`,
+  de: { send: "Senden", download: "Herunterladen", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, left: (m) => (m <= 1 ? "Noch 1 Minute" : `Noch ${m} Minuten`), notStarted: (m) => `${m} Minuten ab deiner ersten Nachricht`, over: "Vorschau beendet", writing: (n) => `${n} schreibt`,
     hello: (n, r, c) => `Hallo, ich bin ${n}: ${r} bei ${c}.`, intro: "Ich kenne dein Unternehmen schon von seiner Website. Frag mich etwas Konkretes: Ich antworte mit Entwürfen und Plänen, die du nutzen kannst.", ended: "Deine Stunde ist vorbei. Schreib uns auf usecora.space, um deinen Agenten zu behalten.", failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", away: "Diese Seite ist für Empfänger einer Vorschau. Öffne den Link in deiner E-Mail." },
 };
 let T = TEXTS[LANG];
@@ -99,7 +99,7 @@ function thread() {
     }
     items.push(item);
   }
-  if (S.running || S.sending) items.push(node(`writing:${agent?.id || ""}`, () => el("div", { class: "pv-msg agent writing" }, T.writing(agent?.name || ""))));
+  if (S.running || S.sending) items.push(node(`writing:${agent?.id || ""}`, () => el("div", { class: "pv-msg agent writing", role: "status" }, T.writing(agent?.name || ""), el("span", { class: "pv-dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")))));
   items.forEach((item, i) => { if (box.children[i] !== item) box.insertBefore(item, box.children[i] || null); });
   while (box.children.length > items.length) box.lastElementChild.remove();
   const kept = new Set(items);
