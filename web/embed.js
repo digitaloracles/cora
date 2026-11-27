@@ -1,0 +1,170 @@
+// Embed agent (NOT-117): an agent's public chat inside someone else's page. The visitor is a random key kept by
+// this browser (storage partitioned by the site that frames us, which also works where third-party cookies do not).
+const TEXTS = {
+  en: { send: "Send", message: "Message", placeholder: (n) => `Write to ${n}…`, writing: (n) => `${n} is writing`, hello: (n) => `Hi, I'm ${n}.`, intro: "Ask me anything: I answer here, right away.",
+    failed: "The message did not go through. Try again.", noReply: "I could not answer this one. Try again in a moment.", limit: "You have reached today's message limit for this chat.", busy: "Too many conversations right now: try again in a minute.",
+    offline: (n) => `${n} is offline right now.`, gone: "This chat is not available.", mark: "Agent on Cora" },
+  it: { send: "Invia", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, writing: (n) => `${n} sta scrivendo`, hello: (n) => `Ciao, sono ${n}.`, intro: "Chiedimi pure: ti rispondo qui, subito.",
+    failed: "Il messaggio non è partito. Riprova.", noReply: "Non sono riuscito a rispondere. Riprova tra poco.", limit: "Hai raggiunto il limite di messaggi di oggi per questa chat.", busy: "Troppe conversazioni in corso: riprova tra un minuto.",
+    offline: (n) => `${n} adesso non è disponibile.`, gone: "Questa chat non è disponibile.", mark: "Agente su Cora" },
+  es: { send: "Enviar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, writing: (n) => `${n} está escribiendo`, hello: (n) => `Hola, soy ${n}.`, intro: "Pregúntame lo que quieras: te respondo aquí mismo.",
+    failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", noReply: "No he podido responder. Inténtalo de nuevo en un momento.", limit: "Has alcanzado el límite de mensajes de hoy en este chat.", busy: "Demasiadas conversaciones ahora: inténtalo en un minuto.",
+    offline: (n) => `${n} no está disponible ahora.`, gone: "Este chat no está disponible.", mark: "Agente en Cora" },
+  de: { send: "Senden", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, writing: (n) => `${n} schreibt`, hello: (n) => `Hallo, ich bin ${n}.`, intro: "Frag mich, was du willst: Ich antworte hier, sofort.",
+    failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", noReply: "Ich konnte nicht antworten. Versuch es gleich noch einmal.", limit: "Du hast das heutige Nachrichtenlimit für diesen Chat erreicht.", busy: "Gerade zu viele Gespräche: versuch es in einer Minute.",
+    offline: (n) => `${n} ist gerade nicht erreichbar.`, gone: "Dieser Chat ist nicht verfügbar.", mark: "Agent auf Cora" },
+};
+const LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
+const T = TEXTS[LANG];
+const TOKEN = (/^\/embed\/([A-Za-z0-9_-]{24})$/.exec(location.pathname) || [])[1] || "";
+const BASE = `/embed/${TOKEN}`;
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...children) => { const node = document.createElement(tag); for (const [key, value] of Object.entries(attrs)) { if (key === "class") node.className = value; else if (key.startsWith("on")) node.addEventListener(key.slice(2), value); else node.setAttribute(key, value); } node.append(...children.filter((child) => child !== null && child !== undefined)); return node; };
+const escape = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
+/** A little Markdown, after escaping: paragraphs, lists, bold and code. */
+function render(text) {
+  return String(text || "").trim().split(/\n{2,}/).map((block) => {
+    const inline = (line) => escape(line).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    const lines = block.split("\n");
+    if (lines.every((line) => /^\s*[-*•]\s+/.test(line))) return `<ul>${lines.map((line) => `<li>${inline(line.replace(/^\s*[-*•]\s+/, ""))}</li>`).join("")}</ul>`;
+    if (lines.every((line) => /^\s*\d+[.)]\s+/.test(line))) return `<ol>${lines.map((line) => `<li>${inline(line.replace(/^\s*\d+[.)]\s+/, ""))}</li>`).join("")}</ol>`;
+    return `<p>${lines.map(inline).join("<br>")}</p>`;
+  }).join("");
+}
+
+/** This browser's key for this chat; kept in memory only where the site's storage is closed to us. */
+function visitorKey() {
+  const name = `cora.embed.${TOKEN}`;
+  const make = () => { const bytes = new Uint8Array(24); crypto.getRandomValues(bytes); return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+  try {
+    let key = localStorage.getItem(name);
+    if (!/^[A-Za-z0-9_-]{32,64}$/.test(key || "")) { key = make(); localStorage.setItem(name, key); }
+    return key;
+  } catch { return (visitorKey.memory ||= make()); }
+}
+
+const S = { agent: null, messages: [], running: false, sending: false, poll: null, visitor: visitorKey() };
+
+async function api(path, options = {}) {
+  const response = await fetch(`${BASE}${path}`, { credentials: "omit", cache: "no-store", ...options, headers: { "x-cora": "1", "x-cora-visitor": S.visitor, ...(options.body ? { "content-type": "application/json" } : {}) } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || String(response.status)), { status: response.status });
+  return data;
+}
+
+/** The owner's colours: the four they pick, and the shades the chat draws from them. */
+const HEX = /^#[0-9a-f]{6}$/i;
+function luminance(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function applyTheme(theme = {}) {
+  const pick = (key, fallback) => (HEX.test(theme[key] || "") ? theme[key] : fallback);
+  const accent = pick("accent", "#264cd6"), background = pick("background", "#f5f3ec"), card = pick("card", "#ffffff"), text = pick("text", "#0f1a3d");
+  const root = document.documentElement.style;
+  const set = (name, value) => root.setProperty(name, value);
+  set("--cobalt", accent); set("--paper", background); set("--card", card); set("--ink", text);
+  set("--on-accent", luminance(accent) > 0.45 ? "#0f1a3d" : "#ffffff");
+  set("--slate", `color-mix(in srgb, ${text} 72%, ${background})`);
+  set("--faint", `color-mix(in srgb, ${text} 50%, ${background})`);
+  set("--line", `color-mix(in srgb, ${text} 13%, ${background})`);
+  document.documentElement.style.colorScheme = luminance(background) < 0.2 ? "dark" : "light";
+}
+// The panel's preview repaints while the owner picks colours, before they are saved.
+window.addEventListener("message", (event) => {
+  if (event.origin === location.origin && event.data?.type === "cora-embed-theme") applyTheme(event.data.theme);
+});
+
+function notice(text) { $("pv-fine").textContent = text || ""; }
+
+const NODES = new Map();
+function node(key, make) {
+  let item = NODES.get(key);
+  if (!item) { item = make(); NODES.set(key, item); }
+  return item;
+}
+
+function thread() {
+  const box = $("pv-thread"), name = S.agent?.name || "";
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const items = [];
+  if (!S.messages.length) items.push(node("intro", () => el("section", { class: "pv-intro" }, el("h1", {}, T.hello(name)), el("p", {}, T.intro))));
+  for (const message of S.messages) {
+    const key = message.id || message.key;
+    const item = node(key, () => message.role === "error" ? el("div", { class: "pv-msg failed" }, T.noReply) : el("div", { class: `pv-msg ${message.role === "agent" ? "agent" : "me"}` }));
+    if (message.role !== "error" && item.dataset.content !== message.content) { item.innerHTML = render(message.content); item.dataset.content = message.content; }
+    items.push(item);
+  }
+  if (S.running || S.sending) items.push(node("writing", () => el("div", { class: "pv-msg agent writing", role: "status" }, el("span", {}, T.writing(name)), el("span", { class: "pv-dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")))));
+  items.forEach((item, i) => { if (box.children[i] !== item) box.insertBefore(item, box.children[i] || null); });
+  while (box.children.length > items.length) box.lastElementChild.remove();
+  const kept = new Set(items);
+  for (const [key, item] of NODES) if (!kept.has(item)) NODES.delete(key);
+  if (atBottom || S.sending) box.scrollTop = box.scrollHeight;
+}
+
+async function load() {
+  clearTimeout(S.poll);
+  try {
+    const data = await api("/messages");
+    const local = S.messages.filter((message) => message.key && !data.messages.some((item) => item.role === "visitor" && item.content === message.content && item.at >= message.at - 60000));
+    S.messages = [...data.messages, ...local];
+    S.running = Boolean(data.running);
+    thread();
+  } catch (error) {
+    if (error.status === 404) return gone();
+  }
+  if (S.running) S.poll = setTimeout(load, 1500);
+}
+
+async function send(text) {
+  const value = String(text || "").trim();
+  if (!value || S.sending || !S.agent?.online) return;
+  S.sending = true; $("pv-send").disabled = true; notice("");
+  const at = Date.now(), key = `local:${at}`;
+  S.messages.push({ key, role: "visitor", content: value, at }); thread();
+  try {
+    await api("/messages", { method: "POST", body: JSON.stringify({ text: value }) });
+    $("pv-input").value = ""; grow();
+    S.running = true;
+  } catch (error) {
+    S.messages = S.messages.filter((message) => message.key !== key);
+    notice(error.status === 429 ? T.limit : error.status === 503 ? T.busy : error.status === 409 ? T.offline(S.agent.name) : error.status === 404 ? T.gone : T.failed);
+  } finally {
+    S.sending = false; $("pv-send").disabled = false;
+    await load();
+  }
+}
+
+function gone() {
+  document.body.classList.add("em-off");
+  $("pv-thread").replaceChildren(el("section", { class: "pv-intro" }, el("p", {}, T.gone)));
+  $("pv-input").disabled = true; $("pv-send").disabled = true;
+}
+
+function grow() { const input = $("pv-input"); input.style.height = "auto"; input.style.height = `${Math.min(160, input.scrollHeight)}px`; }
+
+async function start() {
+  document.documentElement.lang = LANG;
+  $("pv-send").textContent = T.send; $("pv-label").textContent = T.message; $("em-mark").textContent = T.mark;
+  if (!TOKEN) return gone();
+  let state;
+  try { state = await api("/state"); } catch { return gone(); }
+  S.agent = state.agent;
+  applyTheme(state.theme);
+  document.title = S.agent.name;
+  $("em-name").textContent = S.agent.name;
+  $("em-desc").textContent = S.agent.description || "";
+  const face = $("em-face");
+  face.src = S.agent.avatar; face.hidden = false; face.addEventListener("error", () => { face.hidden = true; });
+  $("pv-input").placeholder = T.placeholder(S.agent.name);
+  if (!S.agent.online) { document.body.classList.add("em-off"); $("pv-input").disabled = true; $("pv-send").disabled = true; notice(T.offline(S.agent.name)); }
+  thread();
+  await load();
+}
+
+$("pv-input").addEventListener("input", grow);
+$("pv-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); send($("pv-input").value); } });
+$("pv-form").addEventListener("submit", (event) => { event.preventDefault(); send($("pv-input").value); });
+start();

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600&family=Unbounded:wght@500;600&display=swap">
+<link rel="stylesheet" href="/assets/preview.css">
+<link rel="stylesheet" href="/assets/embed.css">
+<script type="module" src="/assets/embed.js"></script>
+</head>
+<body>
+<div class="pv em" id="pv">
+  <header class="pv-top em-top">
+    <div class="em-who"><img class="em-face" id="em-face" alt="" width="36" height="36" hidden><span class="em-names"><b id="em-name"></b><small id="em-desc"></small></span></div>
+  </header>
+  <main class="pv-thread" id="pv-thread" aria-live="polite"></main>
+  <footer class="pv-compose">
+    <form id="pv-form" autocomplete="off">
+      <label class="sr" for="pv-input" id="pv-label">Message</label>
+      <textarea id="pv-input" rows="1" maxlength="2000"></textarea>
+      <button type="submit" id="pv-send"></button>
+    </form>
+    <p class="pv-fine" id="pv-fine"></p>
+    <p class="em-mark"><a href="https://usecora.space" target="_blank" rel="noopener" id="em-mark"></a></p>
+  </footer>
+</div>
+</body>
+</html>
