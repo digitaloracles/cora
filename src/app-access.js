@@ -25,12 +25,13 @@ export class AppAccess {
   pairings() { return this.store.value(PAIRINGS, []).filter((record) => Date.parse(record.expiresAt) > this.now()); }
   devices() { return this.store.value(DEVICES, []); }
 
-  pair(user, { state = "", origin }) {
+  pair(user, { state = "", origin, panelChallenge = "" }) {
     if (state && !/^[A-Za-z0-9_-]{16,128}$/.test(String(state))) throw fail("Stato dell’app non valido.");
+    if (panelChallenge && (!state || typeof panelChallenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(panelChallenge))) throw fail("Richiesta del pannello non valida.");
     const code = `cora_pair_${randomBytes(32).toString("base64url")}`;
     const expiresAt = new Date(this.now() + PAIRING_MS).toISOString();
     const pending = this.pairings(), own = pending.filter((record) => record.userId === user.id).slice(-4);
-    this.store.setValue(PAIRINGS, [...pending.filter((record) => record.userId !== user.id), ...own, { hash: hash(code), userId: user.id, expiresAt }]);
+    this.store.setValue(PAIRINGS, [...pending.filter((record) => record.userId !== user.id), ...own, { hash: hash(code), userId: user.id, expiresAt, panelChallenge }]);
     const link = new URL("cora://connect");
     link.searchParams.set("server", origin);
     link.searchParams.set("code", code);
@@ -39,7 +40,7 @@ export class AppAccess {
   }
 
   /** Trades a pairing code for a device token: once, within its two minutes, for a person still admitted. */
-  exchange({ code, name, platform }) {
+  exchange({ code, name, platform, panelVerifier }) {
     const now = this.now();
     while (this.failures.length && now - this.failures[0] > 60000) this.failures.shift();
     if (this.failures.length >= 10) throw fail("Troppi tentativi, riprova tra un minuto.", 429);
@@ -47,6 +48,11 @@ export class AppAccess {
     const pairings = this.pairings();
     const found = /^cora_pair_[A-Za-z0-9_-]{43}$/.test(value) ? pairings.find((record) => same(record.hash, value)) : null;
     if (!found) { this.failures.push(now); throw fail("Codice di collegamento non valido o scaduto: riaprilo dal pannello.", 401); }
+    if (found.panelChallenge) {
+      const challenge = typeof panelVerifier === "string" && /^[A-Za-z0-9_-]{43}$/.test(panelVerifier)
+        ? createHash("sha256").update(panelVerifier).digest("base64url") : "";
+      if (challenge !== found.panelChallenge) throw fail("Conferma del pannello non valida.", 401);
+    }
     this.store.setValue(PAIRINGS, pairings.filter((record) => record !== found));
     const user = this.store.panelUser(found.userId);
     if (!user || !this.store.allowsPanelUser({ ...user, emailVerified: true })) throw fail("Questo account non entra più in questo spazio.", 403);
@@ -57,7 +63,7 @@ export class AppAccess {
     const record = { id, userId: user.id, name: cleanName(name, "Mac"), platform: cleanName(platform, "macOS").slice(0, 40), hash: hash(token),
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + DEVICE_DAYS * 86400000).toISOString(), lastUsedAt: null };
     this.store.setValue(DEVICES, [...kept, record]);
-    return { token, user, device: publicDevice(record) };
+    return { token, user, device: publicDevice(record), panelAuthorized: Boolean(found.panelChallenge) };
   }
 
   authenticate(req) {
