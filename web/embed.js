@@ -217,6 +217,7 @@ async function start() {
     const close = $("em-close");
     close.hidden = false; close.setAttribute("aria-label", T.close); close.title = T.close;
     close.addEventListener("click", () => window.parent.postMessage({ type: "cora-embed-close" }, "*"));
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !event.isComposing) window.parent.postMessage({ type: "cora-embed-close" }, "*"); });
   }
   if (!TOKEN) return gone();
   let state;

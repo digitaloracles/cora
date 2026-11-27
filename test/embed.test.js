@@ -11,6 +11,18 @@ const VISITOR_A = "a".repeat(40);
 const VISITOR_B = "b".repeat(40);
 const VISITOR_C = "c".repeat(40);
 
+/** Runs the floating button's script as a page at pageUrl would, and says whether it put its button there. */
+function widgetShows(code, scriptSrc, pageUrl) {
+  const page = new URL(pageUrl);
+  let appended = false;
+  const node = () => ({ style: {}, setAttribute() {}, attachShadow: () => shadow, appendChild() {}, addEventListener() {}, classList: { toggle() {} }, focus() {} });
+  const shadow = { set innerHTML(_) {}, querySelector: () => ({ ...node(), querySelector: () => node(), hidden: false }) };
+  const document = { currentScript: { src: scriptSrc }, createElement: node, addEventListener() {}, body: { appendChild: () => { appended = true; } } };
+  const window = { addEventListener() {} };
+  new Function("window", "document", "location", "navigator", code)(window, document, { origin: page.origin, host: page.host, protocol: page.protocol }, { language: "it" });
+  return appended;
+}
+
 test("embed sites are plain hosts, and the chat may be framed only by them", () => {
   assert.equal(embedDomain("https://Shop.Example.com/page?x=1"), "shop.example.com");
   assert.equal(embedDomain("*.example.it"), "*.example.it");
@@ -162,7 +174,15 @@ test("an agent's public chat: one conversation per visitor, no private context, 
   assert.equal(widget.status, 200);
   assert.match(widget.headers.get("content-type"), /^text\/javascript/);
   const widgetCode = await widget.text();
-  assert.ok(widgetCode.includes(JSON.stringify({ path: on.path, name: "Lumen", accent: "#e4572e", avatar: state.agent.avatar })), "the button carries the chat's name, colour and face");
+  assert.ok(widgetCode.includes(JSON.stringify({ path: on.path, name: "Lumen", accent: "#e4572e", domains: ["shop.example.com", "*.example.it"], avatar: state.agent.avatar })), "the button carries the chat's name, colour, sites and face");
+  const shown = (page) => widgetShows(widgetCode, `${base}${on.path}/widget.js`, page);
+  assert.equal(shown("https://shop.example.com/prodotti"), true);
+  assert.equal(shown("https://blog.example.it/"), true);
+  assert.equal(shown("https://example.it/"), false, "a wildcard covers subdomains only, as frame-ancestors does");
+  assert.equal(shown("http://shop.example.com/"), false, "a listed site over plain http cannot frame the chat either");
+  assert.equal(shown("https://evil.test/"), false, "on a site the owner did not list there is no button");
+  assert.equal(shown("https://shop.example.com.evil.test/"), false);
+  assert.equal(shown(`${base}/agents`), true, "the panel itself may always show it");
   assert.doesNotMatch(widgetCode, /CONFIG|SEGRETO|Il negozio/);
   assert.equal((await fetch(`${base}/embed/${"x".repeat(24)}/widget.js`)).status, 404);
 

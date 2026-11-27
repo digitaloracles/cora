@@ -2,9 +2,20 @@
 // Served by /embed/<token>/widget.js with the chat's settings in place of the placeholder below.
 (function () {
   var C = /*CONFIG*/{};
+  // The same rule as the chat's frame-ancestors: on a site the owner did not list, the chat would open empty, so no button at all.
+  function allowedHere(domains) {
+    if (!domains.length || location.origin === origin) return true;
+    var host = location.host.toLowerCase();
+    return domains.some(function (domain) {
+      if (domain.indexOf("localhost") !== 0 && location.protocol !== "https:") return false;
+      if (domain.slice(0, 2) !== "*.") return host === domain;
+      var base = domain.slice(1);
+      return host.length > base.length && host.slice(-base.length) === base;
+    });
+  }
   var script = document.currentScript;
   var origin = script && script.src ? new URL(script.src).origin : "";
-  if (!origin || !C.path) return;
+  if (!origin || !C.path || !allowedHere(C.domains || [])) return;
   var registry = (window.__coraEmbeds = window.__coraEmbeds || {});
   if (registry[C.path]) return;
   registry[C.path] = true;
