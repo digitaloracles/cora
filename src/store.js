@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS vault_requests (token_hash TEXT PRIMARY KEY, status T
 CREATE TABLE IF NOT EXISTS vault_sends (token_hash TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, expires_at INTEGER NOT NULL, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS vault_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL);
 `;
-const TRACES_KEPT_PER_AGENT = 300;
+export const TRACES_KEPT_PER_AGENT = 300;
 
 export class ValidationError extends Error {
   constructor(message) {
@@ -1582,8 +1582,16 @@ CREATE INDEX IF NOT EXISTS thread_sessions_channel ON thread_sessions(channel_id
     if (trace.status !== "running" && Math.random() < 0.05) this.pruneTraces(trace.agentId);
   }
 
+  /** Turns kept per agent from Settings › Pulizia e backup; 0 keeps every turn. */
+  tracesKept() {
+    const kept = this.value("storagePolicy", {})?.turns;
+    return Number.isInteger(kept) && kept >= 0 ? kept : TRACES_KEPT_PER_AGENT;
+  }
+
   pruneTraces(agentId) {
-    this.stmt("DELETE FROM traces WHERE agent_id = ? AND id NOT IN (SELECT id FROM traces WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?)").run(agentId, agentId, TRACES_KEPT_PER_AGENT);
+    const kept = this.tracesKept();
+    if (kept === 0) return;
+    this.stmt("DELETE FROM traces WHERE agent_id = ? AND id NOT IN (SELECT id FROM traces WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?)").run(agentId, agentId, kept);
     this.stmt("DELETE FROM trace_systems WHERE hash NOT IN (SELECT system_hash FROM traces WHERE system_hash IS NOT NULL)").run();
   }
 

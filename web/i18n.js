@@ -3,6 +3,10 @@
 export const EN = {
   "Ora della misura": "Measurement time",
   "Giorni di storico": "History in days",
+  "Conserva tutti i turni": "Keep every turn",
+  "Tieni lo storico completo dei turni degli agenti, con passi e strumenti. Il database cresce nel tempo.": "Keep the full history of agent turns, with steps and tools. The database grows over time.",
+  "Turni per agente": "Turns per agent",
+  "Da 50 a 100000. Oltre questo numero Cora cancella i turni più vecchi di ogni agente.": "From 50 to 100000. Beyond this number Cora deletes each agent's oldest turns.",
   "Conserva una misura dello spazio per ora.": "Keep one storage measurement per hour.",
   "Pulizia e backup": "Cleanup and backups",
   "Scegli quando intervenire e quali dati conservare.": "Choose when to run maintenance and what to keep.",

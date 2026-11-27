@@ -5,10 +5,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { TRACES_KEPT_PER_AGENT } from "./store.js";
 
 const exec = promisify(execFile);
 const script = name => fileURLToPath(new URL(name, import.meta.url));
-const defaults = { automatic: true, time: "05:20", backups: true, keep: 7, grok: false, monitor: false, sampleDays: 31 };
+const defaults = { automatic: true, time: "05:20", backups: true, keep: 7, grok: false, monitor: false, sampleDays: 31, turns: TRACES_KEPT_PER_AGENT };
 const actions = ["backups", "grok", "monitor"];
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
@@ -60,6 +61,8 @@ export class StorageMaintenance {
         if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw invalid("Invalid cleanup time");
       } else if (key === "sampleDays") {
         if (!Number.isInteger(value) || value < 1 || value > 90) throw invalid("Keep between 1 and 90 days of measurements");
+      } else if (key === "turns") {
+        if (!Number.isInteger(value) || (value !== 0 && (value < 50 || value > 100000))) throw invalid("Keep every turn (0) or between 50 and 100000 turns per agent");
       } else if (key === "keep") {
         if (!Number.isInteger(value) || value < 1 || value > 90) throw invalid("Keep between 1 and 90 backups");
       } else if (typeof value !== "boolean") throw invalid("Expected a switch");
