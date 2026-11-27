@@ -16,6 +16,7 @@ import { Telegram } from "./telegram.js";
 import { TelegramBots } from "./telegram-bots.js";
 import { hushStore } from "./secrets.js";
 import { Traces } from "./traces.js";
+import { OtlpExporter } from "./otel.js";
 import { Push } from "./push.js";
 import { Apns } from "./apns.js";
 import { QuotaAlerts } from "./quota-alerts.js";
@@ -136,7 +137,7 @@ export function startCora(overrides = {}) {
     },
   });
   const live = (event) => web?.broadcast(event);
-  const traces = new Traces({ store, emit: live });
+  const traces = new Traces({ store, emit: live, exporter: OtlpExporter.fromEnv({ agentName: (id) => store.agent(id)?.name || "", log: activity }) });
   const push = new Push({ store, secret: cfg.vapidKey, subject: cfg.publicUrl, log: activity, apns: cfg.apns || null });
   const tokenFor = cfg.botTokenFor || ((name) => process.env[name] || process.env[name.replace(/^CORA_/, "CORO_")] || "");
   const bots = new AgentBots({ store, apiBase: cfg.discordApi, gatewayUrl: cfg.discordGateway, tokenFor, log: activity });
@@ -458,6 +459,7 @@ export function startCora(overrides = {}) {
     web.server.closeAllConnections?.();
     await closed;
     await bridge.stop();
+    await traces.exporter?.shutdown();
     await companyBrain.close();
     store.close();
   };

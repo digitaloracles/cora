@@ -28,7 +28,7 @@ test("the panel MCP lists one specific tool per panel action with its own input 
   const names = tools.map((tool) => tool.name);
   assert.equal(new Set(names).size, names.length, "tool names are unique");
   assert.ok(tools.length > 150, `specific tools: ${tools.length}`);
-  for (const name of ["cora_agents_list", "cora_agent_overview", "cora_agent_update", "cora_agent_meet_get", "cora_agent_meet_set", "cora_agent_meet_setup", "cora_agent_meet_signin", "cora_agent_meet_account", "cora_agent_meet_signout", "cora_agent_meet_join", "cora_agent_meet_leave", "cora_agent_meet_retry", "cora_agent_skill_install", "cora_agent_skill_set_enabled", "cora_connectors_list", "cora_connector_set_agents", "cora_provider_key_set", "cora_subscription_login", "cora_settings_update", "cora_storage_get", "cora_storage_set", "cora_storage_sample", "cora_storage_run", "cora_activity", "cora_trace_get", "cora_routine_create", "cora_artifact_upload", "cora_secret_set", "cora_configurations", "cora_request"]) assert.ok(names.includes(name), name);
+  for (const name of ["cora_agents_list", "cora_agent_overview", "cora_agent_update", "cora_agent_meet_get", "cora_agent_meet_set", "cora_agent_meet_setup", "cora_agent_meet_signin", "cora_agent_meet_account", "cora_agent_meet_signout", "cora_agent_meet_join", "cora_agent_meet_leave", "cora_agent_meet_retry", "cora_agent_skill_install", "cora_agent_skill_set_enabled", "cora_connectors_list", "cora_connector_set_agents", "cora_provider_key_set", "cora_subscription_login", "cora_settings_update", "cora_storage_get", "cora_storage_set", "cora_storage_sample", "cora_storage_run", "cora_activity", "cora_trace_get", "cora_trace_otlp", "cora_thread_otlp", "cora_routine_create", "cora_artifact_upload", "cora_secret_set", "cora_configurations", "cora_request"]) assert.ok(names.includes(name), name);
   for (const tool of tools) {
     assert.equal(tool.inputSchema.type, "object", tool.name);
     assert.ok(tool.description.length > 40, tool.name);
@@ -115,6 +115,16 @@ test("an external agent drives and reads a whole agent through the specific tool
   assert.ok(connectors.catalog.some((item) => item.id === "linear"));
   assert.ok(Array.isArray((await f.call(alice, "cora_activity")).structuredContent.data));
   assert.ok(Array.isArray((await f.call(alice, "cora_agent_traces", { agent_id: agent.id, limit: 5 })).structuredContent.data));
+  const turnStart = Date.parse("2026-11-27T08:00:00Z");
+  f.app.store.saveTrace({ id: "tr_0123456789abcdef", agentId: agent.id, kind: "chat", channelId: "c-otel", model: "claude/opus", startedAt: new Date(turnStart).toISOString(), endedAt: new Date(turnStart + 5000).toISOString(), status: "done",
+    steps: [{ type: "tool", name: "shell", args: { command: "ls" }, result: "secret-output", ok: true, ms: 1200, at: turnStart + 3000 }], output: "Fatto", error: "", tokensIn: 10, tokensOut: 4 });
+  const otlp = (await f.call(alice, "cora_trace_otlp", { trace_id: "tr_0123456789abcdef" })).structuredContent;
+  assert.equal(otlp.status, 200);
+  const spans = otlp.data.resourceSpans[0].scopeSpans[0].spans;
+  assert.deepEqual(spans.map((span) => span.name), ["invoke_agent Remote", "execute_tool shell"]);
+  assert.ok(!JSON.stringify(spans).includes("secret-output"), "content stays out unless asked");
+  assert.ok(JSON.stringify((await f.call(alice, "cora_trace_otlp", { trace_id: "tr_0123456789abcdef", content: "1" })).structuredContent.data).includes("secret-output"));
+  assert.equal((await f.call(bob, "cora_trace_otlp", { trace_id: "tr_0123456789abcdef" })).structuredContent.status, 403);
   assert.equal((await f.call(alice, "cora_usage", { days: 30 })).structuredContent.data.days, 30);
   assert.equal((await f.call(alice, "cora_cron_preview", { expr: "0 9 * * 1-5" })).structuredContent.data.next.length, 3);
 

@@ -28,7 +28,8 @@ const CODEX_DISABLED_FEATURES = [
 /** Cora's environment without its secrets: what an agent's CLI starts with. */
 export function childEnv() {
   const env = { ...process.env };
-  for (const name of Object.keys(env)) if (SECRET_ENV.includes(name) || /^COR[AO]_(BOT|TG_BOT|SK_BOT|SK_APP|GH_KEY|MAIL_ACCOUNT|GOOGLE|KNOWLEDGE)_/.test(name)) delete env[name];
+  // OTEL_* is Cora's own exporter (its headers may hold a collector key): the CLIs never inherit it.
+  for (const name of Object.keys(env)) if (SECRET_ENV.includes(name) || /^COR[AO]_(BOT|TG_BOT|SK_BOT|SK_APP|GH_KEY|MAIL_ACCOUNT|GOOGLE|KNOWLEDGE)_/.test(name) || name.startsWith("OTEL_")) delete env[name];
   return env;
 }
 
