@@ -9901,33 +9901,62 @@ function agentPermissionsPane(agent, ownersPanel = null) {
   const list = panel({ icon: "shield", title: "Autorizzazioni", hint: tr("Chi può affidare lavori a {name}, piattaforma per piattaforma.", { name: agent.name }) }, pane);
   root.append(tabs, list);
   if (ownersPanel) { ownersPanel.hidden = true; root.append(ownersPanel); }
-  let data, busy = false, current = "";
+  let data, current = "";
+  const saving = new Map();
   const order = ["discord", "telegram", "slack"];
   const platforms = () => [...new Set(data.people.map((person) => person.transport))].sort((a, b) => (order.indexOf(a) + 1 || 9) - (order.indexOf(b) + 1 || 9));
-  const on = (person) => person.inherent || person.allowed;
-  const toggle = async (person, allowed) => {
-    if (busy) return;
-    busy = true; draw();
+  const on = (person) => person.inherent || (saving.has(person.id) ? saving.get(person.id) : person.allowed);
+  const stateText = (person) => saving.has(person.id) ? tr("Salvo…") : on(person) ? (person.inherent ? tr("Sempre autorizzato") : data.answersAll ? tr("Può affidargli lavori") : tr("Parla e affida lavori")) : data.answersAll ? tr("Solo conversazione") : tr("Non gli risponde");
+  const paint = (node, person) => {
+    node.classList.toggle("is-on", Boolean(on(person)));
+    node.classList.toggle("is-saving", saving.has(person.id));
+    node.setAttribute("aria-busy", String(saving.has(person.id)));
+    const state = node.querySelector(".perm-state");
+    state.className = `perm-state${on(person) ? " yes" : ""}`;
+    state.textContent = stateText(person);
+  };
+  const toggle = async (person, allowed, node, control) => {
+    const started = Date.now();
+    saving.set(person.id, allowed);
+    paint(node, person);
+    let ok = false;
     try {
-      data = await api(`/api/agents/${agent.id}/permissions`, { method: "PUT", body: { id: person.id, allowed } });
+      const answer = await api(`/api/agents/${agent.id}/permissions`, { method: "PUT", body: { id: person.id, allowed } });
+      const saved = answer.people?.find((item) => item.id === person.id);
+      person.allowed = saved ? Boolean(saved.allowed) : allowed;
+      ok = person.allowed === allowed;
+      if (!ok) throw new Error(tr("Il salvataggio non è stato confermato"));
       toast(allowed ? tr("{name} può affidare lavori a {agent}", { name: person.name, agent: agent.name }) : tr("{name} non può più affidare lavori a {agent}", { name: person.name, agent: agent.name }));
     } catch (error) { toast(error.message, true); }
-    busy = false; draw();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, 260 - (Date.now() - started))));
+    saving.delete(person.id);
+    if (!ok) control.checked = Boolean(on(person));
+    if ((ok && !saving.size) || !node.isConnected) return draw();
+    paint(node, person);
   };
   const row = (person, twins) => {
     const userId = person.id.slice(person.transport.length + 1);
     const who = person.spaceOwner ? tr("Proprietario dello spazio") : person.inherent ? tr("Referente dell'agente") : "";
     const meta = [who, twins.has(person.name) ? `id …${userId.slice(-4)}` : "", person.last ? `${tr("ultimo messaggio")} ${new Date(person.last).toLocaleDateString(LOCALE)}` : tr("non ha ancora scritto")].filter(Boolean).join(" · ");
     const initials = String(person.name || "?").split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
-    const state = h("span", { class: `perm-state${on(person) ? " yes" : ""}` }, on(person) ? (person.inherent ? tr("Sempre autorizzato") : data.answersAll ? tr("Può affidargli lavori") : tr("Parla e affida lavori")) : data.answersAll ? tr("Solo conversazione") : tr("Non gli risponde"));
-    if (person.inherent || !data.canManage) return h("div", { class: `perm-row${on(person) ? " is-on" : ""}${person.inherent ? " is-locked" : ""}` },
-      h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
-      state, person.inherent ? h("span", { class: "perm-lock", title: tr("Non si può togliere") }, icon("lock")) : null);
-    const control = h("input", { type: "checkbox", checked: on(person), disabled: busy, "aria-label": tr("Autorizza {name}", { name: person.name }) });
-    control.addEventListener("change", () => toggle(person, control.checked));
-    return h("label", { class: `perm-row${on(person) ? " is-on" : ""}` },
-      h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
-      state, h("span", { class: "switch" }, control, h("span", { class: "rocker" })));
+    const state = h("span", { class: "perm-state", "aria-live": "polite" });
+    let node;
+    if (person.inherent || !data.canManage) {
+      node = h("div", { class: `perm-row${person.inherent ? " is-locked" : ""}` },
+        h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
+        state, person.inherent ? h("span", { class: "perm-lock", title: tr("Non si può togliere") }, icon("lock")) : null);
+    } else {
+      const control = h("input", { type: "checkbox", checked: Boolean(on(person)), "aria-label": tr("Autorizza {name}", { name: person.name }) });
+      node = h("label", { class: "perm-row" },
+        h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
+        state, h("span", { class: "switch" }, control, h("span", { class: "rocker" })));
+      control.addEventListener("change", () => {
+        if (saving.has(person.id)) { control.checked = Boolean(on(person)); return; }
+        toggle(person, control.checked, node, control);
+      });
+    }
+    paint(node, person);
+    return node;
   };
   const show = (id) => { current = id; draw(); };
   const draw = () => {

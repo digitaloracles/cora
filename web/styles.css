@@ -2672,6 +2672,11 @@ label.perm-row:hover { background: var(--panel-2); }
 .perm-lock { display: grid; place-items: center; width: 44px; color: var(--faint); }
 .perm-lock .ico { width: 16px; height: 16px; }
 .perm-row .switch { min-height: 0; }
+.perm-row.is-saving { cursor: progress; }
+.perm-row.is-saving .perm-state { color: var(--muted); }
+.perm-row.is-saving .rocker::after { animation: perm-saving 0.9s ease-in-out infinite; }
+@keyframes perm-saving { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .perm-row.is-saving .rocker::after { animation: none; opacity: 0.6; } }
 @media (max-width: 600px) {
   .perm-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; padding: 10px 12px; }
   .perm-mark { width: 32px; height: 32px; }

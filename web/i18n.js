@@ -925,6 +925,8 @@ export const EN = {
   "Può affidargli lavori": "Can give it tasks",
   "Solo conversazione": "Conversation only",
   "Non si può togliere": "Cannot be removed",
+  "Salvo…": "Saving…",
+  "Il salvataggio non è stato confermato": "The change was not confirmed",
   "Chi è autorizzato su {platform} può affidare lavori a {name}, che li svolge con il suo computer e i suoi strumenti, e quello che dice entra nella sua memoria. Gli altri possono parlargli, ma non affidargli lavori.": "People allowed on {platform} can give {name} tasks, which it carries out with its computer and tools, and what they say becomes part of its memory. Everyone else can talk to it, but cannot give it tasks.",
   "Autorizzati": "Allowed",
   "Non autorizzati": "Not allowed",
