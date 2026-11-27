@@ -34,12 +34,20 @@ Off by default. It turns on when the process environment sets the standard varia
 | `OTEL_RESOURCE_ATTRIBUTES` | extra resource attributes, e.g. `deployment.environment.name=production` |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` | include message content |
 | `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` | off |
+| `CORA_OTEL_VIEWER_URL` | Cora's own: the backend's trace list, linked from the panel as "see traces live" |
+| `CORA_OTEL_TRACE_URL` | Cora's own: one trace in the backend, with `{traceId}` where the OpenTelemetry trace id goes (e.g. `https://cloud.langfuse.com/project/<id>/traces/{traceId}`) |
 
 The payload is OTLP/JSON over HTTP, which every OTLP/HTTP receiver accepts on port 4318 (OpenTelemetry Collector, Jaeger, Grafana Tempo/Alloy, Honeycomb, Langfuse, …). `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with an activity-log error: use the HTTP endpoint. Header secrets live in hush as `CORA_OTEL_EXPORTER_OTLP_HEADERS`; `bin/run.sh` injects them as `OTEL_EXPORTER_OTLP_HEADERS`. Never write them into `~/.cora/env`. `childEnv()` strips every `OTEL_*` variable, so the agents' CLIs neither inherit the collector key nor start exporting on their own.
 
 A turn is queued when it finishes and sent in batches (32 turns or every 5 s, at most 512 waiting). Retryable answers (429, 502, 503, 504) and network errors are retried once; a collector that stays down costs only the queued spans and is logged once in the activity log, never inside a turn.
 
 With owner-scoped knowledge (`CORA_OWNER_MEMORY=1`) one instance-wide collector receives every owner's turns: point it only at a backend the space administrator controls, and keep content capture off.
+
+## In the panel
+
+`GET /api/otel` (`otelStatus()` in `src/otel.js`) tells the panel whether the export is on, the traces URL (origin and path only), `service.name`, `deployment.environment.name`, whether content is captured, and the exporter's counters since start: turns sent, turns lost, waiting, last success, last error. Header values are never returned. The agent's Reasoning tab shows it as the OpenTelemetry panel, with the two links above when set.
+
+Each turn page has "Scarica OpenTelemetry" (`/api/traces/:id/otlp`) and, when `CORA_OTEL_TRACE_URL` is set, a link to the same trace in the backend: `GET /api/traces/:id` carries `otelTraceId`, the id the export uses. The thread page downloads the whole thread (`/api/threads/:id/otlp`). Downloads work with the export off. Tests: `test/otel.test.js`, `test/otel-panel.test.js`.
 
 ## Migrating the turns already recorded
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { exporterConfig, otelIds, otlpRequest, OtlpExporter, traceparent, traceSpans } from "../src/otel.js";
+import { exporterConfig, otelIds, otelStatus, otlpRequest, OtlpExporter, traceparent, traceSpans } from "../src/otel.js";
 import { Traces } from "../src/traces.js";
 import { childEnv } from "../src/cli.js";
 
@@ -143,6 +143,30 @@ test("finished turns reach an OTLP/HTTP collector, and a dead collector never br
   await dead.flush();
   assert.equal(logged.length, 1);
   assert.match(logged[0].text, /export fallito/);
+
+  const env = { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${server.address().port}`, OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20fixture", OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=notseb" };
+  const status = otelStatus(exporter, env);
+  assert.equal(status.enabled, true);
+  assert.equal(status.endpoint, `http://127.0.0.1:${server.address().port}/v1/traces`);
+  assert.equal(status.environment, "notseb");
+  assert.equal(status.authenticated, true);
+  assert.equal(status.exported, 1);
+  assert.ok(status.lastOkAt);
+  assert.ok(!JSON.stringify(status).includes("fixture"), "the collector's key never reaches the panel");
+  const failed = otelStatus(dead, { OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:9" });
+  assert.equal(failed.failing, true);
+  assert.equal(failed.lost, 1);
+  assert.ok(failed.lastError);
+});
+
+test("the panel learns whether turns leave, and where to see them", () => {
+  assert.deepEqual(otelStatus(null, {}), { enabled: false, viewerUrl: null, traceUrl: null });
+  assert.equal(otelStatus(null, { OTEL_EXPORTER_OTLP_ENDPOINT: "ftp://c" }).error, "OTLP endpoint must be http(s): ftp:");
+  const links = otelStatus(null, { CORA_OTEL_VIEWER_URL: "https://cloud.langfuse.com/project/p1/traces", CORA_OTEL_TRACE_URL: "https://cloud.langfuse.com/project/p1/traces/{traceId}" });
+  assert.equal(links.viewerUrl, "https://cloud.langfuse.com/project/p1/traces");
+  assert.equal(links.traceUrl, "https://cloud.langfuse.com/project/p1/traces/{traceId}");
+  assert.equal(otelStatus(null, { CORA_OTEL_TRACE_URL: "https://x.example/trace" }).traceUrl, null, "a trace link needs {traceId}");
+  assert.equal(otelStatus(null, { CORA_OTEL_VIEWER_URL: "javascript:alert(1)" }).viewerUrl, null);
 });
 
 test("the agents' CLIs never inherit Cora's exporter settings", (t) => {

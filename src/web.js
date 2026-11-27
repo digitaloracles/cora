@@ -31,7 +31,7 @@ import { isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./roo
 import { PreviewWindow } from "./preview.js";
 import { nextRuns } from "./scheduler.js";
 import { SHARED } from "./store.js";
-import { otlpRequest } from "./otel.js";
+import { otelIds, otelStatus, otlpRequest } from "./otel.js";
 import { modelKeyBackend } from "./hermes-keys.js";
 import { BRAIN_KINDS } from "./company-brain.js";
 import { VOICE_LANGUAGES } from "./voice.js";
@@ -2052,6 +2052,8 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       return send(res, 200, [...live, ...store.recentTraces(limit).filter((trace) => !live.some((item) => item.id === trace.id))].filter((trace) => ownsEntry(trace, user)).slice(0, limit));
     }
 
+    if (path === "/api/otel" && method === "GET") return send(res, 200, otelStatus(traces?.exporter || null));
+
     match = /^\/api\/traces\/(tr_[0-9a-f]+)\/otlp$/.exec(path);
     if (match && method === "GET") {
       const trace = traces ? traces.get(match[1]) : store.trace(match[1]);
@@ -2066,7 +2068,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       const trace = traces ? traces.get(match[1]) : store.trace(match[1]);
       if (!trace) throw new HttpError(404, "ragionamento non trovato");
       if (!ownsEntry(trace, user)) throw new HttpError(403, "Questo ragionamento appartiene a un altro proprietario.");
-      return send(res, 200, trace);
+      return send(res, 200, { ...trace, otelTraceId: otelIds(trace.id).traceId });
     }
 
     if (path.startsWith("/api/artifacts") && artifacts) return artifactsApi(req, res, url, user);
