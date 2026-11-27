@@ -6263,7 +6263,9 @@ function paintSideThreads() {
     return;
   }
   const words = plainText(side.search.value).split(/\s+/).filter(Boolean);
-  const matching = side.items.filter((thread) => !words.length || words.every((word) => plainText([thread.name, thread.parentName, sideThreadPlace(thread), ...thread.agents.map((agent) => agent.name)].join(" ")).includes(word)));
+  // A closed thread leaves the latest threads; a search still finds it, and a new message brings it back.
+  const open = side.items.filter((thread) => !thread.closed);
+  const matching = (words.length ? side.items : open).filter((thread) => !words.length || words.every((word) => plainText([thread.name, thread.parentName, sideThreadPlace(thread), ...thread.agents.map((agent) => agent.name)].join(" ")).includes(word)));
   const shown = matching.slice(0, words.length ? 40 : 14);
   const here = location.hash.split("?")[0];
   // Drawn again only when what it shows changed: a refresh that brings nothing new leaves the list alone.
@@ -6279,7 +6281,7 @@ function paintSideThreads() {
         thread.working ? h("span", { class: "typing", title: tr("Sta rispondendo") }, h("i"), h("i"), h("i")) : null);
     }));
   }
-  side.node.classList.toggle("no-threads", !side.items.length && !words.length);
+  side.node.classList.toggle("no-threads", !open.length && !words.length);
   side.none.hidden = Boolean(shown.length);
   side.none.textContent = tr(words.length ? "Nessun thread con questo nome." : "Ancora nessun thread: aprine uno.");
 }
