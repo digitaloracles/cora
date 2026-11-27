@@ -1601,8 +1601,9 @@ function fitOf(model, card, reclaimable = 0) {
   const freeMib = card.memoryTotal - card.memoryUsed + reclaimable / 1_048_576;
   const neededMib = VRAM_NEEDED(model.size) / 1_048_576;
   if (neededMib <= freeMib) return { kind: "on", text: "entra" };
-  if (neededMib <= card.memoryTotal) return { kind: "warn", text: "stretta: libera la scheda" };
-  return { kind: "err", text: "non entra: girerebbe sul processore" };
+  // On an Apple M chip the card is the Mac's own memory: what frees it is closing apps.
+  if (neededMib <= card.memoryTotal) return { kind: "warn", text: card.unified ? "stretta: chiudi qualche app per liberare memoria" : "stretta: libera la scheda" };
+  return { kind: "err", text: card.unified ? "non entra nella memoria della GPU: girerebbe in parte sul processore" : "non entra: girerebbe sul processore" };
 }
 
 /**
@@ -1610,9 +1611,13 @@ function fitOf(model, card, reclaimable = 0) {
  * processor whatever did not fit, and even a tenth left behind costs most of the
  * speed, so anything short of all of it is a warning.
  */
-function residencyOf(loaded) {
+function residencyOf(loaded, card) {
   if (!loaded.size) return null;
   const share = Math.round((loaded.vram / loaded.size) * 100);
+  if (card?.unified) {
+    if (share >= 99) return { kind: "on", text: tr("acceso, tutto sulla GPU") };
+    return { kind: "warn", text: tr("acceso, {share}% sulla GPU: il resto gira sul processore", { share }) };
+  }
   if (share >= 99) return { kind: "on", text: tr("acceso, tutto sulla scheda") };
   return { kind: "warn", text: tr("acceso, {share}% sulla scheda: il resto gira sul processore", { share }) };
 }
@@ -1935,7 +1940,9 @@ function brainPanel(agent) {
         h("b", {}, raw(item.name)),
         card && item.uuid === card.uuid && cards.length > 1 ? badge("in uso da lui", "on", "check") : null,
         h("span", { class: "card-meta" },
-          raw(tr("{free} GB liberi di {total}", { free: gbFromMib(item.memoryTotal - item.memoryUsed), total: gbFromMib(item.memoryTotal) })),
+          // Apple M: one memory for the Mac and its GPU, of which Metal lends the GPU a share.
+          item.unified ? [raw(item.gpuCores ? tr("GPU {cores} core · memoria unificata {ram} GB", { cores: item.gpuCores, ram: gbFromMib(item.ram) }) : tr("memoria unificata {ram} GB", { ram: gbFromMib(item.ram) })), " · "] : null,
+          raw(tr(item.unified ? "{free} GB liberi di {total} per i modelli" : "{free} GB liberi di {total}", { free: gbFromMib(item.memoryTotal - item.memoryUsed), total: gbFromMib(item.memoryTotal) })),
           // Without this the verdicts below look wrong: a 9 GB model "fits" in 4.5 GB free
           // because the model loaded now is let go when the agent changes model.
           held && card && item.uuid === card.uuid ? [" · ", raw(tr("{held} GB al modello acceso, che si libera cambiando", { held: gbFromBytes(held) }))] : null,
@@ -1959,7 +1966,7 @@ function brainPanel(agent) {
       const short = harness === "hermes" && model.context > 0 && model.context < HERMES_MIN_CONTEXT;
       return modelRow({ id, label: model.name, tools: model.tools, vision: model.vision, ...(short ? { usable: false, reason: HERMES_TOO_SHORT } : {}) }, {
         subtitle: model.size >= WEIGHTS_AT_LEAST ? tr("{size} GB", { size: gbFromBytes(model.size) }) : tr("non è su questa macchina"),
-        fit: loaded ? residencyOf(loaded) : fitOf(model, card, held),
+        fit: loaded ? residencyOf(loaded, card) : fitOf(model, card, held),
         selected: id === chosen,
       });
     });

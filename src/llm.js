@@ -1,5 +1,5 @@
 import { recoverHarness } from "./thread-sessions.js";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -105,6 +105,80 @@ export function graphicsCards({ bin = "nvidia-smi", timeoutMs = 4000 } = {}) {
       })));
     });
   });
+}
+
+const MiB = 1_048_576;
+
+/** One read of a macOS tool: its text, or nothing when it is missing or slow. */
+function readCommand(bin, args, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    try {
+      execFile(bin, args, { timeout: timeoutMs, maxBuffer: 4 * MiB }, (error, stdout) => resolve(error ? "" : String(stdout)));
+    } catch {
+      resolve("");
+    }
+  });
+}
+
+/**
+ * How much of the unified memory Metal lets the GPU take: the limit the owner set
+ * with iogpu.wired_limit_mb, otherwise the share macOS grants by default (about
+ * two thirds up to 32 GB, three quarters above), which is what Ollama plans with.
+ */
+export function metalBudgetMib(ramMib, wiredLimitMib = 0) {
+  if (wiredLimitMib > 0) return Math.min(wiredLimitMib, ramMib);
+  return Math.floor(ramMib * (ramMib > 32 * 1024 ? 0.75 : 2 / 3));
+}
+
+/** The pages macOS can hand over right now: free, plus the inactive and speculative it drops at once. */
+export function availableFromVmStat(text) {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]) || 16384;
+  const pages = (label) => Number(new RegExp(`^Pages ${label}:\\s+(\\d+)`, "m").exec(text)?.[1]) || 0;
+  if (!/Pages free:/.test(text)) return null;
+  return (pages("free") + pages("inactive") + pages("speculative")) * pageSize;
+}
+
+/**
+ * An Apple M chip seen as the card it is: its GPU runs the models through Metal on
+ * the same memory as everything else, so what a model can use is the Metal share
+ * of the RAM less what the rest of the Mac holds now.
+ */
+export async function appleSilicon({ platform = process.platform, arch = process.arch, run = readCommand } = {}) {
+  if (platform !== "darwin" || arch !== "arm64") return [];
+  const [sysctl, vmStat, profile, accelerator] = await Promise.all([
+    run("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string", "hw.memsize"]),
+    run("/usr/bin/vm_stat", []),
+    run("/usr/sbin/system_profiler", ["SPDisplaysDataType", "-json"], 8000),
+    run("/usr/sbin/ioreg", ["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"]),
+  ]);
+  const [brand = "", memsize = ""] = sysctl.split("\n").map((line) => line.trim());
+  const ramBytes = Number(memsize) || 0;
+  if (!ramBytes) return [];
+  const wiredLimit = Number((await run("/usr/sbin/sysctl", ["-n", "iogpu.wired_limit_mb"])).trim()) || 0;
+  let gpu = null;
+  try { gpu = (JSON.parse(profile).SPDisplaysDataType || []).find((item) => item.sppci_device_type === "spdisplays_gpu") || null; } catch {}
+  const name = String(gpu?.sppci_model || brand || "Apple silicon").trim();
+  const ramMib = Math.round(ramBytes / MiB);
+  const budget = metalBudgetMib(ramMib, wiredLimit);
+  const available = availableFromVmStat(vmStat);
+  const freeMib = available === null ? budget : Math.min(budget, Math.round(available / MiB));
+  return [{
+    index: 0,
+    uuid: "apple-silicon",
+    name,
+    memoryTotal: budget,
+    memoryUsed: budget - freeMib,
+    load: Number(/"Device Utilization %"=(\d+)/.exec(accelerator)?.[1]) || 0,
+    unified: true,
+    ram: ramMib,
+    gpuCores: Number(gpu?.sppci_cores) || 0,
+  }];
+}
+
+/** The cards that run local models here: NVIDIA ones, or the GPU of an Apple M chip. */
+export async function localGraphics({ platform = process.platform, arch = process.arch } = {}) {
+  if (platform === "darwin" && arch === "arm64") return appleSilicon({ platform, arch });
+  return graphicsCards();
 }
 
 export const PROVIDERS = {
@@ -354,7 +428,7 @@ export class LLM {
   async hardware({ hosts = [] } = {}) {
     const list = this.ollamaHostList(hosts);
     const reports = await Promise.all(list.map((host) => this.ollamaReport(host)));
-    const out = { gpus: list.some((host) => host.local) ? await graphicsCards() : [], hosts: reports };
+    const out = { gpus: list.some((host) => host.local) ? await localGraphics() : [], hosts: reports };
     // What the panel showed before this had several servers: the first local one.
     const first = reports.find((host) => host.local) || reports[0] || { url: "", local: false, reachable: false, version: "" };
     out.ollama = { url: first.url, local: Boolean(first.local), reachable: first.reachable, version: first.version };
