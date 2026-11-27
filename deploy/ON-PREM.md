@@ -19,6 +19,10 @@ account and still get an always-on install.
   other — not in ours.
 - Outbound internet. No inbound port, as long as the site is published through a tunnel.
 
+On a fresh Ubuntu or Debian machine, `deploy/prepare-host.sh` (as root) does all of this in one go:
+the user, Docker, Node 22, hush with its vault, and optionally Caddy for HTTPS, a firewall, swap and
+the agent CLIs. Run it with `--help` for the options.
+
 ## 1. Deploy
 
 Put the SSH details of the machine in a configuration file of its own, so the procedure is the
