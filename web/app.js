@@ -921,7 +921,7 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
       h("nav", { class: "side-nav" }, nav.map(([key, label, name, active, count]) => h("a", { href: `#/${key}`, class: active ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "nav-count", title: tr("{count} da rivedere", { count }) }, raw(String(count))) : null))),
       h("div", { class: "side-agents" },
         h("span", { class: "label" }, "Agenti"),
-        S.data ? S.data.agents.map((agent) => h("a", { href: `#/agent/${agent.id}/chat`, class: section === "agent" && current === agent.id ? "active" : "" }, avatar(agent, "xs"), h("span", { class: "grow" }, raw(agent.name)), agentDot(agent))) : skeleton("rows"),
+        S.data ? S.data.agents.map((agent) => h("a", { href: `#/agent/${agent.id}/impostazioni`, class: section === "agent" && current === agent.id ? "active" : "" }, avatar(agent, "xs"), h("span", { class: "grow" }, raw(agent.name)), agentDot(agent))) : skeleton("rows"),
         h("a", { href: "#/new", class: section === "new" ? "active" : "" }, h("span", { class: "avatar xs add" }, icon("plus")), h("span", { class: "grow" }, "Nuovo agente"))),
       h("div", { class: "side-account" }, accountButton("side"))),
     h("header", { class: "appbar" },
@@ -1168,7 +1168,7 @@ function agentCard(agent, index) {
   const routines = S.data.routines.filter((routine) => routine.agentId === agent.id && routine.enabled).length;
   return h("article", { class: `agent-card${agent.enabled ? "" : " off"}`, vars: { "--ring": agent.color || "#f2a93b", "--delay": `${index * 50}ms` } },
     monitor,
-    h("a", { class: "agent-ident", href: `#/agent/${agent.id}/chat` },
+    h("a", { class: "agent-ident", href: `#/agent/${agent.id}/impostazioni` },
       avatar(agent),
       h("span", { class: "grow" }, h("b", {}, raw(agent.name)), h("small", { title: modelLabel(agent.model) }, modelLabel(agent.model, { short: true }))),
       icon("next", "chev")),
@@ -1576,7 +1576,7 @@ function renderAgents() {
         // One platform: how it writes there; several: where it is.
         const kinds = agentPlatforms(agent);
         const account = kinds.length === 1 ? tr(agentAccount(agent, kinds[0])[0]) : kinds.length ? kinds.map((kind) => TRANSPORTS[kind].label).join(" + ") : tr("Solo pannello");
-        return h("a", { class: "row-link", href: `#/agent/${agent.id}/chat` },
+        return h("a", { class: "row-link", href: `#/agent/${agent.id}/impostazioni` },
           avatar(agent),
           h("span", { class: "grow" },
             h("span", { class: "row-title" }, raw(agent.name), agentDot(agent), agent.sealed ? badge("Sigillato", "", "lock") : null),
@@ -4738,7 +4738,9 @@ function agentChatWidget(agent) {
       if (event.key === "Escape" && widget.open) { event.preventDefault(); close(); }
     } }, launcher,
     h("section", { class: "agent-chat-window", "aria-label": title },
-      h("header", {}, h("strong", {}, raw(title)), btn("", { icon: "close", title: "Chiudi", cls: "sm ghost", onclick: close })),
+      h("header", {}, h("strong", {}, raw(title)), h("span", { class: "agent-chat-tools" },
+        btn("", { icon: "maximize", title: "Apri la chat grande", cls: "sm ghost", href: `#/agent/${agent.id}/chat` }),
+        btn("", { icon: "close", title: "Chiudi", cls: "sm ghost", onclick: close }))),
       slot));
   let loading = false;
   widget.addEventListener("toggle", async () => {
@@ -4802,7 +4804,7 @@ async function renderAgent() {
       const count = key === "memoria" ? agent.memoryCount : key === "routine" ? routines.length : key === "skill" ? agent.skillCount : null;
       return h("a", { href: `#/agent/${agent.id}/${key}`, class: key === tab ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "count" }, count) : null);
     })),
-    slot, agentChatWidget(agent),
+    slot, compact ? null : agentChatWidget(agent),
   ], { title: agent.name, back: workspaceTab && sub ? `#/agent/${agent.id}/${tab}` : sub ? `#/agent/${agent.id}/ragionamento` : "#/agenti", mode: compact ? "chat" : workspaceTab ? "email" : "" });
   document.querySelector(".tabs a.active")?.scrollIntoView({ block: "nearest", inline: "center" });
   const isCurrent = () => slot.isConnected && (workspaceTab ? location.hash.startsWith(`#/agent/${agent.id}/${tab}`) : location.hash === view);

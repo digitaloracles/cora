@@ -1587,6 +1587,7 @@ export const EN = {
   "{count} pagine collegate": "{count} linked pages",
   "Apri la pagina": "Open the page",
   "Chiudi": "Close",
+  "Apri la chat grande": "Open the full chat",
   "Avvicina": "Zoom in",
   "Allontana": "Zoom out",
   "Mostra tutto": "Show everything",
