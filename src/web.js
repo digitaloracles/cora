@@ -31,6 +31,7 @@ import { isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./roo
 import { PreviewWindow } from "./preview.js";
 import { nextRuns } from "./scheduler.js";
 import { SHARED } from "./store.js";
+import { otlpRequest } from "./otel.js";
 import { modelKeyBackend } from "./hermes-keys.js";
 import { BRAIN_KINDS } from "./company-brain.js";
 import { VOICE_LANGUAGES } from "./voice.js";
@@ -1189,6 +1190,13 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
       throw new HttpError(405, "Metodo non consentito.");
     }
+    const threadOtlp = /^\/api\/threads\/([\w:.%-]{3,160})\/otlp$/.exec(path);
+    if (threadOtlp && method === "GET") {
+      const detail = await orchestrator.threadDetail(decodeURIComponent(threadOtlp[1]), threadScope);
+      if (!detail) throw new HttpError(404, "thread non trovato");
+      const finished = detail.traces.filter((trace) => trace.status !== "running" && (!knowledge || ownsEntry(trace, user)));
+      return send(res, 200, otlpRequest(finished.map((trace) => ({ trace, agentName: trace.agentName, content: url.searchParams.get("content") === "1" }))));
+    }
     const threadPage = /^\/api\/threads\/([\w:.%-]{3,160})$/.exec(path);
     if (threadPage && !["rename", "stop", "close"].includes(threadPage[1]) && method === "GET") {
       const detail = await orchestrator.threadDetail(decodeURIComponent(threadPage[1]), threadScope);
@@ -2042,6 +2050,15 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 12));
       const live = [...(traces?.live.values() || [])].map((trace) => trace.summary());
       return send(res, 200, [...live, ...store.recentTraces(limit).filter((trace) => !live.some((item) => item.id === trace.id))].filter((trace) => ownsEntry(trace, user)).slice(0, limit));
+    }
+
+    match = /^\/api\/traces\/(tr_[0-9a-f]+)\/otlp$/.exec(path);
+    if (match && method === "GET") {
+      const trace = traces ? traces.get(match[1]) : store.trace(match[1]);
+      if (!trace) throw new HttpError(404, "ragionamento non trovato");
+      if (!ownsEntry(trace, user)) throw new HttpError(403, "Questo ragionamento appartiene a un altro proprietario.");
+      if (trace.status === "running") throw new HttpError(409, "Il turno è ancora in corso.");
+      return send(res, 200, otlpRequest([{ trace, agentName: store.agent(trace.agentId)?.name || "", content: url.searchParams.get("content") === "1" }]));
     }
 
     match = /^\/api\/traces\/(tr_[0-9a-f]+)$/.exec(path);

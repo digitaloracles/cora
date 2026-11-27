@@ -23,9 +23,11 @@ function clipArgs(args) {
  * Saved in SQLite for the panel and streamed live while the turn runs.
  */
 export class Traces {
-  constructor({ store, emit = () => {} }) {
+  constructor({ store, emit = () => {}, exporter = null }) {
     this.store = store;
     this.emit = emit;
+    // Finished turns also go to an OpenTelemetry collector, when one is configured (src/otel.js).
+    this.exporter = exporter;
     this.live = new Map();
   }
 
@@ -108,6 +110,12 @@ class Trace {
     this.owner.live.delete(this.id);
     this.owner.store.saveTrace(this);
     this.owner.emit({ type: "trace", event: "end", trace: this.summary() });
+    try { this.owner.exporter?.add(this.finished()); } catch {}
+  }
+
+  /** What an exporter needs of a finished turn: no system prompt, which never leaves. */
+  finished() {
+    return { ...this.summary(), output: this.output, steps: this.steps, dropped: this.dropped, requestOrigin: this.requestOrigin || null };
   }
 
   summary() {
