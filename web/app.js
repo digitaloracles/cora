@@ -3244,7 +3244,7 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
     ["ascolto", "Ascolto", "radio", "Canali e presenza", [listening]],
     ["voce", "Voce", "mic", "Lingua e risposte vocali", [voice]],
     ["sicurezza", "Sicurezza", "lock", "Isolamento e protezione", [agentSecurityPane(agent, knowledge), agentRemoteAccessPane(agent)]],
-    ["autorizzazioni", "Autorizzazioni", "shield", "Chi può farlo lavorare", [agentPermissionsPane(agent), owner].filter(Boolean)],
+    ["autorizzazioni", "Autorizzazioni", "shield", "Chi può farlo lavorare", [agentPermissionsPane(agent, owner)]],
     ...platformsOn().map((kind) => [kind, TRANSPORTS[kind].label, TRANSPORTS[kind].icon, "Account e collegamento", [kind === "slack" ? slackAccount(agent) : kind === "telegram" ? telegramAccount(agent) : discordAccount(agent)]]),
     ["meet", "Google Meet", "mic", "Account e riunioni", [meetPane]],
     ["github", "GitHub", "github", "App e repository", [githubAccount(agent)]],
@@ -9890,36 +9890,75 @@ function subscriptionPlanLabel(plan) {
   return ({ free: "Free", pro: "Pro", plus: "Plus", max: "Max", team: "Team", enterprise: "Enterprise", business: "Business", self_serve_business_prolite: "Business" })[plan] || (/\s/.test(plan) ? plan : tr("Abbonamento attivo"));
 }
 
-/** Each agent's owner grants operational access independently of private panel access. */
-function agentPermissionsPane(agent) {
-  const body = h("div", { class: "stack" }, h("p", { class: "muted", role: "status" }, "Caricamento…"));
-  let data, busy = false;
+/**
+ * Who may put an agent to work, one tab per platform its people wrote from, and the agent's owners in a tab of their own.
+ * Each person is a row with a plain-words state: the owner of the space always may, the others have a switch.
+ */
+function agentPermissionsPane(agent, ownersPanel = null) {
+  const root = h("div", { class: "perm-page" });
+  const tabs = h("div", { class: "segmented perm-tabs", role: "tablist", "aria-label": tr("Autorizzazioni per piattaforma") });
+  const pane = h("div", { class: "perm-pane", role: "tabpanel" });
+  const list = panel({ icon: "shield", title: "Autorizzazioni", hint: tr("Chi può affidare lavori a {name}, piattaforma per piattaforma.", { name: agent.name }) }, pane);
+  root.append(tabs, list);
+  if (ownersPanel) { ownersPanel.hidden = true; root.append(ownersPanel); }
+  let data, busy = false, current = "";
+  const order = ["discord", "telegram", "slack"];
+  const platforms = () => [...new Set(data.people.map((person) => person.transport))].sort((a, b) => (order.indexOf(a) + 1 || 9) - (order.indexOf(b) + 1 || 9));
+  const on = (person) => person.inherent || person.allowed;
+  const toggle = async (person, allowed) => {
+    if (busy) return;
+    busy = true; draw();
+    try {
+      data = await api(`/api/agents/${agent.id}/permissions`, { method: "PUT", body: { id: person.id, allowed } });
+      toast(allowed ? tr("{name} può affidare lavori a {agent}", { name: person.name, agent: agent.name }) : tr("{name} non può più affidare lavori a {agent}", { name: person.name, agent: agent.name }));
+    } catch (error) { toast(error.message, true); }
+    busy = false; draw();
+  };
+  const row = (person, twins) => {
+    const userId = person.id.slice(person.transport.length + 1);
+    const who = person.spaceOwner ? tr("Proprietario dello spazio") : person.inherent ? tr("Referente dell'agente") : "";
+    const meta = [who, twins.has(person.name) ? `id …${userId.slice(-4)}` : "", person.last ? `${tr("ultimo messaggio")} ${new Date(person.last).toLocaleDateString(LOCALE)}` : tr("non ha ancora scritto")].filter(Boolean).join(" · ");
+    const initials = String(person.name || "?").split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
+    const state = h("span", { class: `perm-state${on(person) ? " yes" : ""}` }, on(person) ? (person.inherent ? tr("Sempre autorizzato") : data.answersAll ? tr("Può affidargli lavori") : tr("Parla e affida lavori")) : data.answersAll ? tr("Solo conversazione") : tr("Non gli risponde"));
+    if (person.inherent || !data.canManage) return h("div", { class: `perm-row${on(person) ? " is-on" : ""}${person.inherent ? " is-locked" : ""}` },
+      h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
+      state, person.inherent ? h("span", { class: "perm-lock", title: tr("Non si può togliere") }, icon("lock")) : null);
+    const control = h("input", { type: "checkbox", checked: on(person), disabled: busy, "aria-label": tr("Autorizza {name}", { name: person.name }) });
+    control.addEventListener("change", () => toggle(person, control.checked));
+    return h("label", { class: `perm-row${on(person) ? " is-on" : ""}` },
+      h("span", { class: "perm-mark", "aria-hidden": "true" }, initials), h("span", { class: "perm-who" }, h("b", {}, raw(person.name)), h("small", {}, raw(meta))),
+      state, h("span", { class: "switch" }, control, h("span", { class: "rocker" })));
+  };
+  const show = (id) => { current = id; draw(); };
   const draw = () => {
-    body.replaceChildren(...[
-      h("p", { class: "lead agent-permission-note" }, "Le persone autorizzate possono conversare con questo agente, usare la sua memoria nelle risposte e affidargli lavori. Gli accessi privati al pannello restano al proprietario."),
-      data.people.length ? h("div", { class: "agent-permissions" }, data.people.map((person) => {
-        const control = h("input", { type: "checkbox", checked: person.inherent || person.allowed, disabled: busy || !data.canManage || person.inherent, "aria-label": tr("Autorizza {name}", { name: person.name }) });
-        control.addEventListener("change", async () => {
-          if (busy) return;
-          const allowed = control.checked;
-          busy = true;
-          draw();
-          try {
-            data = await api(`/api/agents/${agent.id}/permissions`, { method: "PUT", body: { id: person.id, allowed } });
-            toast("Permessi aggiornati");
-          } catch (error) { toast(error.message, true); }
-          busy = false;
-          draw();
-        });
-        return h("label", { class: "agent-permission" }, h("span", { class: "access-user-mark" }, icon(TRANSPORTS[person.transport]?.icon || "user")),
-          h("span", { class: "grow" }, h("b", {}, raw(person.name)), h("small", {}, raw(TRANSPORTS[person.transport]?.label || person.transport), person.inherent ? tr(" · referente dell'agente") : person.last ? raw(` · ${tr("ultimo messaggio")} ${new Date(person.last).toLocaleDateString(LOCALE)}`) : null)),
-          h("span", { class: "switch" }, control, h("span", { class: "rocker" })));
-      })) : h("p", { class: "access-no-rules" }, "Le persone compaiono dopo aver scritto in un canale dell'agente o al suo bot."),
+    const kinds = platforms();
+    if (!current || (current !== "owners" && !kinds.includes(current))) current = kinds[0] || (ownersPanel ? "owners" : "");
+    const tab = (id, label, iconName, count) => h("button", { type: "button", role: "tab", class: current === id ? "on" : "", "aria-selected": String(current === id), onclick: () => show(id) },
+      icon(iconName), h("span", {}, label), count == null ? null : h("span", { class: "perm-count" }, String(count)));
+    tabs.replaceChildren(...[...kinds.map((kind) => tab(kind, raw(TRANSPORTS[kind]?.label || kind), TRANSPORTS[kind]?.icon || "user", data.people.filter((person) => person.transport === kind && on(person)).length + "/" + data.people.filter((person) => person.transport === kind).length)),
+      ownersPanel ? tab("owners", tr("Proprietari"), "users") : null].filter(Boolean));
+    tabs.hidden = !kinds.length && !ownersPanel;
+    if (ownersPanel) ownersPanel.hidden = current !== "owners";
+    list.hidden = current === "owners";
+    if (current === "owners") return;
+    if (!kinds.length) return pane.replaceChildren(h("p", { class: "access-no-rules" }, "Le persone compaiono dopo aver scritto in un canale dell'agente o al suo bot."));
+    const people = data.people.filter((person) => person.transport === current)
+      .sort((a, b) => Number(Boolean(b.inherent)) - Number(Boolean(a.inherent)) || Number(on(b)) - Number(on(a)) || (b.last || 0) - (a.last || 0));
+    const names = people.map((person) => person.name), twins = new Set(names.filter((name, index) => names.indexOf(name) !== index));
+    const yes = people.filter(on), no = people.filter((person) => !on(person));
+    const label = TRANSPORTS[current]?.label || current;
+    pane.replaceChildren(...[
+      h("p", { class: "perm-lead" }, data.answersAll
+        ? tr("Chi è autorizzato su {platform} può affidare lavori a {name}, che li svolge con il suo computer e i suoi strumenti, e quello che dice entra nella sua memoria. Gli altri possono parlargli, ma non affidargli lavori.", { platform: label, name: agent.name })
+        : tr("Su {platform} {name} risponde solo a chi è autorizzato: può parlargli, affidargli lavori, e quello che dice entra nella sua memoria. Agli altri non risponde e dice chi può dare il permesso.", { platform: label, name: agent.name })),
+      yes.length ? h("div", { class: "perm-group" }, h("h3", {}, tr("Autorizzati"), h("span", {}, String(yes.length))), h("div", { class: "perm-list" }, yes.map((person) => row(person, twins)))) : null,
+      no.length ? h("div", { class: "perm-group" }, h("h3", {}, tr("Non autorizzati"), h("span", {}, String(no.length))), h("div", { class: "perm-list" }, no.map((person) => row(person, twins)))) : null,
       data.canManage ? null : h("p", { class: "access-note" }, icon("info"), "Solo il proprietario dell'agente cambia le autorizzazioni.")].filter(Boolean));
   };
+  pane.replaceChildren(h("p", { class: "muted", role: "status" }, "Caricamento…"));
   api(`/api/agents/${agent.id}/permissions`).then((value) => { data = value; draw(); })
-    .catch((error) => body.replaceChildren(h("p", { class: "notice warn" }, icon("alert"), raw(error.message))));
-  return panel({ icon: "shield", title: "Autorizzazioni", hint: tr("Chi può parlare e affidare lavori a {name}.", { name: agent.name }) }, body);
+    .catch((error) => pane.replaceChildren(h("p", { class: "notice warn" }, icon("alert"), raw(error.message))));
+  return root;
 }
 
 const REMOVED_LABELS = { email: "email", phone: "telefoni", id: "id", ip: "IP", link: "link", secret: "segreti", person: "persone" };

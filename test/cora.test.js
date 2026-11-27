@@ -1295,7 +1295,7 @@ test("agent permissions are managed by each owner, scoped to its contacts and pr
   f.app.store.appendArchive(`tg:11223344@${nico.id}`, { ...message, id: "own-dm-contact", authorId: "11223344", authorName: "Own DM contact" });
   const path = "/api/agents/" + nico.id + "/permissions";
   const initial = await f.request(f.alice, path);
-  assert.equal(initial.status, 200); assert.equal(initial.data.canManage, true);
+  assert.equal(initial.status, 200); assert.equal(initial.data.canManage, true); assert.equal(initial.data.answersAll, false);
   assert.ok(initial.data.people.some((person) => person.id === contact && !person.allowed));
   assert.ok(initial.data.people.some((person) => person.name === "Own DM contact"));
   assert.doesNotMatch(JSON.stringify(initial.data), /PRIVATE_OTHER_CONTACT/);
@@ -1327,6 +1327,15 @@ test("agent permissions are managed by each owner, scoped to its contacts and pr
   assert.equal(f.app.store.hasAgentPermission(contact, nico.id), true);
   assert.equal(f.app.store.agent(nico.id).brainOwnerId, f.alice.user.id);
   assert.equal(f.app.store.agent(nico.id).ownerId, "");
+  f.app.store.updateSettings({ telegramOwnerIds: [TG_OWNER] });
+  f.app.store.appendArchive("tg:" + TG_GROUP, { id: "space-owner", kind: "owner", authorId: TG_OWNER, authorName: "Space Owner", content: "Ciao", at: Date.now() });
+  const spaceOwner = (await f.request(f.alice, path)).data.people.find((person) => person.id === "telegram:" + TG_OWNER);
+  assert.equal(spaceOwner.spaceOwner, true);
+  assert.equal(spaceOwner.inherent, false, "the owner of the space does not answer for an agent whose Brain is someone else's");
+  const own = await create(f.admin, "Own agent");
+  const ownView = (await f.request(f.admin, "/api/agents/" + own.id + "/permissions")).data;
+  assert.equal(ownView.people.find((person) => person.id === "telegram:" + TG_OWNER).inherent, true, "the owner of the space always answers for their own agent");
+  assert.equal(ownView.people.find((person) => person.id === contact).spaceOwner, undefined);
 });
 
 test("sharing recipients omit the viewer and emergency owner and retain admitted people by their public identities", async (t) => {

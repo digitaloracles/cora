@@ -2643,6 +2643,44 @@ a.share-stats:hover { color: var(--amber); }
 .agent-permission small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .agent-permission .switch { flex-shrink: 0; }
 .agent-permission-note { color: var(--muted); }
+.perm-page { display: grid; gap: 16px; }
+.perm-page > [hidden] { display: none; }
+.perm-tabs { justify-self: start; max-width: 100%; overflow-x: auto; }
+.perm-tabs button { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; white-space: nowrap; font-weight: 600; }
+.perm-tabs button .ico { width: 15px; height: 15px; }
+.perm-count { padding: 1px 7px; border-radius: 999px; background: var(--well); color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.perm-tabs button.on .perm-count { background: rgb(255 255 255 / 0.22); color: inherit; }
+.perm-pane { display: grid; gap: 18px; }
+.perm-pane[hidden] { display: none; }
+.perm-lead { margin: 0; max-width: 72ch; color: var(--muted); line-height: 1.5; }
+.perm-group { display: grid; gap: 8px; }
+.perm-group h3 { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-soft); font-size: 13px; font-weight: 600; }
+.perm-group h3 span { color: var(--faint); font-weight: 500; font-variant-numeric: tabular-nums; }
+.perm-list { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--well); overflow: hidden; }
+.perm-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; align-items: center; gap: 14px; min-height: 60px; padding: 10px 14px; }
+label.perm-row { cursor: pointer; }
+label.perm-row:hover { background: var(--panel-2); }
+.perm-row + .perm-row { border-top: 1px solid var(--line); }
+.perm-mark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--panel-2); color: var(--faint); font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; }
+.perm-row.is-on .perm-mark { background: var(--amber-wash); color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-line); }
+.perm-who { min-width: 0; }
+.perm-who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perm-who small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.perm-state { color: var(--faint); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.perm-state.yes { color: var(--amber); }
+.perm-row.is-locked .perm-state.yes { color: var(--green); }
+.perm-lock { display: grid; place-items: center; width: 44px; color: var(--faint); }
+.perm-lock .ico { width: 16px; height: 16px; }
+.perm-row .switch { min-height: 0; }
+@media (max-width: 600px) {
+  .perm-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; padding: 10px 12px; }
+  .perm-mark { width: 32px; height: 32px; }
+  .perm-state { grid-column: 2; grid-row: 2; margin-top: -4px; }
+  .perm-row > .switch, .perm-row > .perm-lock { grid-column: 3; grid-row: 1 / span 2; }
+  .perm-tabs { display: flex; width: 100%; }
+  .perm-tabs button { flex: 1 1 0; justify-content: center; gap: 6px; padding-inline: 6px; }
+  .perm-tabs button .ico { display: none; }
+}
 @media (max-width: 599px) {
   .artifact-default-row { grid-template-columns: minmax(0, 1fr); }
   .artifact-default-row .set-control > select { width: 100%; }
