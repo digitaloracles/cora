@@ -479,6 +479,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
 
   const hardware = { at: 0, value: null };
   const pulls = new Set();
+  const ollamaSetup = { running: false };
   const publicAgent = async (agent) => ({
     ...agent,
     // Which personal key it runs with, never the value. Null means the space key, when the model needs one.
@@ -1829,6 +1830,27 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         })
         .finally(() => pulls.delete(`${host.url}|${name}`));
       return send(res, 202, { started: true, host: host.url, model: name });
+    }
+    if (path === "/api/ollama/install" && method === "POST") {
+      if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario installa programmi su questa macchina.");
+      const body = await readJson(req, 512);
+      const action = body.action === "start" ? "start" : "install";
+      const report = await llm.hardware({ hosts: store.settings.ollamaHosts });
+      const setup = report.ollama?.setup || {};
+      if (report.ollama?.reachable) return send(res, 200, { started: false, running: true });
+      if (!setup.installable) throw new HttpError(400, "Ollama si installa da qui solo su questa macchina, su Linux o macOS");
+      if (ollamaSetup.running) return send(res, 200, { started: false, already: true });
+      ollamaSetup.running = true;
+      const verb = action === "start" ? "avvio" : "installo";
+      activity({ type: "settings", text: `${verb} Ollama su questa macchina` });
+      llm.setupOllama({ action, url: report.ollama.url, onLine: (line) => broadcast({ type: "ollama-setup", action, line }) })
+        .then((done) => {
+          hardware.at = 0;
+          activity({ type: "settings", text: done.ok ? `Ollama ${done.version} è acceso` : `Ollama: ${done.error}` });
+          broadcast({ type: "ollama-setup", action, done: true, ok: done.ok, version: done.version || "", error: done.error || "" });
+        })
+        .finally(() => { ollamaSetup.running = false; });
+      return send(res, 202, { started: true, action });
     }
     if (path === "/api/activity" && method === "GET") {
       return send(res, 200, store.recentActivity(300).filter((entry) => ownsEntry(entry, user)));

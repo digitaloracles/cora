@@ -8,6 +8,7 @@ import { runClaude, runCodex, runDeepSeek, runGemini, runGrok, runHermes, runKim
 import { isSubscriptionProvider, subscriptionProviderOf } from "./harnesses.js";
 import { DEEPSEEK_CATALOG, HERMES_ENDS, hermesKeyBackend, hermesRemoteModel } from "./hermes-keys.js";
 import { imageMime } from "./images.js";
+import { machineInfo, runOllamaSetup, setupState } from "./ollama-setup.js";
 import { routerUsage } from "./usage.js";
 
 const RESTART_NOTE = "[Cora] Your previous attempt at this turn was stopped halfway to update the harness you run on. Check what you already did (messages, files, tool results) before repeating any action, then continue from where you were.";
@@ -432,9 +433,17 @@ export class LLM {
     // What the panel showed before this had several servers: the first local one.
     const first = reports.find((host) => host.local) || reports[0] || { url: "", local: false, reachable: false, version: "" };
     out.ollama = { url: first.url, local: Boolean(first.local), reachable: first.reachable, version: first.version };
+    // Before Ollama answers the panel still shows the machine, and offers to install or start it.
+    out.machine = machineInfo();
+    out.ollama.setup = setupState({ url: first.url, reachable: first.reachable });
     out.loaded = first.loaded || [];
     out.cloud = first.cloud || { signedIn: false, signinUrl: "" };
     return out;
+  }
+
+  /** Install or start the Ollama of this machine (the panel's button), and wait until it answers. */
+  setupOllama(options) {
+    return runOllamaSetup(options);
   }
 
   /** What a model can actually do, straight from it, remembered for the session. */
