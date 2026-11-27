@@ -319,11 +319,19 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     const people = store.speakers(500, { channelIds: [...ids], agentId: agent.id }).map((person) => ({
       id: `${person.transport}:${person.userId}`, transport: person.transport, name: person.name, last: person.last,
     }));
+    const spaceOwners = { discord: store.settings.ownerIds, telegram: store.settings.telegramOwnerIds, slack: store.settings.slackOwnerIds };
+    const isSpaceOwner = (person) => Boolean(spaceOwners[person.transport]?.includes(person.id.slice(person.transport.length + 1)));
+    // The owner of the space answers for an agent of theirs; on a shared space, only for the agents whose Brain is theirs.
+    const ownsAgent = (person) => isSpaceOwner(person) && (!knowledge?.ownerMemory || knowledge.messageOwner({
+      channelId: { telegram: "tg:0", slack: "sl:C00000" }[person.transport] || "0", authorId: person.id.slice(person.transport.length + 1), kind: "owner", at: Date.now(),
+    }) === knowledge.ownerId(agent));
     for (const grant of store.settings.permissions) {
       if ((grant.agents.includes("*") || grant.agents.includes(agent.id)) && !people.some((person) => person.id === grant.id)) people.push({ id: grant.id, transport: grant.id.split(":")[0], name: grant.name || grant.id, last: 0 });
     }
-    return { canManage: knowledge?.ownerMemory ? knowledge.canManage(agent, user) : user.role === "owner", people: people.map((person) => ({
-      ...person, allowed: store.hasAgentPermission(person.id, agent.id), inherent: store.agentOwnerChats(agent).includes(person.id),
+    // On a shared space an agent answers only the people allowed; on a single owner's space it answers everyone, and the permission is about work.
+    return { canManage: knowledge?.ownerMemory ? knowledge.canManage(agent, user) : user.role === "owner", answersAll: !knowledge?.ownerMemory, people: people.map((person) => ({
+      ...person, allowed: store.hasAgentPermission(person.id, agent.id), inherent: store.agentOwnerChats(agent).includes(person.id) || ownsAgent(person),
+      ...(isSpaceOwner(person) ? { spaceOwner: true } : {}),
     })) };
   };
   /** Every Slack app brought in line with the panel now, Cora's own first. */
