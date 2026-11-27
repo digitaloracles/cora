@@ -1,7 +1,8 @@
 import { keyHint } from "./key-hint.js";
+import { EmbedChats, EMBED_LIMITS, frameAncestors } from "./embed.js";
 import { panelAssets } from "./panel-assets.js";
 import { VERSION } from "./version.js";
-import { encryptedSpaceFor, encryptedFolder, encryptedOnly } from "./encrypted-space.js";
+import { encryptedSpaceFor, encryptedFolder, encryptedOnly, encryptionRequired } from "./encrypted-space.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
@@ -42,6 +43,7 @@ import { connectorCatalog, KEY_SERVICES } from "./connectors/index.js";
 import { KeyConnectorError } from "./connectors/key-connectors.js";
 import { runsOnAccount } from "./subscription-usage.js";
 import { readAppearance, readLogo, removeLogo, saveAppearance, saveLogo } from "./appearance.js";
+import { byAgentName } from "./agent-order.js";
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 const COOKIE = "cora_session";
@@ -70,6 +72,9 @@ const STATIC = {
   "/preview": ["preview.html", "text/html; charset=utf-8"],
   "/assets/preview.js": ["preview.js", "text/javascript; charset=utf-8"],
   "/assets/preview.css": ["preview.css", "text/css; charset=utf-8"],
+  "/embed": ["embed.html", "text/html; charset=utf-8"],
+  "/assets/embed.js": ["embed.js", "text/javascript; charset=utf-8"],
+  "/assets/embed.css": ["embed.css", "text/css; charset=utf-8"],
   "/assets/encrypted-conversion.js": ["encrypted-conversion.js", "text/javascript; charset=utf-8"],
   "/assets/encrypted-passkeys.js": ["encrypted-passkeys.js", "text/javascript; charset=utf-8"],
   "/assets/encrypted-space.js": ["encrypted-space.js", "text/javascript; charset=utf-8"],
@@ -244,6 +249,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
   const shareDomain = artifacts?.shareSuffix ? artifacts.shareSuffix.split(".").slice(1).join(".") : "";
   const framedCsp = shareDomain ? CSP.replace("frame-src 'self'", `frame-src 'self' https://*.${shareDomain}`) : CSP;
   const assets = panelAssets(WEB_DIR, STATIC);
+  const embeds = new EmbedChats({ store, llm, log: activity });
   // The manifest of an agent's GitHub App is posted to GitHub straight from the panel.
   const panelCsp = github ? framedCsp.replace("form-action 'self'", `form-action 'self' ${new URL(github.webBase).origin}`) : framedCsp;
   // The vault's pages for people outside the panel: a request to fill, a send to open.
@@ -413,6 +419,55 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     return send(res, 200, store.avatar(agent.id), { "Content-Type": "image/png", "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-cache" });
   };
 
+  /**
+   * An agent's public chat (NOT-117), framed by the sites its owner allows. It answers before the panel's
+   * cross-site checks: the page is meant to open inside other sites, and its calls come from its own origin.
+   */
+  const embedRoute = async (req, res, url, token, part) => {
+    const found = embeds.agentFor(token);
+    if (!part) {
+      if (!["GET", "HEAD"].includes(req.method)) throw new HttpError(405, "method not allowed");
+      const page = assets.resolve("/embed");
+      res.writeHead(found ? 200 : 404, {
+        "Content-Type": page.type,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${found ? frameAncestors(found.config.domains) : "'none'"}`,
+      });
+      return res.end(req.method === "HEAD" ? undefined : page.body);
+    }
+    if (part === "widget.js") {
+      if (!["GET", "HEAD"].includes(req.method)) throw new HttpError(405, "method not allowed");
+      const head = { "Content-Type": "text/javascript; charset=utf-8", "X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=300" };
+      if (!found) { res.writeHead(404, head); return res.end(req.method === "HEAD" ? undefined : "/* This chat is not available. */\n"); }
+      const { agent, config: chat } = found;
+      const settings = { path: `/embed/${token}`, name: agent.name, accent: chat.theme.accent, domains: chat.domains, avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}` };
+      const body = readFileSync(join(WEB_DIR, "embed-widget.js"), "utf8").replace("/*CONFIG*/{}", () => JSON.stringify(settings).replace(/</g, "\\u003c"));
+      res.writeHead(200, head);
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
+    const json = { "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" };
+    if (!found) return send(res, 404, { error: "unavailable" }, json);
+    const { agent } = found;
+    if (part === "state" && req.method === "GET") {
+      return send(res, 200, { agent: { name: agent.name, description: agent.description || "", color: agent.color || "#264cd6", avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}`, online: agent.enabled !== false, language: agent.language || "" }, theme: found.config.theme, ask: found.config.ask, limits: { text: EMBED_LIMITS.text } }, json);
+    }
+    const visitor = embeds.visitor(agent.id, req.headers["x-cora-visitor"]);
+    if (!visitor) throw new HttpError(400, "visitor");
+    const details = () => ({ needed: embeds.detailsNeeded(agent.id, visitor), given: Boolean(embeds.profile(agent.id, visitor)) });
+    if (part === "messages" && req.method === "GET") return send(res, 200, { messages: embeds.messages(agent.id, visitor), running: embeds.running(agent.id, visitor), details: details() }, json);
+    if (req.method !== "POST") throw new HttpError(405, "method not allowed");
+    if (req.headers["x-cora"] !== "1" || (req.headers.origin && originHost(req.headers.origin) !== req.headers.host)) throw new HttpError(403, "cross-origin request");
+    const body = await readJson(req, 16384);
+    try {
+      if (part === "visitor") { embeds.saveProfile(agent.id, visitor, body); return send(res, 200, { details: details() }, json); }
+      if (part !== "messages") throw new HttpError(404, "not found");
+      return send(res, 201, { message: embeds.post(agent, visitor, body.text) }, json);
+    }
+    catch (error) { if (error.status) return send(res, error.status, { error: error.message }, json); throw error; }
+  };
+
   const boxStatus = async (agent) => {
     try {
       return await Promise.race([boxes.inspect(agent.id), new Promise((resolve) => setTimeout(() => resolve({ status: "unknown" }), 5000))]);
@@ -554,7 +609,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
 
   /** What the native app shows: the person's agents, the accounts they run on with their quotas, per-agent usage and live work. */
   const appSnapshot = async (user, req) => {
-    const agents = quotaAgentsFor(user);
+    const agents = byAgentName(quotaAgentsFor(user));
     const ids = new Set(agents.map((agent) => agent.id));
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone, year: "numeric", month: "2-digit", day: "2-digit" });
     const today = day.format(new Date()), weekFrom = day.format(new Date(Date.now() - 6 * 86400000));
@@ -1252,7 +1307,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     }
     if (path === "/api/state" && method === "GET") {
       const [agents, models, imageReady] = await Promise.all([
-        Promise.all((knowledge?.agentsFor(user) || store.agents()).map(publicAgent)),
+        Promise.all(byAgentName(knowledge?.agentsFor(user) || store.agents()).map(publicAgent)),
         llm.listModels(),
         boxes.imageExists().catch(() => false),
       ]);
@@ -1838,6 +1893,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (method === "DELETE") {
         await boxes.remove(agent.id, { volume: url.searchParams.get("purge") === "1" }).catch(() => {});
         store.deleteAgent(agent.id);
+        embeds.remove(agent.id);
         skills?.forget(agent.id);
         bots?.sync();
         tgBots?.sync();
@@ -2004,6 +2060,27 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         if (!store.deleteDiary(agent.id, itemId)) throw new HttpError(404, "pagina non trovata");
         return send(res, 200, { ok: true });
       }
+    }
+
+    match = /^\/api\/agents\/([\w-]+)\/embed(?:\/(token|conversations)(?:\/([0-9a-f]{32}))?)?$/.exec(path);
+    if (match) {
+      const agent = store.agent(match[1]);
+      if (!agent) throw new HttpError(404, "agente non trovato");
+      if (!(knowledge ? knowledge.canManage(agent, user) : user.role === "owner")) throw new HttpError(403, "Solo chi gestisce l'agente apre la sua chat pubblica.");
+      const view = () => ({ ...embeds.config(agent.id), path: `/embed/${embeds.config(agent.id).token}`, ...embeds.stats(agent.id), conversations: embeds.conversations(agent.id), encryptionRequired: encryptionRequired(store) });
+      if (!match[2] && method === "GET") {
+        if (!embeds.config(agent.id).token) embeds.save(agent.id, {});
+        return send(res, 200, view());
+      }
+      if (!match[2] && method === "PUT") {
+        const body = await readJson(req, 16384);
+        try { embeds.save(agent.id, { enabled: body.enabled, domains: body.domains, brief: body.brief, theme: body.theme, ask: body.ask, mode: body.mode }); }
+        catch (error) { throw new HttpError(error.status || 400, error.message); }
+        return send(res, 200, view());
+      }
+      if (match[2] === "token" && method === "POST") { embeds.save(agent.id, { rotate: true }); return send(res, 200, view()); }
+      if (match[2] === "conversations" && match[3] && method === "GET") return send(res, 200, { visitor: match[3], profile: embeds.profile(agent.id, match[3]), messages: embeds.messages(agent.id, match[3], 200) });
+      throw new HttpError(405, "method not allowed");
     }
 
     match = /^\/api\/rooms\/(web(?:-[\w-]+)?)\/messages$/.exec(path);
@@ -2790,6 +2867,8 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
     }
     try {
+      const embedPath = /^\/embed\/([A-Za-z0-9_-]{24})(?:\/(state|messages|visitor|widget\.js))?$/.exec(url.pathname);
+      if (embedPath) return await embedRoute(req, res, url, embedPath[1], embedPath[2] || "");
       const mailEvent = /^\/mail\/events\/(ag_[a-z0-9]+)\/([a-f0-9]{24})$/.exec(url.pathname);
       if (mailEvent && email && req.method === "POST") {
         const chunks = []; let size = 0;

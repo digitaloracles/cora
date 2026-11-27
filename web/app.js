@@ -135,6 +135,7 @@ const TABS = [
   ["desktop", "Desktop", "monitor"],
   ["ragionamento", "Ragionamento", "bulb"],
   ["attivita", "Attività", "pulse"],
+  ["embed", "Embed", "code"],
 ];
 const SALOTTO = "web";
 const TRACE_KIND = { chat: "conversazione", routine: "routine", reminder: "reminder", verification: "verifica", sleep: "sonno" };
@@ -4815,11 +4816,136 @@ async function renderAgent() {
   else if (tab === "ragionamento") body = sub ? await traceDetail(agent, sub, isCurrent) : await tracesTab(agent, isCurrent);
   else if (tab === "cervello") body = brainTab(agent);
   else if (tab === "email") body = await agentEmailTab(agent, isCurrent);
+  else if (tab === "embed") body = await embedTab(agent, isCurrent);
   else {
     const knowledge = await guard(api(`/api/agents/${agent.id}/knowledge`));
     body = agentForm(agent, { only: "profile", knowledge });
   }
   if (isCurrent()) slot.replaceChildren(...[body].flat().filter(Boolean));
+}
+
+/* ---------- embed agent (NOT-117) ---------- */
+function embedSnippet(agent, path, mode = "inline") {
+  if (mode === "floating") return `<script src="${location.origin}${path}/widget.js" async></script>`;
+  return `<iframe src="${location.origin}${path}" title="${tr("Chat con {name}", { name: agent.name }).replace(/"/g, "&quot;")}" width="380" height="600" style="border:0;border-radius:16px;max-width:100%" loading="lazy"></iframe>`;
+}
+
+async function embedTab(agent, isCurrent) {
+  const url = `/api/agents/${agent.id}/embed`;
+  let data = await guard(api(url));
+  if (!data) return panel({ icon: "alert", title: "Embed non disponibile" }, btn("Riprova", { icon: "refresh", onclick: renderAgent }));
+  if (data.encryptionRequired) return panel({ icon: "lock", title: "Embed non disponibile", hint: "Lo spazio è cifrato: le conversazioni dei visitatori non possono restare in chiaro." });
+  const root = h("div", { class: "stack embed-tab" });
+  const copy = (text) => navigator.clipboard?.writeText(text).then(() => toast("Copiato"), () => toast("Non riesco a copiare: selezionalo a mano", true));
+  const draw = () => {
+    if (!isCurrent()) return;
+    const link = `${location.origin}${data.path}`;
+    const snippet = embedSnippet(agent, data.path, data.mode);
+    const modes = h("div", { class: "segmented embed-mode", role: "radiogroup", "aria-label": tr("Come compare") }, [["inline", "Sempre aperta"], ["floating", "Flottante"]].map(([mode, text]) => h("button", {
+      type: "button", role: "radio", class: data.mode === mode ? "on" : "", "aria-checked": String(data.mode === mode),
+      onclick: async () => {
+        if (data.mode === mode) return;
+        const next = await guard(api(url, { method: "PUT", body: { mode } }), "Salvato");
+        if (next) { data = next; draw(); }
+      } }, tr(text))));
+    const enabled = switchInput("embed-enabled", "", data.enabled);
+    enabled.querySelector("input").addEventListener("change", async (event) => {
+      const next = await guard(api(url, { method: "PUT", body: { enabled: event.target.checked } }), event.target.checked ? "Chat pubblica attiva" : "Chat pubblica spenta");
+      if (next) data = next; else event.target.checked = data.enabled;
+      draw();
+    });
+    const code = h("textarea", { class: "embed-code", readonly: true, rows: 4, spellcheck: "false", "aria-label": "Codice da incollare", onfocus: (event) => event.target.select() });
+    code.value = snippet;
+    const domains = h("textarea", { rows: 3, placeholder: "esempio.it\n*.esempio.it", spellcheck: "false" });
+    domains.value = data.domains.join("\n");
+    const brief = h("textarea", { rows: 8, maxlength: 6000, placeholder: "Chi siamo, cosa offriamo, orari, prezzi, come contattarci, che tono usare." });
+    brief.value = data.brief;
+    const save = btn("Salva", { icon: "check", cls: "primary", onclick: async () => {
+      const next = await guard(api(url, { method: "PUT", body: { domains: domains.value.split(/[\s,]+/).filter(Boolean), brief: brief.value } }), "Salvato");
+      if (next) { data = next; draw(); }
+    } });
+    const rotate = btn("Rigenera il link", { icon: "refresh", cls: "sm ghost", onclick: async () => {
+      if (!confirm(tr("Il codice già incollato nei siti smetterà di funzionare. Rigenerare il link?"))) return;
+      const next = await guard(api(`${url}/token`, { method: "POST" }), "Nuovo link pronto");
+      if (next) { data = next; draw(); }
+    } });
+    let theme = { ...data.theme };
+    const preview = data.enabled ? h("iframe", { src: data.path, title: tr("Chat con {name}", { name: agent.name }), loading: "lazy" }) : null;
+    const paint = () => preview?.contentWindow?.postMessage({ type: "cora-embed-theme", theme }, location.origin);
+    preview?.addEventListener("load", paint);
+    const COLORS = [["accent", "Accento", "Pulsante e messaggi del visitatore"], ["background", "Sfondo", "Dietro la conversazione"], ["card", "Fumetti", "Messaggi dell'agente e campo di scrittura"], ["text", "Testo", "Scritte e titoli"]];
+    const pickers = Object.fromEntries(COLORS.map(([key]) => [key, h("input", { type: "color", value: theme[key], "aria-label": tr(COLORS.find((item) => item[0] === key)[1]) })]));
+    const setTheme = (next) => { theme = { ...theme, ...next }; for (const [key, input] of Object.entries(pickers)) input.value = theme[key]; paint(); };
+    for (const [key, input] of Object.entries(pickers)) input.addEventListener("input", () => setTheme({ [key]: input.value }));
+    const agentAccent = /^#[0-9a-f]{6}$/i.test(agent.color || "") ? agent.color.toLowerCase() : "#264cd6";
+    const PRESETS = [
+      ["Chiaro", { accent: "#264cd6", background: "#f5f3ec", card: "#ffffff", text: "#0f1a3d" }],
+      ["Scuro", { accent: "#7c9bff", background: "#0f1420", card: "#1b2232", text: "#eef1f8" }],
+      ["Colore dell'agente", { accent: agentAccent, background: "#f5f3ec", card: "#ffffff", text: "#0f1a3d" }],
+    ];
+    const saveTheme = btn("Salva i colori", { icon: "check", cls: "primary", onclick: async () => {
+      const next = await guard(api(url, { method: "PUT", body: { theme } }), "Colori salvati");
+      if (next) { data = next; draw(); }
+    } });
+    const ASK = [["name", "Nome"], ["email", "Email"], ["phone", "Cellulare"]];
+    const MODES = [["off", "Non chiedere"], ["optional", "Facoltativo"], ["required", "Obbligatorio"]];
+    const askControl = (key, label) => h("div", { class: "segmented embed-ask", role: "radiogroup", "aria-label": tr(label) }, MODES.map(([mode, text]) => h("button", {
+      type: "button", role: "radio", class: data.ask[key] === mode ? "on" : "", "aria-checked": String(data.ask[key] === mode),
+      onclick: async () => {
+        if (data.ask[key] === mode) return;
+        const next = await guard(api(url, { method: "PUT", body: { ask: { [key]: mode } } }), "Salvato");
+        if (next) { data = next; draw(); }
+      } }, tr(text))));
+    const asked = ASK.filter(([key]) => data.ask[key] !== "off");
+    const askHint = !asked.length ? "Oggi la chat non chiede niente: il visitatore scrive subito ed è anonimo."
+      : ASK.some(([key]) => data.ask[key] === "required") ? "Prima del primo messaggio il visitatore compila il modulo: senza i dati obbligatori non può scrivere."
+        : "Prima del primo messaggio il visitatore vede il modulo e può saltarlo.";
+    const who = (item) => [item.name, item.email, item.phone].filter(Boolean);
+    const list = h("div", { class: "embed-convos" });
+    const openConversation = async (row, item) => {
+      const visitorName = item.name || tr("Visitatore");
+      if (row.nextElementSibling?.classList.contains("embed-log")) { row.nextElementSibling.remove(); row.setAttribute("aria-expanded", "false"); return; }
+      const log = await guard(api(`${url}/conversations/${item.visitor}`));
+      if (!log) return;
+      row.setAttribute("aria-expanded", "true");
+      row.after(h("div", { class: "embed-log" }, log.messages.map((message) => h("div", { class: `embed-line ${message.role}` },
+        h("small", {}, message.role === "visitor" ? visitorName : message.role === "agent" ? agent.name : "Errore", " · ", raw(fmtTime(message.at, true))),
+        message.role === "error" ? h("p", {}, "L'agente non è riuscito a rispondere.") : h("p", {}, raw(message.content))))));
+    };
+    list.append(...(data.conversations.length ? data.conversations.map((item) => {
+      const row = h("button", { type: "button", class: "embed-convo", "aria-expanded": "false" },
+        who(item).length ? h("span", { class: "embed-who" }, who(item).map((value) => h("span", {}, raw(value)))) : null,
+        h("span", { class: "embed-opener" }, raw(item.opener || "…")),
+        h("small", {}, raw(fmtTime(item.last, true)), " · ", tr("{count} messaggi", { count: item.count })));
+      row.addEventListener("click", () => openConversation(row, item));
+      return row;
+    }) : [h("p", { class: "muted" }, "Nessun visitatore ha ancora scritto.")]));
+    root.replaceChildren(
+      panel({ icon: "code", title: "Embed agent", hint: tr("La chat di {name} dentro qualsiasi sito: copia il codice e incollalo nella pagina.", { name: agent.name }) },
+        setRows(
+          setRow("Chat pubblica attiva", agent.enabled === false ? "L'agente è muto: i visitatori vedono la chat ma non possono scrivere." : data.enabled ? "Chi apre il codice o il link parla con l'agente." : "Spenta: il codice e il link non aprono niente.", enabled),
+          setRow("Come compare", data.mode === "floating" ? "Un bottone in basso a destra apre e chiude la chat, su ogni pagina dove incolli il codice. Sul telefono si apre a tutto schermo." : "La chat resta aperta dentro la pagina, nel punto dove incolli il codice.", modes),
+          setRow("Codice da incollare", data.mode === "floating" ? "Una riga: incollala nell'HTML del sito, prima di </body>." : "Un iframe: incollalo nell'HTML della pagina, dove vuoi che compaia la chat.", h("div", { class: "embed-snippet" }, code, btn("Copia codice", { icon: "copy", cls: "sm", onclick: () => copy(snippet) })), { stack: true }),
+          setRow("Link diretto", "La stessa chat a pagina intera.", h("div", { class: "embed-row" }, codeLine(link), btn("Apri", { icon: "external", cls: "sm ghost", href: link, target: "_blank" })), { stack: true }),
+          setRow("Nuovo link", "Il codice già incollato smette di funzionare.", rotate))),
+      panel({ icon: "globe", title: "Siti e risposte", hint: "Dove può comparire la chat e cosa l'agente sa dire ai visitatori." },
+        field("Siti ammessi", domains, "Uno per riga. Vuoto: qualsiasi sito può mostrare la chat."),
+        field("Cosa sa per i visitatori", brief, "Con i visitatori l'agente usa il suo carattere e questo testo, nient'altro: niente strumenti, memorie, Brain, file o altre chat."),
+        h("div", { class: "embed-row" }, save)),
+      panel({ icon: "user", title: "Dati del visitatore", hint: "Cosa chiedere a chi apre la chat, prima del primo messaggio. Li trovi nelle conversazioni qui sotto." },
+        setRows(...ASK.map(([key, label]) => setRow(label, null, askControl(key, label)))),
+        h("p", { class: "muted embed-ask-hint" }, tr(askHint))),
+      panel({ icon: "eye", title: "Colori e anteprima", hint: "Scegli i colori della chat: l'anteprima cambia subito, i siti dopo il salvataggio." },
+        h("div", { class: "embed-look" },
+          h("div", { class: "embed-colors" },
+            h("div", { class: "embed-presets" }, PRESETS.map(([label, colors]) => btn(label, { cls: "sm ghost", onclick: () => setTheme(colors) }))),
+            COLORS.map(([key, label, hint]) => h("label", { class: "embed-color" }, pickers[key], h("span", {}, h("b", {}, label), h("small", {}, hint)))),
+            h("div", { class: "embed-row" }, saveTheme)),
+          preview ? h("div", { class: "embed-preview" }, preview) : h("p", { class: "muted embed-preview-off" }, "Attiva la chat pubblica per vederla qui."))),
+      panel({ icon: "users", title: "Conversazioni dei visitatori", hint: tr("Ultime 24 ore: {visitors} visitatori, {messages} messaggi. Limiti: {perVisitor} messaggi al giorno per visitatore, {perAgent} per l'agente.", { visitors: data.visitorsToday, messages: data.messagesToday, perVisitor: data.limits.perVisitorDay, perAgent: data.limits.perAgentDay }) }, list));
+  };
+  draw();
+  return root;
 }
 
 /* ---------- skills ---------- */

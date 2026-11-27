@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { readFileSync } from "node:fs";
 import { transportOf } from "./channels.js";
 import { pngSize } from "./png.js";
+import { byAgentName } from "./agent-order.js";
 
 const FOLDERS = ["inbox", "important", "transactional", "notification", "spam", "sent"];
 const MODES = ["manual", "notify", "auto"];
@@ -138,7 +139,7 @@ export class EmailChannel {
     });
   }
   view(agent = null) {
-    if (!agent) return { settings: this.settings, channels: this.channels.list(), agents: this.store.agents().map((item) => ({ id: item.id, name: item.name, ...this.summary(item), status: this.store.value(`emailStatus:${item.id}`, null) })) };
+    if (!agent) return { settings: this.settings, channels: this.channels.list(), agents: byAgentName(this.store.agents()).map((item) => ({ id: item.id, name: item.name, ...this.summary(item), status: this.store.value(`emailStatus:${item.id}`, null) })) };
     const senders = [...(this.googleConnector?.forAgent(agent) || [])], custom = this.customIcon(agent);
     if (this.overrides(agent).resendSender) {
       try { senders.push(this.identity(agent, "resend")); } catch {}
