@@ -11,6 +11,7 @@ const GMAIL = "https://www.googleapis.com/auth/gmail.";
 const ACCESS = { send: [`${GMAIL}send`], mail: [`${GMAIL}send`, `${GMAIL}compose`, `${GMAIL}modify`], drive: ["https://www.googleapis.com/auth/drive"] };
 /** The scopes a signed access asks for; null when it names a part the broker does not know. */
 export function accessScopes(access = "send") {
+  if (access === "meet-identity") return ["profile"];
   const parts = String(access || "send").split(",");
   if (parts.length > Object.keys(ACCESS).length || parts.some((part) => !Object.hasOwn(ACCESS, part))) return null;
   return [...new Set(parts.flatMap((part) => ACCESS[part]))];
@@ -42,7 +43,7 @@ export class GoogleConnectorBroker {
     if (!accessScopes(access)) throw new Error("Invalid connector request");
     const state = this.sign({ kind: "connect", space, nonce, challenge, access, expires: Date.now() + 900000 });
     const url = new URL(this.endpoints.authorize);
-    url.search = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: "code", scope: ["openid", "email", ...accessScopes(access)].join(" "), state, code_challenge: challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent select_account" });
+    url.search = new URLSearchParams({ client_id: this.clientId, redirect_uri: this.redirectUri, response_type: "code", scope: ["openid", "email", ...accessScopes(access)].join(" "), state, code_challenge: challenge, code_challenge_method: "S256", access_type: access === "meet-identity" ? "online" : "offline", prompt: access === "meet-identity" ? "select_account" : "consent select_account" });
     return url.href;
   }
   callback({ state, code, error }) {
@@ -65,11 +66,12 @@ export class GoogleConnectorBroker {
     const token = await this.token({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: this.redirectUri });
     const asked = accessScopes(data.access) || ACCESS.send;
     const granted = String(token.scope || "").split(" ").filter((scope) => asked.includes(scope));
-    if (!token.refresh_token || !granted.length) throw new Error("Google granted none of the requested access");
+    if (data.access !== "meet-identity" && (!token.refresh_token || !granted.length)) throw new Error("Google granted none of the requested access");
     const response = await fetch(this.endpoints.userinfo, { headers: { Authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error("Google identity unavailable");
     const identity = await response.json();
     if (!identity.email_verified || !identity.sub || !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(identity.email || "")) throw new Error("Google email not verified");
+    if (data.access === "meet-identity") return { purpose: "meet-identity", email: identity.email.toLowerCase(), name: String(identity.name || ""), subject: identity.sub };
     const grant = this.sign({ kind: "refresh", space: data.space, subject: identity.sub, email: identity.email.toLowerCase(), refresh: digest(token.refresh_token), expires: Date.now() + 365 * 86400000 });
     return { refresh_token: token.refresh_token, grant, email: identity.email.toLowerCase(), scope: granted.join(" ") };
   }

@@ -3170,42 +3170,12 @@ function agentForm(agent, { only = "", knowledge = null } = {}) {
   return controls;
 }
 
-function meetSetupChecklist(setup, verification) {
-  const phases = [
-    ["queue", "Comando all’agente", setup.waitingForTurn ? "La chat privata è occupata. Il comando riparte quando si libera." : "In coda nella chat privata dell’agente."],
-    ["inspect", "Controllo del browser Meet", "L’agente controlla quale account è aperto nel browser Meet."],
-    ["signin", "Accesso con la mail dell’agente", "Il browser è aperto sull’accesso Google."],
-    ["verify", "Conferma dell’indirizzo su Meet", "L’agente confronta l’indirizzo nel browser con la propria email."],
-  ];
-  const activityLabels = {
-    "account-found": "Google ha riconosciuto l’account.",
-    registration: "Google ha aperto la registrazione con l’indirizzo esistente.",
-    "email-check": "Google richiede un codice inviato alla casella dell’agente.",
-    "google-accepted": "Google ha accettato l’accesso.",
-  };
-  const complete = setup.status === "done";
-  const phase = Math.max(0, phases.findIndex(([key]) => key === setup.phase));
-  const activities = (setup.activities || []).map((key) => activityLabels[key]).filter(Boolean);
-  return h("ol", { class: "thread-plan-checklist", "aria-label": "Attività del collegamento" }, phases.map(([key, title, description], index) => {
-    const done = complete || index < phase;
-    const current = !complete && index === phase;
-    const state = done ? (key === "signin" && setup.signedInAlready ? "Già collegato" : "Completato") : !current ? "Da fare" : ({
-      "needs-human": "Serve il tuo intervento", stopped: "Fermo", failed: "Collegamento interrotto",
-    }[setup.status] || "In corso");
-    const details = key === "signin" && activities.length ? activities : current && setup.status === "running" ? [description] : [];
-    return h("li", { class: `thread-plan-step${done ? " done" : current ? " next" : ""}`, "aria-current": current ? "step" : null },
-      h("span", { class: "thread-plan-mark", "aria-hidden": "true" }, raw(String(index + 1))),
-      h("div", { class: "thread-plan-text" }, h("strong", {}, title), details.map((text) => h("small", { class: "thread-dependency-note" }, text))),
-      h("small", { class: "meet-step-state" }, done ? icon("check") : null, state), current ? verification : null);
-  }));
-}
-
 function agentMeetPane(agent) {
   const endpoint = `/api/agents/${agent.id}/meet`;
   const body = h("div", { class: "stack" });
   const message = h("p", { class: "muted", role: "status", "aria-live": "polite" });
   const node = panel({ icon: "mic", title: "Google Meet" }, body, message);
-  let busy = false, pollInFlight = false, afterPoll, timer, lastSetupView = "", linkValue = "", folderValue = "", languageValue = "";
+  let busy = false, pollInFlight = false, afterPoll, timer, linkValue = "", folderValue = "", languageValue = "";
   const phases = { starting: "Ingresso in corso", waiting: "In attesa di ammissione", joined: "In riunione", transcribing: "Trascrizione in corso", ended: "Riunione conclusa", failed: "Ingresso non riuscito" };
   async function request(action = "", payload, method = "POST") {
     if (busy) {
@@ -3220,10 +3190,7 @@ function agentMeetPane(agent) {
     try {
       const data = await api(endpoint + action, { method, body: payload });
       if (action === "/join") linkValue = "";
-      const snapshot = JSON.stringify(data);
-      if (refresh && data.setup?.status === "running" && snapshot === lastSetupView) poll();
-      else render(data);
-      lastSetupView = snapshot;
+      render(data);
       message.textContent = "";
     } catch (error) {
       message.textContent = error.message;
@@ -3242,49 +3209,21 @@ function agentMeetPane(agent) {
   function render(data) {
     const enable = switchInput("meet-enabled", "Attiva Google Meet", data.enabled, "L’agente entra con microfono e videocamera spenti.");
     const toggle = enable.querySelector("input");
-    const setup = data.setup?.status;
-    const running = setup === "running";
-    const needsHuman = setup === "needs-human";
-    toggle.disabled = Boolean(data.active) || running || !data.desktop || !data.onAir;
+    toggle.disabled = Boolean(data.active) || !data.desktop || !data.onAir;
     toggle.onchange = () => { const enabled = toggle.checked; toggle.checked = !enabled; void request("", { enabled }, "PUT"); };
     body.replaceChildren(enable);
     if (!data.desktop || !data.onAir) body.append(h("p", { class: "muted" }, "Accendi l’agente e il suo computer per usare Google Meet."));
     if (!data.enabled) return;
     const account = data.account?.email;
-    const actions = h("div", { class: "actions" });
-    if (!data.active && !running) {
-      const ownAccount = account && account.toLowerCase() === agent.mailbox?.email?.toLowerCase();
-      if (!needsHuman && (!ownAccount || setup === "failed")) {
-        const label = setup === "failed" ? "Riprova collegamento" : setup === "stopped" ? "Riprendi collegamento" : "Collega la mail dell’agente";
-        actions.append(btn(label, { cls: "sm primary", disabled: !data.desktop || !data.onAir, onclick: () => request("/setup", {}) }));
-      }
-      if (account) actions.append(btn("Scollega account", { cls: "sm ghost", onclick: () => request("/signout", {}) }));
-      if (!needsHuman && account) actions.append(btn("Verifica account", { cls: "sm", icon: "refresh", onclick: () => request("/account", {}) }));
-    }
-    body.append(h("div", { class: "stack" }, h("strong", {}, account || agent.mailbox?.email || "Account Google da collegare"), actions));
-    if (setup) {
-      let verification = null;
-      if (needsHuman) {
-        const viewer = `/box/${agent.id}/vnc.html?autoconnect=true&reconnect=true&path=box/${agent.id}/websockify`;
-        verification = h("div", { class: "meet-step-verification stack" },
-          h("p", {}, data.setup.note ? raw(data.setup.note) : "Completa la verifica richiesta da Google sul desktop dell’agente."),
-          h("div", { class: "actions" }, btn("Apri desktop a schermo intero", { href: viewer + "&resize=off", target: "_blank", icon: "maximize", cls: "primary" })),
-          h("div", { class: "monitor-frame" }, h("div", { class: "screen" },
-            h("iframe", { title: "Accesso Google sul desktop", src: viewer + "&resize=scale" }))),
-          h("div", { class: "actions" }, btn("Ho completato la verifica", { onclick: () => request("/setup", {}) })));
-      }
-      body.append(meetSetupChecklist(data.setup, verification));
-    }
-    if ((running || needsHuman) && data.setup.canStop) body.append(h("div", { class: "actions" },
-      btn("Ferma collegamento", { cls: "sm", onclick: () => request("/stop-setup", {}) })));
-    if (setup === "stopped") body.append(h("p", { role: "status" }, "Collegamento fermato"));
-    if (running) poll();
-    if (setup === "failed") body.append(h("p", { class: "err-text" }, data.setup.note || "Collegamento interrotto. Puoi riprendere dalla verifica dell’account."));
+    body.append(setRows(
+      setRow("Account condiviso", account ? raw([data.account.name, account].filter(Boolean).join(" · ")) : "Scegli il Gmail da usare per le riunioni.",
+        btn("Impostazioni Google Meet", { cls: "sm", href: "#/settings/google-meet" })),
+      data.alias ? setRow("Indirizzo per gli inviti", raw(data.alias), null) : null));
     if (data.active) {
       body.append(h("strong", { role: "status" }, phases[data.active.phase]), h("span", {}, data.active.link));
       if (data.active.phase !== "transcribing") body.append(btn("Esci dalla riunione", { onclick: () => request("/leave", {}) }));
-      timer = setTimeout(() => { if (node.isConnected && route()[3] === "meet") void node.load(); }, 4000);
-    } else if (account && !running && !needsHuman) {
+      poll();
+    } else if (account) {
       const link = h("input", { type: "url", required: true, value: linkValue, placeholder: "https://meet.google.com/abc-defg-hij", oninput: (event) => { linkValue = event.target.value; } });
       const folder = h("select", { required: true, onchange: (event) => { folderValue = event.target.value; } }, h("option", { value: "" }, "Scegli una cartella"),
         data.folders.map((item) => h("option", { value: item.path }, item.path)));
@@ -3293,7 +3232,7 @@ function agentMeetPane(agent) {
         Object.entries(VOICE_LANGUAGE_NAMES).map(([value, label]) => h("option", { value }, label)));
       language.value = languageValue || data.language;
       body.append(h("form", { class: "stack", onsubmit: (event) => { event.preventDefault(); void request("/join", { link: link.value, folder: folder.value, language: language.value }); } },
-        field("Link della riunione", link, "Invita l’account dell’agente o ammettilo quando bussa."),
+        field("Link della riunione", link, "Il partecipante appare con il nome dell’account condiviso."),
         field("Lingua parlata", language),
         field("Cartella della trascrizione", folder, data.folders.length ? "Riceverai il link nella chat dell’agente." : "Crea una cartella meetings/progetto negli Artefatti e concedi all’agente il permesso di caricare."),
         btn("Entra in riunione", { type: "submit", cls: "primary", disabled: !data.folders.length })));
@@ -10391,6 +10330,42 @@ function storagePane() {
   return root;
 }
 
+function sharedMeetSettings() {
+  const body = h("div", { class: "stack" });
+  const status = h("p", { role: "status", class: "muted" });
+  const pane = panel({ icon: "mic", title: "Google Meet" }, body, status);
+  const endpoint = "/api/settings/google-meet";
+  async function request(method = "GET") {
+    body.inert = true;
+    status.textContent = tr("Caricamento…");
+    try {
+      const data = await api(endpoint, { method });
+      if (method === "POST") { location.assign(data.url); return; }
+      const account = data.account;
+      const actions = h("div", { class: "actions" },
+        btn(account ? "Cambia account Google" : "Collega account Google", { cls: "sm primary", onclick: () => request("POST") }));
+      if (account) actions.append(btn("Scollega account", { cls: "sm ghost", onclick: () => request("DELETE") }));
+      body.replaceChildren(setRows(setRow("Account condiviso", account ? raw([account.name, account.email].filter(Boolean).join(" · ")) : "Scegli il Gmail da usare per le riunioni.", actions)));
+      if (account) {
+        const check = btn("Verifica browser Meet", { cls: "sm", onclick: async () => {
+          check.disabled = true;
+          try {
+            const result = await api(endpoint + "/browser", { method: "POST" });
+            status.replaceChildren(result.ready ? tr("Il browser usa l’account condiviso.") :
+              btn("Accedi nel browser condiviso", { href: result.viewer, target: "_blank", cls: "primary" }));
+          } catch (error) { status.textContent = error.message; }
+          finally { check.disabled = false; }
+        } });
+        body.append(setRows(setRow("Browser delle riunioni", "Verifica la sessione Google usata da tutti gli agenti.", check)));
+      }
+      status.textContent = "";
+    } catch (error) { status.replaceChildren(error.message, " ", btn("Riprova", { onclick: () => request() })); }
+    finally { body.inert = false; }
+  }
+  pane.load = () => request();
+  return pane;
+}
+
 function renderSettings() {
   if (route()[1] === "permessi") { location.hash = "#/agenti"; return; }
   const settings = S.data.settings;
@@ -10407,12 +10382,14 @@ function renderSettings() {
   const back = () => btn("Impostazioni", { icon: "back", cls: "sm ghost rail-back", onclick: () => show("") });
   const page = (id, ...content) => {
     const root = h("div", { class: "stack" }, back(), content);
-    const unchanged = ["regia", "modelli", "harness", "connettori", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", "aspetto", "pulizia", ...ACCOUNT_HARNESSES].includes(id);
+    const unchanged = ["regia", "modelli", "harness", "connettori", "google-meet", "mcp", "app", "email", "server", "spazio", "cifratura", "accesso", "ssh", "controlli", "preferenze", "aspetto", "pulizia", ...ACCOUNT_HARNESSES].includes(id);
     const configured = ["discord", "telegram", "slack"].includes(id) ? transportInfo(id).state !== "missing-token" || S.data.agents.some((agent) => id === "discord" ? agent.bot?.user : id === "telegram" ? agent.telegramBot?.user : agent.slackBot?.user)
       : true;
     pages.set(id, unchanged ? root : settingsDisclosures(root, id, expanded, configured));
   };
 
+  const sharedMeet = sharedMeetSettings();
+  page("google-meet", sharedMeet);
   page("email", emailChannelPane());
   page("connettori", connectorsPane());
   page("mcp", panelMcpPane());
@@ -10806,6 +10783,7 @@ function renderSettings() {
   entries = [
     { id: "contesto", group: "Contesto", label: "Contesto degli agenti", mark: "book", href: "#/contesto", state: () => [null, tr("istruzioni e file che tutti leggono")] },
     ...["discord", "telegram", "slack"].map((kind) => ({ id: kind, group: "Canali", label: TRANSPORTS[kind].label, mark: TRANSPORTS[kind].icon, state: () => channelState(kind) })),
+    { id: "google-meet", group: "Canali", label: "Google Meet", mark: "mic", state: () => [null, tr("Account condiviso")] },
     { id: "email", group: "Canali", label: "E-mail", mark: "mail", state: () => [null, tr("Ricezione e regole")] },
     { id: "connettori", group: "Connettori", label: "Connettori", mark: "link", state: () => [null, tr("Google e account esterni")] },
     { id: "mcp", group: "Connettori", label: "Agenti esterni (MCP)", mark: "terminal", state: () => [null, tr("Configura Cora da un altro agente")] },
@@ -10862,6 +10840,7 @@ function renderSettings() {
     drawNav();
     if (updateRoute) history.replaceState(null, "", current ? `#/settings/${current}` : "#/settings");
     if (current === "pulizia") storage.load();
+    if (current === "google-meet") sharedMeet.load();
     if (updateRoute && current === "connettori") pages.get(current).querySelector(".connectors-pane")?.openCatalog?.();
     if ((current || fallback()) === "discord") discordOwners?.loadPeople();
   }

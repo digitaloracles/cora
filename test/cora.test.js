@@ -2167,35 +2167,24 @@ test("invitation delivery failures retain admission and a pending resend never d
   } finally { await f.close(); }
 });
 
-test("Meet setup stops the active private reminder through the panel", { timeout: 60000 }, async (t) => {
+test("upgrading to shared Meet retires only the previous private setup reminder", async (t) => {
   const f = await knowledgeWorld();
   t.after(f.close);
-  const { store, meet, boxes, orchestrator } = f.app;
-  const agent = store.createAgent({ name: "Meet Stop QA", brainOwnerId: f.alice.user.id, tools: true, enabled: true, model: "ollama/test-model" });
-  store.setValue(`agentMailbox:${agent.id}`, { status: "ready", email: "stop@agent.test" });
-  boxes.ensure = async () => {};
-  meet.setEnabled(agent, true);
-  const path = `/api/agents/${agent.id}/meet`;
-  const post = (action) => f.request(f.alice, path + action, { method: "POST", body: {} });
-  await post("/setup");
-  const routine = store.routine(meet.config(agent.id).setupRoutineId);
-  const gate = Promise.withResolvers();
-  const entered = Promise.withResolvers();
-  boxes.meet = async () => { entered.resolve(); return gate.promise; };
-  f.state.answer = (body) => body.tools?.some((tool) => tool.function.name === "meet_setup")
-    ? { tool_calls: [{ function: { name: "meet_setup", arguments: { step: "check" } } }] } : { content: "PASS" };
-  const run = orchestrator.runRoutine(routine);
-  try {
-    await entered.promise;
-    assert.equal(store.activeThreadSession(agent.id, routine.channelId).kind, "reminder");
-    assert.equal((await post("/stop-setup")).data.setup.status, "stopped");
-    assert.equal(store.activeThreadSession(agent.id, routine.channelId), null);
-  } finally {
-    gate.resolve({ email: "" });
-    await run;
-  }
-  assert.equal(meet.view(agent).setup.status, "stopped");
-  assert.equal(store.routine(routine.id), null);
+  const { store, meet } = f.app;
+  const agent = store.createAgent({ name: "Fab", brainOwnerId: f.alice.user.id, enabled: true, tools: true });
+  const reminder = (name) => store.createRoutine(agent.id, {
+    name, kind: "reminder", enabled: true, runAt: "2050-01-01T12:00:00Z",
+    channelId: `web-${agent.id}`, prompt: name,
+  });
+  const setup = reminder("Google Meet · account");
+  const unrelated = reminder("Review meeting notes");
+  meet.save(agent.id, { enabled: true, setupRoutineId: setup.id, setup: { status: "needs-human" } });
+  meet.resume();
+  assert.equal(store.routine(setup.id), null);
+  assert.ok(store.routine(unrelated.id).enabled);
+  assert.equal(meet.config(agent.id).setupRoutineId, null);
+  assert.equal(meet.view(agent).enabled, true);
+  assert.equal(meet.view(agent).account, null);
 });
 
 test("routine workspaces retain independent drafts and archive filters through real API saves", async () => {

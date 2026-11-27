@@ -426,7 +426,7 @@ export class Boxes {
       ? !guard?.running || guard.policy !== SEALED_NETWORK_POLICY || ![`container:${guard.id}`, `container:${this.networkGuard(agentId)}`].includes(networkMode)
       : networkMode !== "" && networkMode !== this.network(agentId);
     const exposed = Object.values(JSON.parse(portsJson || "{}") || {}).some((bindings) => (bindings || []).some((binding) => binding.HostIp !== "127.0.0.1"));
-    const outdated = Boolean(current && image && image !== current) || !mounts.split(",").includes("/var/lib/cora") || !sshPort || wrongNetwork || exposed;
+    const outdated = Boolean(current && image && image !== current) || !mounts.split(",").includes("/var/lib/cora") || (!agentId.startsWith("meet_") && !sshPort) || wrongNetwork || exposed;
     return { exists: true, running: Boolean(state.Running), port, sshPort, outdated, status: state.Status || "unknown", startedAt: state.StartedAt };
   }
 

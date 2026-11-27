@@ -1,6 +1,17 @@
 // English for the panel. The UI is written in Italian; keys are the Italian texts,
 // with {placeholders} for the parts that change.
 export const EN = {
+  "Account condiviso": "Shared account",
+  "Scegli il Gmail da usare per le riunioni.": "Choose the Gmail account for meetings.",
+  "Impostazioni Google Meet": "Google Meet settings",
+  "Cambia account Google": "Change Google account",
+  "Indirizzo per gli inviti": "Invitation address",
+  "Il partecipante appare con il nome dell’account condiviso.": "The participant appears under the shared account’s name.",
+  "Browser delle riunioni": "Meeting browser",
+  "Verifica la sessione Google usata da tutti gli agenti.": "Verify the Google session used by all agents.",
+  "Verifica browser Meet": "Verify Meet browser",
+  "Il browser usa l’account condiviso.": "The browser is using the shared account.",
+  "Accedi nel browser condiviso": "Sign in to the shared browser",
   "Ora della misura": "Measurement time",
   "Giorni di storico": "History in days",
   "Conserva tutti i turni": "Keep every turn",

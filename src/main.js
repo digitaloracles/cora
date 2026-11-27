@@ -124,7 +124,7 @@ export function startCora(overrides = {}) {
     return [...new Set([...host, ...store.settings.sshKeys])];
   };
   const mailboxFor = (agent) => store.value(`agentMailbox:${agent.id}`, null);
-  const boxes = new Boxes({ docker: cfg.docker, image: cfg.boxImage, timezone: cfg.timezone, access: (agent) => ({ sshPort: store.sshPort(agent.id), keys: sshKeys() }), sealed: (id) => Boolean(store.agent(id)?.sealed),
+  const boxes = new Boxes({ docker: cfg.docker, image: cfg.boxImage, timezone: cfg.timezone, access: (agent) => agent.id.startsWith("meet_") ? {} : ({ sshPort: store.sshPort(agent.id), keys: sshKeys() }), sealed: (id) => Boolean(store.agent(id)?.sealed),
     gitAttribution: { enabled: cfg.gitAttribution, email: cfg.gitCoauthorEmail },
     mailbox: { endpoint: cfg.mailEndpoint, domain: cfg.mailDomain, namespace: cfg.mailNamespace, token: cfg.mailRegistrationToken, identity: mailboxFor,
       changed: (agent, state) => {
@@ -231,7 +231,7 @@ export function startCora(overrides = {}) {
   });
   artifacts.knowledge = knowledge;
   brain.artifacts = artifacts;
-  const meet = new Meet({ store, boxes, voice, artifacts, log: activity, instanceUrl, timezone: cfg.timezone,
+  const meet = new Meet({ store, boxes, googleConnector, voice, artifacts, log: activity, instanceUrl, timezone: cfg.timezone,
     notice: (channelId, text) => orchestrator.notice(channelId, text) });
   brain.meet = meet;
   // Secrets by name: encrypted here, put into an agent's hush, never shown back.

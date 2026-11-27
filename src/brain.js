@@ -743,13 +743,6 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
 
   async verifyReminder({ agent, routine, result, delivered = false }) {
     if (result.stopped || result.asked) return { met: false, blocked: true, reason: result.stopped ? "Esecuzione interrotta." : "Serve una risposta del proprietario." };
-    const meet = this.meet?.config(agent.id);
-    if (meet?.setupRoutineId === routine.id) {
-      const mailbox = this.mailboxFor(agent);
-      const email = mailbox?.status === "ready" && mailbox.email?.toLowerCase();
-      const met = Boolean(email && meet.setup?.status === "done" && meet.account?.email?.toLowerCase() === email && meet.account.checkedAt >= Date.parse(routine.runAt));
-      return { met, blocked: meet.setup?.status === "needs-human", reason: met ? "Account Google dell’agente verificato." : "Accesso Google dell’agente ancora da verificare." };
-    }
     const evidence = this.traces?.get(result.traceId);
     const work = (evidence?.steps || []).filter((step) => step.type === "tool").slice(-40)
       .map((step) => `${step.name} ${JSON.stringify(step.args || {}).slice(0, 500)} → ${String(step.result || "").slice(0, 2400)}`).join("\n");
@@ -1050,13 +1043,10 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     // The company brain's tools exist only where there is a brain to read.
     const onlyEncrypted = encryptedOnly(this.store, agent);
     const canUseMeet = mode === "chat" && computer && requestAuthorized && requester && this.meet?.available(agent);
-    // Outside a chat, only the panel's own setup reminder, in the agent's private chat, may sign its Google account in.
-    const canSetupMeet = Boolean(canUseMeet || (mode !== "chat" && computer && !onlyEncrypted && routine?.id && this.meet?.available(agent)
-      && routine.id === this.meet.config(agent.id).setupRoutineId && channel.id === privateRoom(agent.id)));
     const canManagePlan = mode === "chat" && !onlyEncrypted && requestAuthorized;
     const currentPlan = () => canManagePlan ? this.store.plans.open(channel.id, agent.id) : null;
     let followedPlan = resumed && resumed === currentPlan()?.id ? resumed : null;
-    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (!tool.name.startsWith("meet_") || (tool.name === "meet_setup" ? canSetupMeet : canUseMeet)) && (!THREAD_PLAN_TOOLS.has(tool.name) || canManagePlan) && (tool.name !== "read_attachment" || caps.vision) && (tool.name !== "skill_read" || Boolean(this.skills?.index(agent.id).length)) && (tool.name !== "skill_install" || Boolean(this.skills)) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_")) && (this.voiceCalls?.enabled || !tool.name.startsWith("voice_")) && (!this.previewTools || this.previewTools.has(tool.name)) && (tool.name !== "create_file" || Boolean(this.previewTools))).concat(onlyEncrypted || this.previewTools ? [] : this.connectors?.toolsFor(agent) || []) : [];
+    const tools = caps.tools ? TOOL_DEFS.filter((tool) => (!onlyEncrypted || ENCRYPTED_CHAT_TOOLS.has(tool.name)) && (OWN_TOOLS.has(tool.name) || computer) && (!tool.name.startsWith("meet_") || canUseMeet) && (!THREAD_PLAN_TOOLS.has(tool.name) || canManagePlan) && (tool.name !== "read_attachment" || caps.vision) && (tool.name !== "skill_read" || Boolean(this.skills?.index(agent.id).length)) && (tool.name !== "skill_install" || Boolean(this.skills)) && (selectedBrain?.enabled || !tool.name.startsWith("brain_")) && (agent.brainSource !== "external" || !["remember", "forget", "update_core", "brain_note"].includes(tool.name)) && (this.artifacts || !tool.name.startsWith("artifact_")) && (this.vault?.enabled || !tool.name.startsWith("secret_")) && (this.email || !tool.name.startsWith("email_")) && (this.voiceCalls?.enabled || !tool.name.startsWith("voice_")) && (!this.previewTools || this.previewTools.has(tool.name)) && (tool.name !== "create_file" || Boolean(this.previewTools))).concat(onlyEncrypted || this.previewTools ? [] : this.connectors?.toolsFor(agent) || []) : [];
     const place = this.localChannel(channel).place || "";
     const system = [
       this.systemPrompt(agent, { place, computer: computer && caps.tools, withoutComputer: Boolean(agent.tools && !computer && caps.tools), people: channel.people || [], colleagues: await this.conversationDirectory(agent, channel.id) }),
@@ -1183,7 +1173,6 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       // A voice call joins where the person asking is, unless a channel is named.
       meetJoin: canUseMeet ? ({ link, folder }) => this.meet.join(agent, { link, folder, by: requester, channelId: channel.id, memberUserId: isWebRoom(channel.id) ? requester.id : "" }) : null,
       meetLeave: canUseMeet ? () => this.meet.leave(agent) : null,
-      meetSetup: canSetupMeet ? (options) => { const mailbox = this.mailboxFor(agent); return this.meet.setup(agent, { ...options, routineId: routine?.id, email: mailbox?.status === "ready" ? mailbox.email || "" : "", vault: this.vault }); } : null,
       voiceJoin: this.voiceCalls?.enabled ? ({ channelId }) => this.voiceCalls.join(agent, { channelId, requesterId: transportOf(channel.id) === "discord" ? replyTo?.authorId || "" : "", allowedGuild: this.allowedGuild || (() => true), origin: channel.id }) : null,
       voiceLeave: this.voiceCalls ? () => this.voiceCalls.leave(agent) : null,
       threadFor: this.threadFor ? (threadId) => this.threadFor(agent, threadId) : null,

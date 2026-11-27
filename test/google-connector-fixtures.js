@@ -17,7 +17,7 @@ export async function googleConnectorFixture(t, instance) {
       if (fields.get("refresh_token") === "fixture-google-refresh") return send(200, { access_token: "fixture-google-access", expires_in: 3600 });
       return send(401, {});
     }
-    if (req.url === "/userinfo") return send(200, { sub: "fixture-google-user", email: "robin+google@ambox.dev", email_verified: true });
+    if (req.url === "/userinfo") return send(200, { sub: "fixture-google-user", name: "Shared Meet QA", email: "robin+google@ambox.dev", email_verified: true });
     if (req.url === "/gmail/messages/send") {
       if (req.headers.authorization !== "Bearer fixture-google-access") return send(401, {});
       sent.push(Buffer.from(JSON.parse(text).raw, "base64url").toString("utf8"));
@@ -44,8 +44,8 @@ export async function googleConnectorFixture(t, instance) {
   instance.app.googleConnector.space = "fixture";
   instance.app.googleConnector.api = `${googleBase}/gmail`;
   t.after(async () => { cloud.server.closeAllConnections(); await new Promise((resolve) => cloud.server.close(resolve)); store.close(); google.closeAllConnections(); await new Promise((resolve) => google.close(resolve)); });
-  const connect = async () => {
-    const started = await instance.call("/api/connectors/google", { method: "POST" });
+  const connect = async (path = "/api/connectors/google") => {
+    const started = await instance.call(path, { method: "POST" });
     const cookie = started.headers.get("set-cookie").split(";")[0];
     const start = await fetch(started.data.url, { redirect: "manual" });
     const authorize = new URL(start.headers.get("location"));
