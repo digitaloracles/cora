@@ -41,6 +41,31 @@ A turn is queued when it finishes and sent in batches (32 turns or every 5 s, at
 
 With owner-scoped knowledge (`CORA_OWNER_MEMORY=1`) one instance-wide collector receives every owner's turns: point it only at a backend the space administrator controls, and keep content capture off.
 
+## Migrating the turns already recorded
+
+`scripts/otel-migrate.mjs` moves every finished turn still in a Cora database into OpenTelemetry, with the same conversion and ids as the live export (`src/otel-migrate.js`). It opens `cora.db` read-only and never changes it, so it can run next to a live Cora.
+
+```
+node scripts/otel-migrate.mjs --dry-run                       # convert and check every turn, send nothing
+node scripts/otel-migrate.mjs --state ~/.cora/otel-migrate.json  # to the collector set by OTEL_EXPORTER_OTLP_*
+node scripts/otel-migrate.mjs --endpoint http://collector:4318/v1/traces --before 2026-11-27T10:00:00Z
+node scripts/otel-migrate.mjs --out turns.jsonl               # OTLP/JSON lines, for the Collector's otlpjsonfile receiver
+```
+
+| Option | Effect |
+| --- | --- |
+| `--db` | database, default `$CORA_HOME/cora.db` (`~/.cora/cora.db`) |
+| `--endpoint` | full `/v1/traces` URL; otherwise the `OTEL_EXPORTER_OTLP_*` variables, headers included |
+| `--out` | also append each batch as one OTLP/JSON line to a file |
+| `--state` | remember the last turn sent; a rerun resumes after it and keeps the first run's `--before` |
+| `--before` | only turns started before this time (default now); set it to when the live export was turned on so no turn is sent twice |
+| `--content` | include message content (also `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`); the system prompt never leaves |
+| `--dry-run` | convert and check only |
+
+Running turns are skipped. Turns cut by a restart (`interrupted`, no end time) end at their last step. Every turn is checked before it leaves (W3C ids, one root, children under it and inside its time, no span ending before it starts); the JSON summary on stdout gives turns, spans, events, statuses, the spans the collector rejected (`partialSuccess`) and the turns that failed a check, and the exit code is 1 when either is not zero. A collector answering 408, 429 or 5xx is retried three times with backoff; any other error stops the run, and with `--state` the next run resumes from the last batch accepted.
+
+Cora keeps the latest 300 turns per agent (`TRACES_KEPT_PER_AGENT`) and deletes older ones, so the migration covers what the database still holds.
+
 ## On demand
 
 - `GET /api/traces/:id/otlp` — one finished turn as an `ExportTraceServiceRequest` (OTLP/JSON). Same access rules as `GET /api/traces/:id`; 409 while the turn is running.
@@ -49,4 +74,4 @@ With owner-scoped knowledge (`CORA_OWNER_MEMORY=1`) one instance-wide collector 
 
 The panel MCP exposes them as `cora_trace_otlp` and `cora_thread_otlp`. The JSON can be posted as is to any `/v1/traces` receiver.
 
-Tests: `test/otel.test.js` (conversion, configuration, a real HTTP collector and a dead one) and `test/panel-mcp-tools.test.js` (owner isolation and content opt-in on the endpoint).
+Tests: `test/otel.test.js` (conversion, configuration, a real HTTP collector and a dead one), `test/otel-migrate.test.js` (migration: content, resume, file output, retries, rejected spans) and `test/panel-mcp-tools.test.js` (owner isolation and content opt-in on the endpoint).
