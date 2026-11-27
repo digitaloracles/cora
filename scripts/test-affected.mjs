@@ -24,7 +24,7 @@ const FULL = [
 const NONE = [/^docs\//, /\.md$/, /^LICENSE$/, /^\.gitignore$/, /^deploy\//, /^bin\/(icons|login-link|cli-smoke|hermes-smoke)\.mjs$/, /^web\/.*\.(png|svg|webmanifest)$/, /^scripts\/test-affected\.mjs$/, /^node_modules$/];
 
 const PANEL = {
-  files: ["connections", "key-connectors", "hermes-keys", "access", "permissions", "appearance"],
+  files: ["panel-discord", "connections", "key-connectors", "hermes-keys", "access", "permissions", "appearance"],
   cora: ["Meet setup stops", "agent remote access", "security seal autosaves", "external configuration MCP", "shared owner controls", "panel auth", "routine workspaces", "subscription preparation", "manual subscription codes", "connector setup", "Linear workspace", "Claude OAuth", "device-code"],
 };
 
@@ -41,7 +41,7 @@ const AREAS = [
   { name: "encrypted conversion", paths: [/^src\/encrypted-conversion\.js$/, /^web\/encrypted-conversion\.js$/, /^web\/encrypted-passkeys\.js$/, /^test\/encrypted-methods\.test\.js$/], files: ["encrypted-methods"], cora: ["encrypted access tools", "personal passkey metadata"] },
   { name: "encrypted space", paths: [/^src\/encrypted-space\.js$/, /^web\/encrypted-space\.js$/, /^web\/encrypted-memory\.js$/, /^web\/encrypted-crypto\.js$/, /^web\/encrypted-files\.js$/, /^web\/encrypted-chat\.js$/], files: ["encrypted-space", "encrypted-files", "encrypted-methods", "artifacts", "sealed", "context"], cora: ["encrypted access tools", "general encryption enforcement"] },
   { name: "agent previews", paths: [/^src\/preview(?:-pipeline|-demo)?\.js$/, /^bin\/preview-demo\.mjs$/, /^deploy\/preview\//, /^test\/preview(?:-pipeline)?\.test\.js$/, /^web\/preview\.(js|css|html)$/], files: ["preview", "preview-pipeline"], cora: [] },
-  { name: "embed agent", paths: [/^src\/embed\.js$/, /^web\/embed(-widget)?\.(js|css|html)$/, /^test\/embed\.test\.js$/], files: ["embed"], cora: [] },
+  { name: "embed agent", paths: [/^src\/embed\.js$/, /^web\/embed\.(js|css|html)$/, /^web\/embed-widget\.js\.in$/, /^test\/embed\.test\.js$/], files: ["embed"], cora: [] },
   { name: "sealed agents", paths: [/^test\/sealed(?:-box|-artifacts|-network)?\.test\.js$/], files: ["sealed", "sealed-box", "sealed-artifacts", "sealed-network"], cora: [] },
   { name: "panel", paths: [/^web\/(app|i18n|index|sw)\.(js|html)$/, /^web\/styles\.css$/, /^src\/web\.js$/], ...PANEL },
   { name: "hermes keys", paths: [/^src\/(hermes-keys|credentials)\.js$/], files: ["hermes-keys", "deepseek", "connections"], cora: ["what runs the models"] },

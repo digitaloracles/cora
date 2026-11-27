@@ -496,7 +496,7 @@ function agentPlatforms(agent) {
   return platformsOn().filter((kind) => !(agent.platformsOff || []).includes(kind));
 }
 
-function transportInfo(kind = S.data.transport) {
+function transportInfo(kind = S.data.transport || "discord") {
   const status = (kind === "telegram" ? S.data.telegram : kind === "slack" ? S.data.slack : S.data.discord) || { state: "missing-token", error: "", user: null };
   let where;
   if (kind === "slack") {
@@ -506,7 +506,7 @@ function transportInfo(kind = S.data.transport) {
     const chats = S.data.settings.telegramChatIds.map((id) => S.data.telegram.chats.find((chat) => chat.id === id)?.title || id);
     where = chats.length ? chats.join(", ") : "nessuna chat accesa";
   } else {
-    const guilds = S.data.discord.guilds.filter((guild) => S.data.settings.guildIds.includes(guild.id)).map((guild) => guild.name);
+    const guilds = (S.data.guilds || []).filter((guild) => S.data.settings?.guildIds?.includes(guild.id)).map((guild) => guild.name);
     where = guilds.length ? guilds.join(", ") : "nessun server acceso";
   }
   return { kind, ...TRANSPORTS[kind], state: status.state, error: status.error, user: status.user, team: status.team, where };
@@ -10851,8 +10851,8 @@ function renderSettings() {
     return badge(raw(line), led === "on" ? "on" : led === "err" ? "err" : led === "busy" ? "warn" : "", led === "on" ? "radio" : led === "err" ? "alert" : TRANSPORTS[kind].icon);
   };
 
-  const discord = S.data.discord;
-  const guilds = discord.guilds;
+  const discord = S.data.discord || { state: "missing-token" };
+  const guilds = S.data.guilds || [];
   const listening = S.data.agents.find((agent) => agent.bot?.user && agent.bot.user.id === discord.user?.id);
   let guildRow;
   const discordOwners = manage ? discordOwnersRow() : null;
