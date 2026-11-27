@@ -6,6 +6,7 @@ import { ThreadState } from "./thread-state.js";
 import { Memory, parseJsonObject } from "./memory.js";
 import { discordLinks, slackChannel, slackLinks, telegramBotAgent, transportOf } from "./channels.js";
 import { SALOTTO, isWebRoom, privateRoom, ownerRoom } from "./rooms.js";
+import { AppThreads } from "./app-threads.js";
 import { SHARED, TRANSPORTS, decisionChain, replyChain } from "./store.js";
 import { encryptedOnly, ENCRYPTED_CHAT_TOOLS } from "./encrypted-space.js";
 import { MEMORY_TOOLS, OWN_TOOLS, THREAD_PLAN_TOOLS, TOOL_DEFS, executeTool, summarizeArgs } from "./tools.js";
@@ -251,6 +252,11 @@ export class Brain {
 
   /** Channels whose archive an agent may search: the ones it listens to, on every transport, plus its panel rooms. */
   channelIdsFor(agent) {
+    const appThreads = new AppThreads(this.store).list().filter((record) => record.agentIds.includes(agent.id)).map((record) => record.id);
+    return [...new Set([...this.channelIdsBase(agent), ...appThreads])];
+  }
+
+  channelIdsBase(agent) {
     // Sealed: its private room, the channels it was put in (and their threads), and its own bot's chats.
     if (this.knowledge?.isSealed(agent)) {
       const own = this.store.archivedChannels().filter((id) => telegramBotAgent(id) === agent.id);
@@ -590,6 +596,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
   postingChannels(agent, channel) {
     return [...new Map([
       ...(this.knowledge?.isSealed(agent) ? [] : [{ id: this.knowledge?.ownerMemory ? ownerRoom(this.knowledge.ownerId(agent)) : SALOTTO, name: L`salotto`, kind: "web" }]), { id: privateRoom(agent.id), name: L`la tua chat privata`, kind: "web" },
+      ...new AppThreads(this.store).list().filter((record) => record.agentIds.includes(agent.id)).map((record) => ({ id: record.id, name: L`thread in app «${record.name}»`, kind: "web" })),
       ...(this.channels?.listFor?.(agent) || []), { ...channel, id: channel.id, name: channel.name || this.channelLabel(channel.id), kind: channel.kind || "web" },
     ].map(({ id, name, kind, thread, parentId }) => [id, thread || parentId
       ? { id, name, kind, thread: true, parent_id: parentId || "", parent_name: this.parentName(parentId) }

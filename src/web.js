@@ -28,7 +28,8 @@ import { Telegram } from "./telegram.js";
 import { telegramSetup } from "./telegram-setup.js";
 import { pullModel } from "./llm.js";
 import { telegramBotEnvName } from "./telegram-bots.js";
-import { isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
+import { isAppThread, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
+import { tagged } from "./orchestrator.js";
 import { PreviewWindow } from "./preview.js";
 import { nextRuns } from "./scheduler.js";
 import { SHARED } from "./store.js";
@@ -497,8 +498,10 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     github: github ? github.view(agent) : null,
   });
 
+  const appThreadOf = (entry) => [entry.room, entry.channelId, entry.trace?.channelId].find((id) => isAppThread(id)) || "";
   const privateOwner = (entry) => {
     if (entry.ownerId) return entry.ownerId;
+    if (appThreadOf(entry)) return orchestrator.appThreads.get(appThreadOf(entry))?.ownerId || "unavailable";
     if (isSalotto(entry.room) || isSalotto(entry.channelId) || isSalotto(entry.trace?.channelId)) {
       const room = entry.room || entry.channelId || entry.trace.channelId;
       return knowledge.ownerIds().find((id) => ownerRoom(id) === room) || "unavailable";
@@ -511,10 +514,12 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     return agent ? knowledge.ownerId(agent) : "";
   };
   const ownsEntry = (entry, viewer) => {
+    // A thread in app is its person's in every space, shared or not.
+    if (appThreadOf(entry)) return orchestrator.appThreads.canUse(orchestrator.appThreads.get(appThreadOf(entry)), viewer, { ownerMemory: Boolean(knowledge?.ownerMemory) });
     const candidateId = entry.agentId || entry.trace?.agentId || (entry.room?.startsWith("web-ag_") ? entry.room.slice(4) : "") || (entry.channelId?.startsWith("web-ag_") ? entry.channelId.slice(4) : "");
     if (knowledge?.isSealed(store.agent(candidateId))) return knowledge.canManage(store.agent(candidateId), viewer);
     if (!knowledge?.ownerMemory) return true;
-    const personalRoom = isSalotto(entry.room) || isSalotto(entry.channelId) || isSalotto(entry.trace?.channelId);
+    const personalRoom = isSalotto(entry.room) || isSalotto(entry.channelId) || isSalotto(entry.trace?.channelId) || Boolean(appThreadOf(entry));
     const agentId = entry.agentId || entry.trace?.agentId || (entry.room?.startsWith("web-ag_") ? entry.room.slice(4) : "");
     if (!personalRoom && agentId && knowledge.canManage(store.agent(agentId), viewer)) return true;
     return privateOwner(entry) === viewer?.id || (!privateOwner(entry) && !entry.text && !entry.item && !entry.trace && !entry.agentId && !entry.id);
@@ -528,6 +533,9 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
   const quotaAccountsFor = (viewer) => subscriptions.list().filter((record) => canReadQuota(record, viewer)).map(({ id, provider, label, email, plan, status, resident, installed }) =>
     ({ id, provider, label, email, plan, status, resident, installed, usage: subscriptions.usage.get(id) }));
   const providerQuotasFor = (viewer) => viewer.role === "owner" ? subscriptions.usage.connections().filter((record) => canReadQuota(record, viewer)) : [];
+  /** The agents a person may put in a thread in app: theirs (all of them in a shared space), not sealed and not encrypted-only. */
+  const appThreadAgentsFor = (viewer) => (knowledge?.agentsFor(viewer) || store.agents())
+    .filter((agent) => !knowledge?.isSealed(agent) && !encryptedOnly(store, agent) && (!knowledge?.ownerMemory || knowledge.canManage(agent, viewer)));
   const checkAgentMemory = (id, viewer) => {
     if ((knowledge?.ownerMemory || knowledge?.isSealed(store.agent(id))) && !knowledge.canManage(store.agent(id), viewer)) throw new HttpError(403, "Questi dati appartengono al proprietario dell'agente.");
   };
@@ -570,7 +578,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       const routineId = /^\/api\/routines\/(rt_[\w-]+)(?:\/|$)/.exec(url.pathname)?.[1];
       const routine = routineId && store.routine(routineId);
       if (routine && !knowledge?.canManage(store.agent(routine.agentId), user)) throw new HttpError(404, "Routine non trovata.");
-      if (user.role !== "owner" && method !== "GET" && (url.pathname === "/api/subscriptions/resident/check" || !/^\/api\/(?:agents|agent-imports|routines|brain|subscriptions|connectors|artifacts|secrets|rooms|push)(?:\/|$)/.test(url.pathname))) throw new HttpError(403, "Solo il proprietario gestisce le impostazioni dello spazio.");
+      if (user.role !== "owner" && method !== "GET" && (url.pathname === "/api/subscriptions/resident/check" || !/^\/api\/(?:agents|agent-imports|routines|brain|subscriptions|connectors|artifacts|secrets|rooms|app-threads|push)(?:\/|$)/.test(url.pathname))) throw new HttpError(403, "Solo il proprietario gestisce le impostazioni dello spazio.");
     },
   });
 
@@ -1189,14 +1197,87 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       const participants = [...store.threadParticipantIds(id), ...(all?.listening || []).map((agent) => agent.id)];
       if (participants.some((id) => !canStopFlow(id))) throw new HttpError(403, "Il thread contiene agenti di altri proprietari");
     };
+    // A thread opened in the app is its person's: nobody else lists it, opens it or manages it.
+    const appThreads = orchestrator.appThreads;
+    const appThreadUsable = (id) => appThreads.canUse(appThreads.get(id), user, { ownerMemory: Boolean(knowledge?.ownerMemory) });
+    const appThreadAgents = () => appThreadAgentsFor(user);
+    const threadIdIn = /^\/api\/threads\/([\w:.%-]{3,160})(?:\/|$)/.exec(path);
+    if (threadIdIn && isAppThread(decodeURIComponent(threadIdIn[1])) && !appThreadUsable(decodeURIComponent(threadIdIn[1]))) throw new HttpError(404, "thread non trovato");
+    if (path === "/api/app-threads" && method === "GET") {
+      const board = await orchestrator.threadBoard({ usage: false });
+      const byId = new Map(board.threads.map((thread) => [thread.id, thread]));
+      const threads = appThreads.list().filter((record) => appThreadUsable(record.id)).map((record) => {
+        const thread = byId.get(record.id);
+        const last = store.recentMessages(record.id, 1)[0];
+        return {
+          id: record.id, name: record.name, createdAt: record.createdAt, lastAt: thread?.lastAt || record.createdAt, closed: Boolean(thread?.closed),
+          agents: record.agentIds.map((id) => store.agent(id)).filter(Boolean).map((agent) => ({ id: agent.id, name: agent.name, color: agent.color || "#f2a93b", enabled: agent.enabled })),
+          working: Boolean(thread?.flows.some((flow) => flow.status === "active")),
+          last: last ? { authorName: last.authorName, content: String(last.content || "").slice(0, 160), at: last.at } : null,
+        };
+      }).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)));
+      return send(res, 200, { threads, agents: appThreadAgents().map((agent) => ({ id: agent.id, name: agent.name, color: agent.color || "#f2a93b", enabled: agent.enabled })) });
+    }
+    if (path === "/api/app-threads" && method === "POST") {
+      const body = await readJson(req, 8000);
+      const allowedAgents = new Set(appThreadAgents().map((agent) => agent.id));
+      const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : [];
+      if (agentIds.some((id) => !allowedAgents.has(id))) throw new HttpError(403, "Agente non disponibile per te.");
+      try {
+        const record = appThreads.create({ name: body.name, agentIds, ownerId: user.id });
+        store.setValue("threadCreators", { ...store.value("threadCreators", {}), [record.id]: user.id });
+        return send(res, 201, record);
+      } catch (error) { throw new HttpError(error.status || 400, error.message); }
+    }
+    const appThreadPath = /^\/api\/app-threads\/(web-t-[a-f0-9]{12})(?:\/(close|reopen))?$/.exec(path);
+    if (appThreadPath) {
+      const [, id, action] = appThreadPath;
+      if (!appThreadUsable(id)) throw new HttpError(404, "thread non trovato");
+      if (!action && method === "GET") return send(res, 200, appThreads.get(id));
+      if (!action && method === "PATCH") {
+        const body = await readJson(req, 8000);
+        if (body.agentIds !== undefined) {
+          const allowedAgents = new Set([...appThreadAgents().map((agent) => agent.id), ...appThreads.agentIds(id)]);
+          if (!Array.isArray(body.agentIds) || body.agentIds.some((agentId) => !allowedAgents.has(String(agentId)))) throw new HttpError(403, "Agente non disponibile per te.");
+        }
+        try { return send(res, 200, appThreads.update(id, { name: body.name, agentIds: body.agentIds })); }
+        catch (error) { throw new HttpError(error.status || 400, error.message); }
+      }
+      if (action && method === "POST") {
+        if (action === "close") return send(res, 200, await orchestrator.closeAppThread(id));
+        return send(res, 200, orchestrator.reopenAppThread(id));
+      }
+      throw new HttpError(405, "Metodo non consentito.");
+    }
     if (path === "/api/threads" && method === "GET") {
       const board = await orchestrator.threadBoard(threadScope);
+      board.threads = board.threads.filter((thread) => !thread.app || appThreadUsable(thread.id));
       if (privateThreads) {
         const parents = new Set(visibleThreadAgents.flatMap((agent) => orchestrator.channels.listFor(agent).map((channel) => channel.parentId || channel.id)));
         board.parents = user.role === "owner" ? board.parents.filter((parent) => parents.has(parent.id)) : [];
       }
       board.threads = board.threads.map((thread) => ({ ...thread, flows: thread.flows.map((flow) => ({ ...flow, canStop: canStopFlow(flow.agentId) })) }));
       return send(res, 200, board);
+    }
+    // The sidebar's latest threads: every conversation this person sees, light, newest first.
+    if (path === "/api/threads/recent" && method === "GET") {
+      const board = await orchestrator.threadBoard({ ...threadScope, usage: false });
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 200, 1), 500);
+      const people = (ids) => ids.map((id) => store.agent(id)).filter(Boolean).map((agent) => ({ id: agent.id, name: agent.name, color: agent.color || "#f2a93b" }));
+      const threads = board.threads.filter((thread) => !thread.app || appThreadUsable(thread.id)).map((thread) => {
+        const agentId = roomAgentId(thread.id);
+        const agentIds = thread.app ? thread.agentIds : agentId ? [agentId] : [...new Set([...thread.flows.map((flow) => flow.agentId), ...(thread.listening || []).map((agent) => agent.id)])];
+        if (agentId && !store.agent(agentId)) return null;
+        return {
+          id: thread.id, kind: thread.kind, app: Boolean(thread.app), thread: thread.thread, direct: thread.direct, closed: thread.closed,
+          room: isSalotto(thread.id) ? "salotto" : agentId ? "private" : thread.app ? "app" : "",
+          name: isSalotto(thread.id) ? "Salotto" : agentId ? store.agent(agentId).name : thread.name,
+          parentName: thread.parentName, lastAt: thread.lastAt,
+          working: thread.flows.some((flow) => flow.status === "active"),
+          agents: people(agentIds).slice(0, 6),
+        };
+      }).filter((thread) => thread && thread.lastAt).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, limit);
+      return send(res, 200, { threads });
     }
     if (path === "/api/plans" && method === "GET") {
       const status = url.searchParams.get("status") || "open";
@@ -1264,6 +1345,17 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         .map(({ id, name }) => ({ id, name }));
       return send(res, 200, detail);
     }
+    if (["/api/threads/rename", "/api/threads/close"].includes(path) && method === "POST") {
+      const body = await readJson(req, 4000);
+      const id = String(body.id || "");
+      if (isAppThread(id)) {
+        if (!appThreadUsable(id)) throw new HttpError(404, "thread non trovato");
+        if (path.endsWith("/close")) return send(res, 200, await orchestrator.closeAppThread(id));
+        try { return send(res, 200, appThreads.update(id, { name: body.name })); }
+        catch (error) { throw new HttpError(error.status || 400, error.message); }
+      }
+      req.coraBody = body;
+    }
     if (["/api/threads", "/api/threads/rename", "/api/threads/close"].includes(path) && method === "POST" && user.role !== "owner") {
       throw new HttpError(403, "Solo il proprietario");
     }
@@ -1280,7 +1372,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       } catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
     if (path === "/api/threads/rename" && method === "POST") {
-      const body = await readJson(req, 4000);
+      const body = req.coraBody;
       await requireThreadManagement(String(body.id || ""));
       try { return send(res, 200, await orchestrator.renamePlatformThread(body.id, body.name)); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
@@ -1297,7 +1389,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       return send(res, 200, { stopped: own.reduce((count, session) => count + orchestrator.stopThread(id, session.agentId).stopped, 0) });
     }
     if (path === "/api/threads/close" && method === "POST") {
-      const body = await readJson(req, 4000);
+      const body = req.coraBody;
       await requireThreadManagement(String(body.id || ""));
       try { return send(res, 200, await orchestrator.closePlatformThread(String(body.id || ""))); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
@@ -2089,6 +2181,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (knowledge?.ownerMemory && isSalotto(room) && room !== knowledge.roomFor(user)) throw new HttpError(403, "Stanza privata.");
       const agentId = roomAgentId(room);
       if (!isWebRoom(room) || (agentId && !store.agent(agentId))) throw new HttpError(404, "stanza non trovata");
+      if (isAppThread(room) && !orchestrator.appThreads.canUse(orchestrator.appThreads.get(room), user, { ownerMemory: Boolean(knowledge?.ownerMemory) })) throw new HttpError(404, "stanza non trovata");
       if (agentId) checkAgentMemory(agentId, user);
       if (method === "GET") {
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 80));
@@ -2102,6 +2195,15 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         if (text.length > 3000) throw new HttpError(400, "messaggio troppo lungo (max 3000 caratteri)");
         if (agentId && !store.agent(agentId).enabled) throw new HttpError(409, "l'agente è muto: accendilo dal profilo");
         const clientId = /^c_[0-9a-f]{16,32}$/.test(String(body.clientId || "")) ? body.clientId : null;
+        if (isAppThread(room)) {
+          if (!orchestrator.agentsFor(room).length) throw new HttpError(409, "Nessun agente acceso in questo thread.");
+          orchestrator.reopenAppThread(room);
+          orchestrator.appThreads.nameFromMessage(room, text);
+          // An agent called by name joins the thread, when this person may bring it in.
+          const current = orchestrator.appThreads.agentIds(room);
+          const invited = appThreadAgentsFor(user).filter((agent) => !current.includes(agent.id) && tagged(text, agent.name));
+          if (invited.length) orchestrator.appThreads.update(room, { agentIds: [...current, ...invited.map((agent) => agent.id)] });
+        }
         previewWindow.start(user);
         return send(res, 201, await orchestrator.onWebMessage({ room, text, user, clientId }));
       }

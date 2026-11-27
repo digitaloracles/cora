@@ -812,6 +812,7 @@ function connectEvents() {
       return;
     }
     if (["web-message", "web-typing", "trace"].includes(entry.type)) {
+      pingSideThreads(entry);
       S.live?.(entry);
       app.querySelector(".agent-chat-widget")?.onLiveEntry?.(entry);
       return;
@@ -905,7 +906,7 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
     // The salotto opens from the Banco: it is one of the desk's rooms, not a section of its own.
     ["banco", "Banco", "grid", section === "banco" || section === "salotto"],
     ["brain", "Brain", "bulb", section === "brain"],
-    ["thread", "Thread", "hash", section === "thread"],
+    ["thread", "Thread", "hash", section === "thread" || section === "chat"],
     ["artefatti", "Artefatti", "archive", section === "artefatti", S.data?.artifacts?.reviews || 0],
     // Contesto opens from Impostazioni: what the agents read is a setting of the space, not a place of its own.
     ["settings", "Impostazioni", "sliders", section === "settings" || section === "contesto" || section === "domini"],
@@ -913,16 +914,11 @@ function shell(content, { title = "Cora", back = "", mode = "" } = {}) {
   const info = S.data ? transportInfo() : { icon: "radio", label: "Cora", where: tr("Caricamento…") };
   app.replaceChildren(h("div", { class: `app${mode ? ` mode-${mode}` : ""}` },
     h("aside", { class: "sidebar" },
-      h("a", { class: "brand", href: "#/" }, brandMark(), h("span", {}, h("b", {}, raw(S.data?.appearance?.name || "Cora")), h("small", {}, S.data?.appearance?.name ? "su Cora" : "agenti residenti"))),
-      h("a", { class: "onair-card", href: "#/settings" },
-        h("span", { class: "panel-ico" }, icon(info.icon)),
-        h("span", { class: "grow" }, h("b", {}, S.data ? platformsOn().map((kind) => TRANSPORTS[kind].label).join(" · ") : info.label), h("small", {}, info.where)),
-        lamp()),
+      h("div", { class: "side-top" },
+        h("a", { class: "brand", href: "#/" }, brandMark(), h("span", {}, h("b", {}, raw(S.data?.appearance?.name || "Cora")), h("small", {}, S.data?.appearance?.name ? "su Cora" : "agenti residenti"))),
+        h("a", { class: "side-lamp", href: "#/settings", title: S.data ? `${platformsOn().map((kind) => TRANSPORTS[kind].label).join(" · ")} · ${info.where}` : info.label, "aria-label": tr("Canali") }, lamp())),
+      S.data ? sideThreads() : h("div", { class: "side-threads" }, skeleton("rows")),
       h("nav", { class: "side-nav" }, nav.map(([key, label, name, active, count]) => h("a", { href: `#/${key}`, class: active ? "active" : "" }, icon(name), h("span", {}, label), count ? h("i", { class: "nav-count", title: tr("{count} da rivedere", { count }) }, raw(String(count))) : null))),
-      h("div", { class: "side-agents" },
-        h("span", { class: "label" }, "Agenti"),
-        S.data ? S.data.agents.map((agent) => h("a", { href: `#/agent/${agent.id}/impostazioni`, class: section === "agent" && current === agent.id ? "active" : "" }, avatar(agent, "xs"), h("span", { class: "grow" }, raw(agent.name)), agentDot(agent))) : skeleton("rows"),
-        h("a", { href: "#/new", class: section === "new" ? "active" : "" }, h("span", { class: "avatar xs add" }, icon("plus")), h("span", { class: "grow" }, "Nuovo agente"))),
       h("div", { class: "side-account" }, accountButton("side"))),
     h("header", { class: "appbar" },
       back ? h("a", { class: "icon-btn", href: back, "aria-label": "Indietro" }, icon("back")) : h("a", { class: "appbar-brand", href: "#/", "aria-label": S.data?.appearance?.name || "Cora" }, brandMark()),
@@ -6134,6 +6130,219 @@ function renderSalotto() {
   });
 }
 
+/* ---------- threads in app ---------- */
+// The sidebar's latest threads: one node that lives across pages, refreshed in place.
+function sideThreadHref(thread) {
+  if (thread.room === "salotto") return "#/salotto";
+  if (thread.room === "private") return `#/agent/${thread.agents[0]?.id}/chat`;
+  if (thread.app) return `#/chat/${thread.id}`;
+  return threadHref(thread.id);
+}
+
+function sideThreadPlace(thread) {
+  if (thread.app) return thread.agents.map((agent) => agent.name).join(", ") || tr("In app");
+  if (thread.room === "private") return tr("Chat privata");
+  if (thread.room === "salotto") return tr("Tutti gli agenti");
+  return threadPlace(thread);
+}
+
+function sideThreadMark(thread) {
+  if (thread.room === "private" && thread.agents[0]) return avatar(S.data?.agents.find((agent) => agent.id === thread.agents[0].id) || thread.agents[0], "xs");
+  const name = thread.app || thread.kind === "web" ? "chat" : thread.kind === "slack" ? "slack" : thread.kind === "telegram" ? "send" : "hash";
+  return h("span", { class: `side-thread-ico${thread.app ? " in-app" : ""}` }, icon(name));
+}
+
+function sideThreads() {
+  if (!S.side) {
+    const list = h("div", { class: "side-thread-list" });
+    const search = h("input", { type: "search", class: "side-search", placeholder: tr("Cerca nei thread"), "aria-label": tr("Cerca nei thread"), autocomplete: "off", maxlength: "100" });
+    const none = h("p", { class: "side-none", hidden: true });
+    const node = h("section", { class: "side-threads", "aria-label": tr("Ultimi thread") },
+      btn("Nuovo thread", { icon: "plus", href: "#/chat/new", cls: "primary side-new" }),
+      h("label", { class: "side-search-box" }, icon("search"), search),
+      h("div", { class: "side-threads-head" }, h("span", { class: "label" }, "Ultimi thread"), h("a", { href: "#/thread" }, "Tutti")),
+      list, none);
+    S.side = { node, list, search, none, items: null, timer: 0 };
+    search.addEventListener("input", paintSideThreads);
+    search.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { search.value = ""; paintSideThreads(); }
+      if (event.key === "Enter") { event.preventDefault(); list.querySelector("a")?.click(); }
+    });
+    setInterval(() => { if (!document.hidden && S.data) void refreshSideThreads(); }, 30000).unref?.();
+  }
+  paintSideThreads();
+  if (!S.side.items && !S.side.loading) void refreshSideThreads();
+  return S.side.node;
+}
+
+async function refreshSideThreads() {
+  if (!S.side || S.side.loading) return;
+  S.side.loading = true;
+  try {
+    S.side.items = (await api("/api/threads/recent?limit=200")).threads || [];
+    paintSideThreads();
+  } catch {} finally { S.side.loading = false; }
+}
+
+/** A message or a turn somewhere: the latest threads move, a moment later and once for a burst. */
+function pingSideThreads(entry) {
+  if (!S.side || !(entry.type === "web-message" || (entry.type === "trace" && ["start", "end"].includes(entry.event)))) return;
+  clearTimeout(S.side.timer);
+  S.side.timer = setTimeout(() => void refreshSideThreads(), 800);
+}
+
+function paintSideThreads() {
+  const side = S.side;
+  if (!side) return;
+  if (!side.items) {
+    if (!side.list.firstChild) side.list.replaceChildren(skeleton("rows"));
+    return;
+  }
+  const words = plainText(side.search.value).split(/\s+/).filter(Boolean);
+  const matching = side.items.filter((thread) => !words.length || words.every((word) => plainText([thread.name, thread.parentName, sideThreadPlace(thread), ...thread.agents.map((agent) => agent.name)].join(" ")).includes(word)));
+  const shown = matching.slice(0, words.length ? 40 : 14);
+  const here = location.hash.split("?")[0];
+  // Drawn again only when what it shows changed: a refresh that brings nothing new leaves the list alone.
+  const sig = JSON.stringify([shown, here]);
+  if (sig !== side.sig) {
+    side.sig = sig;
+    side.list.replaceChildren(...shown.map((thread) => {
+      const href = sideThreadHref(thread);
+      const active = here === href;
+      return h("a", { class: `side-thread${active ? " active" : ""}${thread.closed ? " closed" : ""}`, href, title: thread.name, "aria-current": active ? "page" : null },
+        sideThreadMark(thread),
+        h("span", { class: "grow" }, h("b", {}, raw(thread.name)), h("small", {}, raw(sideThreadPlace(thread)))),
+        thread.working ? h("span", { class: "typing", title: tr("Sta rispondendo") }, h("i"), h("i"), h("i")) : null);
+    }));
+  }
+  side.none.hidden = Boolean(shown.length);
+  side.none.textContent = tr(words.length ? "Nessun thread con questo nome." : "Ancora nessun thread: aprine uno.");
+}
+
+/** The agents of a thread to choose, one chip each with its picture. */
+function agentChips(agents, chosen, onchange) {
+  const box = h("div", { class: "chips app-thread-agents", role: "group", "aria-label": tr("Agenti") });
+  const paint = () => box.replaceChildren(...agents.map((agent) => {
+    const on = chosen.has(agent.id);
+    return h("button", { type: "button", class: `chip agent-chip${on ? " on" : ""}`, "aria-pressed": String(on), disabled: !agent.enabled, title: agent.enabled ? agent.name : tr("{name} è muto", { name: agent.name }), onclick: () => {
+      if (on) chosen.delete(agent.id); else chosen.add(agent.id);
+      paint();
+      onchange?.();
+    } }, avatar(S.data.agents.find((item) => item.id === agent.id) || agent, "xs"), h("span", {}, raw(agent.name)), on ? icon("check") : null);
+  }));
+  paint();
+  return box;
+}
+
+/** New thread in app: its agents, an optional name and the first message. */
+async function renderChatNew() {
+  S.live = null;
+  const slot = h("div", { class: "app-thread-new-slot" }, skeleton("rows"));
+  shell([pageHead("Nuovo thread", "Un thread nel pannello, senza Discord, Slack o Telegram. Scegli gli agenti: puoi invitarne altri in corsa con @Nome."), slot], { title: "Nuovo thread", back: "#/thread" });
+  const data = await guard(api("/api/app-threads"));
+  if (!slot.isConnected || !data) return;
+  const preset = new URLSearchParams(location.hash.split("?")[1] || "").get("agent");
+  const agents = data.agents;
+  const chosen = new Set(agents.some((agent) => agent.id === preset) ? [preset] : agents.length === 1 ? [agents[0].id] : []);
+  const name = h("input", { type: "text", placeholder: tr("Titolo (facoltativo: altrimenti il primo messaggio)"), "aria-label": tr("Titolo"), maxlength: "100" });
+  const text = h("textarea", { class: "app-thread-first", rows: 4, maxlength: 3000, placeholder: tr("Scrivi il primo messaggio…"), "aria-label": tr("Primo messaggio") });
+  const start = btn("Avvia il thread", { icon: "send", cls: "primary", type: "submit" });
+  const paint = () => { start.disabled = !chosen.size || !text.value.trim(); };
+  const chips = agentChips(agents, chosen, paint);
+  text.addEventListener("input", paint);
+  text.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); form.requestSubmit(); }
+  });
+  const form = h("form", { class: "app-thread-new", onsubmit: async (event) => {
+    event.preventDefault();
+    if (!chosen.size || !text.value.trim()) return;
+    start.disabled = true;
+    const made = await guard(api("/api/app-threads", { method: "POST", body: { name: name.value.trim(), agentIds: [...chosen] } }));
+    if (!made) { paint(); return; }
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    await guard(api(`/api/rooms/${made.id}/messages`, { method: "POST", body: { text: text.value.trim(), clientId: `c_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}` } }));
+    location.hash = `#/chat/${made.id}`;
+    void refreshSideThreads();
+  } },
+  h("div", { class: "field" }, h("span", { class: "label" }, "Agenti"), agents.length ? chips : empty("users", "Nessun agente da mettere in un thread.")),
+  field("Titolo", name),
+  field("Messaggio", text),
+  h("div", { class: "app-thread-new-foot" }, start));
+  paint();
+  slot.replaceChildren(panel({ icon: "chat", title: "Con chi parli", hint: "Senza @Nome scrivi a tutti gli agenti del thread." }, form));
+  (agents.length > 1 && !chosen.size ? chips.querySelector("button") : text)?.focus();
+}
+
+/** A thread in app: its agents at the top, who can be invited while it runs, and the chat. */
+async function renderAppThread(id) {
+  S.live = null;
+  const slot = h("div", { class: "chat-slot" }, skeleton("chat"));
+  const head = h("div", { class: "app-thread-head" });
+  shell([head, slot], { title: tr("Thread"), mode: "chat", back: "#/thread" });
+  const data = await guard(api("/api/app-threads"));
+  const current = () => slot.isConnected && route()[0] === "chat" && route()[1] === id;
+  if (!current() || !data) return;
+  let thread = data.threads.find((item) => item.id === id);
+  if (!thread) {
+    slot.replaceChildren(empty("chat", "Questo thread non c'è o non è tuo."));
+    return;
+  }
+  const drawHead = () => {
+    const bar = app.querySelector(".appbar h1");
+    if (bar) bar.textContent = thread.name;
+    const inside = new Set(thread.agents.map((agent) => agent.id));
+    const others = data.agents.filter((agent) => !inside.has(agent.id) && agent.enabled);
+    const invite = others.length ? h("details", { class: "app-thread-invite" },
+      h("summary", { class: "btn sm" }, icon("plus"), h("span", {}, "Invita")),
+      h("div", { class: "app-thread-invite-menu", role: "menu" }, others.map((agent) => h("button", { type: "button", role: "menuitem", onclick: async () => {
+        const changed = await guard(api(`/api/app-threads/${id}`, { method: "PATCH", body: { agentIds: [...thread.agents.map((item) => item.id), agent.id] } }), tr("{name} è nel thread", { name: agent.name }));
+        if (!changed) return;
+        thread = { ...thread, agents: [...thread.agents, agent] };
+        drawHead();
+        void refreshSideThreads();
+      } }, avatar(S.data.agents.find((item) => item.id === agent.id) || agent, "xs"), h("span", {}, raw(agent.name)))))) : null;
+    head.replaceChildren(h("div", { class: "page-head" },
+      h("div", { class: "page-title" },
+        threadName({ ...thread, thread: true, app: true }, { link: false, heading: true, onrenamed: (name) => { thread = { ...thread, name }; void refreshSideThreads(); } }),
+        h("p", { class: "app-thread-who" }, h("span", { class: "thread-agents" }, thread.agents.map((agent) => avatar(S.data.agents.find((item) => item.id === agent.id) || agent, "xs"))),
+          h("span", {}, raw(thread.agents.map((agent) => agent.name).join(", "))))),
+      h("div", { class: "page-actions" },
+        invite,
+        btn("", { icon: "bulb", cls: "sm ghost", href: threadHref(id), title: "Ragionamento" }),
+        thread.closed ? null : btn("", { icon: "stop", cls: "sm ghost", title: "Chiudi il thread", onclick: async () => {
+          if (!await guard(api(`/api/app-threads/${id}/close`, { method: "POST", body: {} }), "Thread chiuso")) return;
+          thread = { ...thread, closed: true };
+          drawHead();
+          void refreshSideThreads();
+        } }))));
+  };
+  drawHead();
+  const many = thread.agents.length > 1;
+  const chat = await chatPanel(id, {
+    placeholder: many ? tr("Scrivi agli agenti del thread… @Nome per uno solo") : tr("Scrivi a {name}… @Nome per invitare un altro agente", { name: thread.agents[0]?.name || "" }),
+    isCurrent: current,
+  });
+  if (!current() || !chat) return;
+  slot.replaceChildren(chat);
+  // An agent invited by name appears in the head once the message is in.
+  const listener = S.live;
+  S.live = (entry) => {
+    listener?.(entry);
+    if (entry.type === "web-message" && entry.room === id && entry.item.kind === "owner") {
+      setTimeout(async () => {
+        const fresh = await api("/api/app-threads").catch(() => null);
+        const next = fresh?.threads.find((item) => item.id === id);
+        if (!current() || !next) return;
+        data.agents = fresh.agents;
+        if (JSON.stringify([next.agents, next.name, next.closed]) !== JSON.stringify([thread.agents, thread.name, thread.closed]) && !head.contains(document.activeElement)) {
+          thread = next;
+          drawHead();
+        }
+      }, 300);
+    }
+  };
+}
+
 /* ---------- reasoning ---------- */
 function traceWhere(trace) {
   if (trace.kind === "sleep") return tr("memoria");
@@ -11210,7 +11419,7 @@ function threadFlow(flow) {
 
 /** The thread's name, renamed where it stands: a pencil beside it turns it into a field. */
 function threadName(thread, { link = true, heading = false, onrenamed = () => {} } = {}) {
-  const manage = (S.data?.currentUser?.role === "owner" || S.data?.access?.canManage) && thread.thread;
+  const manage = (S.data?.currentUser?.role === "owner" || S.data?.access?.canManage || thread.app) && thread.thread;
   const box = h("div", { class: `thread-title${heading ? " heading" : ""}` });
   const label = () => h(heading ? "h1" : "b", { class: /^\d{8,}$/.test(thread.name) ? "thread-id" : "" }, raw(thread.name));
   const show = () => {
@@ -11257,6 +11466,7 @@ function threadHref(id) {
 
 function threadPlace(thread) {
   const where = thread.kind === "slack" ? "Slack" : thread.kind === "web" ? tr("Pannello") : thread.kind === "telegram" ? "Telegram" : "Discord";
+  if (thread.app) return tr("In app");
   if (thread.direct) return `${where} · ${tr("privato")}`;
   if (!thread.thread) return `${where} · ${tr(thread.kind === "telegram" ? "gruppo" : "canale")}`;
   return thread.parentName ? `${where} · #${thread.parentName}` : where;
@@ -11323,7 +11533,7 @@ function threadCreator() {
   field("Canale", h("div", { class: "thread-picker" }, search, kinds, list, none)),
   field("Nome", nameInput),
   h("div", { class: "thread-create-foot" }, cancel, submit));
-  const node = panel({ icon: "plus", title: "Nuovo thread", hint: "Si apre sul canale e resta abbinato 1:1.", cls: "thread-new" }, form);
+  const node = panel({ icon: "plus", title: "Nuovo thread", hint: "Si apre sul canale e resta abbinato 1:1.", cls: "thread-new", actions: btn("In app", { icon: "chat", cls: "sm", href: "#/chat/new", title: "Un thread nel pannello, senza Discord, Slack o Telegram" }) }, form);
   const paint = () => {
     const platforms = [...new Set(parents.map((parent) => parent.kind))];
     if (!platforms.includes(kind)) kind = "";
@@ -11358,7 +11568,7 @@ function threadCreator() {
   return node;
 }
 
-const THREAD_PLATFORMS = [["", "Tutti"], ["discord", "Discord"], ["slack", "Slack"], ["telegram", "Telegram"]];
+const THREAD_PLATFORMS = [["", "Tutti"], ["web", "In app"], ["discord", "Discord"], ["slack", "Slack"], ["telegram", "Telegram"]];
 
 function threadPlatform(thread) {
   return ["slack", "telegram", "web"].includes(thread.kind) ? thread.kind : "discord";
@@ -11424,13 +11634,14 @@ function threadCard(thread) {
   const manage = S.data?.currentUser?.role === "owner" || S.data?.access?.canManage;
   return h("article", { class: `thread-card${thread.closed ? " closed" : ""}` },
     h("header", {},
-      h("span", { class: "thread-ico" }, icon(thread.kind === "slack" ? "slack" : thread.kind === "telegram" ? "send" : "hash")),
+      h("span", { class: "thread-ico" }, icon(thread.kind === "slack" ? "slack" : thread.kind === "telegram" ? "send" : thread.kind === "web" ? "chat" : "hash")),
       h("div", { class: "thread-head" },
         threadName(thread),
         h("p", { class: "thread-meta" }, raw(threadPlace(thread)))),
       h("div", { class: "thread-actions" },
         threadDiscord(thread),
-        manage && thread.thread ? btn("", { icon: "stop", cls: "sm ghost", title: "Chiudi il thread", onclick: () => guard(api("/api/threads/close", { method: "POST", body: { id: thread.id } }), "Thread chiuso").then(threadsRefresh) }) : null,
+        thread.app ? btn("", { icon: "chat", cls: "sm ghost", href: `#/chat/${thread.id}`, title: "Apri la chat" }) : null,
+        (manage || thread.app) && thread.thread ? btn("", { icon: "stop", cls: "sm ghost", title: "Chiudi il thread", onclick: () => guard(api("/api/threads/close", { method: "POST", body: { id: thread.id } }), "Thread chiuso").then(threadsRefresh) }) : null,
         btn("", { icon: "next", cls: "sm ghost", href: threadHref(thread.id), title: "Tutto il ragionamento" }))),
     flows.length
       ? h("div", { class: "thread-flows" }, flows.map((flow) => threadFlow({ ...flow, channelId: thread.id })))
@@ -11447,7 +11658,7 @@ function threadPast(thread, open) {
   const line = last.status === "error" && last.error ? last.error : last.reasoning;
   const details = h("details", { class: `thread-past${thread.closed ? " closed" : ""}`, open },
     h("summary", {},
-      h("span", { class: "thread-ico" }, icon(thread.kind === "slack" ? "slack" : thread.kind === "telegram" ? "send" : "hash")),
+      h("span", { class: "thread-ico" }, icon(thread.kind === "slack" ? "slack" : thread.kind === "telegram" ? "send" : thread.kind === "web" ? "chat" : "hash")),
       h("div", { class: "thread-head" },
         threadName(thread),
         h("p", { class: "thread-meta" }, raw([threadPlace(thread), `${total} ${tr(total === 1 ? "sessione" : "sessioni")}`, threadWhen(last.endedAt || last.startedAt)].join(" · "))),
@@ -11455,6 +11666,7 @@ function threadPast(thread, open) {
       h("div", { class: "thread-actions" },
         h("span", { class: "thread-agents" }, agents.slice(0, 4).map((agent) => avatar(agent, "xs"))),
         threadDiscord(thread),
+        thread.app ? btn("", { icon: "chat", cls: "sm ghost", href: `#/chat/${thread.id}`, title: "Apri la chat" }) : null,
         icon("next", "thread-chev"))),
     h("div", { class: "thread-past-body" },
       h("div", { class: "thread-flows" }, flows.map((flow) => threadFlow({ ...flow, channelId: thread.id }))),
@@ -11557,16 +11769,16 @@ async function renderThreads() {
   } });
   workspace.classList.add("thread-index-workspace");
   draw(board, failed);
-  const plus = create ? btn("Nuovo thread", { icon: "plus", cls: "primary thread-plus", title: "Nuovo thread", onclick: () => {
+  const plus = !create ? btn("Nuovo thread", { icon: "plus", cls: "primary thread-plus", href: "#/chat/new" }) : btn("Nuovo thread", { icon: "plus", cls: "primary thread-plus", title: "Nuovo thread", onclick: () => {
     const opening = create.hidden;
     if (opening) workspace.selectSection("attivi");
     create.hidden = !opening;
     plus.setAttribute("aria-expanded", String(opening));
     if (opening) create.querySelector("input[type=search]")?.focus();
-  } }) : null;
-  plus?.setAttribute("aria-expanded", "false");
+  } });
+  if (create) plus.setAttribute("aria-expanded", "false");
   create?.addEventListener("thread-created", () => { create.hidden = true; plus.setAttribute("aria-expanded", "false"); threadsRefresh(); });
-  if (plus) workspace.querySelector(".email-workspace-nav").append(plus);
+  workspace.querySelector(".email-workspace-nav").append(plus);
   const heading = pageHead("Thread");
   heading.classList.add("thread-list-head");
   shell([
@@ -12065,8 +12277,9 @@ async function renderThreadPage(id) {
       place.textContent = threadPlace(thread);
       linkSlot.replaceChildren(...[
         thread.link ? btn(thread.kind === "slack" ? "Apri su Slack" : "Apri su Discord", { icon: "external", cls: "ghost", href: thread.link, target: "_blank" }) : null,
+        thread.app ? btn("Apri la chat", { icon: "chat", cls: "primary", href: `#/chat/${thread.id}` }) : null,
         btn("Scarica OpenTelemetry", { icon: "download", cls: "ghost", onclick: () => downloadOtlp(`${apiRoot}/otlp`, `thread-${String(thread.id).replace(/[^\w.-]+/g, "-")}.otlp.json`) }),
-        manage && thread.thread && !thread.closed ? btn("Chiudi", { icon: "stop", cls: "ghost", onclick: () => guard(api("/api/threads/close", { method: "POST", body: { id: thread.id } }), "Thread chiuso").then(() => refresh()) }) : null,
+        (manage || thread.app) && thread.thread && !thread.closed ? btn("Chiudi", { icon: "stop", cls: "ghost", onclick: () => guard(api("/api/threads/close", { method: "POST", body: { id: thread.id } }), "Thread chiuso").then(() => refresh()) }) : null,
       ].filter(Boolean));
       linkSlot.hidden = !linkSlot.children.length;
       const appTitle = app.querySelector(".appbar h1, .appbar .title");
@@ -12198,6 +12411,12 @@ async function render() {
   else if (page === "artefatti") renderArtifacts();
   else if (page === "settings") renderSettings();
   else if (page === "salotto") renderSalotto();
+  else if (page === "chat") {
+    const id = route()[1] || "";
+    if (/^web-t-[a-f0-9]{12}$/.test(id)) await renderAppThread(id);
+    else if (id === "new") await renderChatNew();
+    else { S.threadFilter = { ...(S.threadFilter || { q: "" }), kind: "web" }; history.replaceState(null, "", "#/thread/attivi"); await renderThreads(); }
+  }
   else renderAgents();
 }
 

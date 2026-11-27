@@ -28,7 +28,7 @@ test("the panel MCP lists one specific tool per panel action with its own input 
   const names = tools.map((tool) => tool.name);
   assert.equal(new Set(names).size, names.length, "tool names are unique");
   assert.ok(tools.length > 150, `specific tools: ${tools.length}`);
-  for (const name of ["cora_agents_list", "cora_agent_overview", "cora_agent_update", "cora_agent_meet_get", "cora_agent_meet_set", "cora_agent_meet_setup", "cora_agent_meet_signin", "cora_agent_meet_account", "cora_agent_meet_signout", "cora_agent_meet_join", "cora_agent_meet_leave", "cora_agent_meet_retry", "cora_agent_skill_install", "cora_agent_skill_set_enabled", "cora_connectors_list", "cora_connector_set_agents", "cora_provider_key_set", "cora_subscription_login", "cora_settings_update", "cora_storage_get", "cora_storage_set", "cora_storage_sample", "cora_storage_run", "cora_activity", "cora_trace_get", "cora_trace_otlp", "cora_thread_otlp", "cora_routine_create", "cora_artifact_upload", "cora_secret_set", "cora_configurations", "cora_request"]) assert.ok(names.includes(name), name);
+  for (const name of ["cora_agents_list", "cora_agent_overview", "cora_agent_update", "cora_agent_meet_get", "cora_agent_meet_set", "cora_agent_meet_setup", "cora_agent_meet_signin", "cora_agent_meet_account", "cora_agent_meet_signout", "cora_agent_meet_join", "cora_agent_meet_leave", "cora_agent_meet_retry", "cora_agent_skill_install", "cora_agent_skill_set_enabled", "cora_connectors_list", "cora_connector_set_agents", "cora_provider_key_set", "cora_subscription_login", "cora_settings_update", "cora_storage_get", "cora_storage_set", "cora_storage_sample", "cora_storage_run", "cora_activity", "cora_trace_get", "cora_trace_otlp", "cora_thread_otlp", "cora_app_threads_list", "cora_app_thread_create", "cora_app_thread_update", "cora_app_thread_read", "cora_app_thread_send", "cora_routine_create", "cora_artifact_upload", "cora_secret_set", "cora_configurations", "cora_request"]) assert.ok(names.includes(name), name);
   for (const tool of tools) {
     assert.equal(tool.inputSchema.type, "object", tool.name);
     assert.ok(tool.description.length > 40, tool.name);
@@ -249,4 +249,20 @@ test("an external client talks with a Cora agent by name, in the agent-communica
   assert.ok(missing.data.agents.includes("Clara") && /talk_to_agent/.test(missing.data.next), "an unknown name lists who you can talk to");
   assert.equal((await f.call(bob, "talk_to_agent", { agent: clara.id, message: "Hi", wait_seconds: 0 })).structuredContent.status, 404, "another person's private agent is not among the agents to talk to");
   assert.equal((await f.call(alice, "talk_to_agent", { agent: "Clara", message: " ", wait_seconds: 0 })).rpcError.code, -32602);
+});
+
+test("threads in app through the specific tools: open, invite, write and read, only for their person", async (t) => {
+  const f = await mcpWorld(t), alice = await f.issue(f.alice), bob = await f.issue(f.bob);
+  const make = async (name) => (await f.call(alice, "cora_agent_create", { name, tools: false, model: "ollama/test-model" })).structuredContent.data;
+  const ada = await make("Ada"), leo = await make("Leo");
+  const opened = await f.call(alice, "cora_app_thread_create", { name: "MCP thread", agentIds: [ada.id] });
+  assert.equal(opened.structuredContent.status, 201, JSON.stringify(opened.structuredContent));
+  const id = opened.structuredContent.data.id;
+  assert.equal((await f.call(alice, "cora_app_thread_update", { app_thread_id: id, agentIds: [ada.id, leo.id] })).structuredContent.status, 200);
+  assert.deepEqual(f.app.orchestrator.appThreads.agentIds(id), [ada.id, leo.id]);
+  assert.equal((await f.call(alice, "cora_app_thread_send", { app_thread_id: id, text: "MCP_IN_APP_MESSAGE" })).structuredContent.status, 201);
+  assert.match(JSON.stringify((await f.call(alice, "cora_app_thread_read", { app_thread_id: id })).structuredContent.data), /MCP_IN_APP_MESSAGE/);
+  assert.equal((await f.call(alice, "cora_app_threads_list")).structuredContent.data.threads[0].name, "MCP thread");
+  assert.equal((await f.call(bob, "cora_app_thread_read", { app_thread_id: id })).structuredContent.status, 404);
+  assert.deepEqual((await f.call(bob, "cora_app_threads_list")).structuredContent.data.threads, []);
 });
