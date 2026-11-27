@@ -74,6 +74,7 @@ const STATIC = {
   "/assets/preview.css": ["preview.css", "text/css; charset=utf-8"],
   "/embed": ["embed.html", "text/html; charset=utf-8"],
   "/assets/embed.js": ["embed.js", "text/javascript; charset=utf-8"],
+  "/assets/embed-widget.js": ["embed-widget.js", "text/javascript; charset=utf-8"],
   "/assets/embed.css": ["embed.css", "text/css; charset=utf-8"],
   "/assets/encrypted-conversion.js": ["encrypted-conversion.js", "text/javascript; charset=utf-8"],
   "/assets/encrypted-passkeys.js": ["encrypted-passkeys.js", "text/javascript; charset=utf-8"],
@@ -340,12 +341,14 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
   };
   const localOwner = () => store.panelUser("local-owner") || store.registerPanelUser({ id: "local-owner", name: "Owner", email: "", role: "owner", source: "local" });
   const sessionHash = (token) => createHash("sha256").update(token).digest("hex");
-  const sessionCookie = (identity = localOwner()) => {
-    const user = store.registerPanelUser(identity);
+  const sessionCookie = (identity = localOwner(), deviceId = "") => {
+    const user = deviceId ? identity : store.registerPanelUser(identity);
     const expires = Date.now() + SESSION_DAYS * 86400000;
     const token = randomBytes(32).toString("base64url");
     store.createPanelSession(sessionHash(token), user.id, expires);
-    const value = `v2.${token}.${sign(sessionKey, `session.v2.${token}`)}`;
+    const value = deviceId
+      ? `v3.${token}.${deviceId}.${sign(sessionKey, `session.v3.${token}.${deviceId}`)}`
+      : `v2.${token}.${sign(sessionKey, `session.v2.${token}`)}`;
     store.auditAccess(user.id, "sign-in");
     return sessionCookieLine(value);
   };
@@ -365,6 +368,11 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
   const sessionFrom = ({ value, legacy }) => {
     if (!value) return null;
     const parts = value.split(".");
+    if (parts[0] === "v3") {
+      const [, token, deviceId, signature] = parts;
+      if (legacy || parts.length !== 4 || !safeEqual(signature, sign(sessionKey, `session.v3.${token}.${deviceId}`)) || !appAccess.active(deviceId)) return null;
+      return store.panelSession(sessionHash(token));
+    }
     if (parts[0] === "v2") {
       const [, token, signature, extra] = parts;
       if (!token || !signature || extra || !safeEqual(signature, sign(sessionKey, `session.v2.${token}`))) return null;
@@ -685,11 +693,11 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     if (path === "/app/v1/session" && method === "POST") {
       const body = await readJson(req, 4096);
       let paired;
-      try { paired = appAccess.exchange({ code: body.code, name: body.name, platform: body.platform }); }
+      try { paired = appAccess.exchange({ code: body.code, name: body.name, platform: body.platform, panelVerifier: body.panelVerifier }); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
       activity({ type: "settings", text: `app collegata: ${paired.device.name} (${paired.user.email || paired.user.name || paired.user.id})` });
       return send(res, 201, { token: paired.token, device: paired.device, server: connectorOrigin(req),
-        user: { id: paired.user.id, name: paired.user.name || paired.user.email || "", email: paired.user.email || "", role: paired.user.role } });
+        user: { id: paired.user.id, name: paired.user.name || paired.user.email || "", email: paired.user.email || "", role: paired.user.role } }, paired.panelAuthorized ? { "Set-Cookie": sessionCookie(paired.user, paired.device.id), "Cache-Control": "no-store" } : {});
     }
     const context = appAccess.authenticate(req);
     if (!context) return send(res, 401, { error: "Accesso dell’app non valido o revocato." }, { "WWW-Authenticate": 'Bearer realm="Cora app"' });
@@ -737,7 +745,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     const method = req.method;
     if (path === "/api/me" && method === "GET") {
       const user = actingUser || sessionUser(req);
-      return send(res, 200, { authed: Boolean(user), ...(user ? { user } : {}), cloud: cloud ? { login: cloud.login, logout: cloud.logout } : null });
+      return send(res, 200, { appPanelPairing: true, authed: Boolean(user), ...(user ? { user } : {}), cloud: cloud ? { login: cloud.login, logout: cloud.logout } : null });
     }
     if (path === "/api/login" && method === "POST") {
       if (cloud) throw new HttpError(403, "si entra da usecora.space");
@@ -821,7 +829,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     if (path === "/api/app/pairings" && method === "POST") {
       if (actingUser) throw new HttpError(403, "Il collegamento dell’app parte dalla sessione del browser.");
       const body = await readJson(req, 4096);
-      try { return send(res, 201, appAccess.pair(user, { state: body.state || "", origin: connectorOrigin(req) })); }
+      try { return send(res, 201, appAccess.pair(user, { state: body.state || "", panelChallenge: body.panelChallenge, origin: connectorOrigin(req) })); }
       catch (error) { throw new HttpError(error.status || 400, error.message); }
     }
     if (path === "/api/app/devices" && method === "GET") return send(res, 200, { devices: appAccess.list(user) });

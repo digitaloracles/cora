@@ -1,6 +1,9 @@
 // English for the panel. The UI is written in Italian; keys are the Italian texts,
 // with {placeholders} for the parts that change.
 export const EN = {
+  "Autorizza il pannello su iPhone": "Authorize the panel on iPhone",
+  "App per iPhone": "iPhone app",
+  "Questo iPhone potrà aprire il pannello con il tuo account e i tuoi permessi.": "This iPhone will be able to open the panel with your account and permissions.",
   "Capacità della macchina": "Machine capacity",
   "Desktop attivi": "Active desktops",
   "Altri agenti con carico simile": "Additional agents at a similar workload",

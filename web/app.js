@@ -4350,20 +4350,25 @@ function panelMcpPane() {
 }
 
 function macAppPane() {
-  const state = new URLSearchParams(location.hash.split("?")[1] || "").get("state") || "";
+  const parameters = new URLSearchParams(location.hash.split("?")[1] || "");
+  const state = parameters.get("state") || "";
+  const challenge = parameters.get("panel_challenge") || "";
   const validState = /^[A-Za-z0-9_-]{16,128}$/.test(state);
+  const opensPanel = validState && /^[A-Za-z0-9_-]{43}$/.test(challenge);
   const feedback = h("p", { role: "status", class: "muted" });
   const rows = h("div", { class: "mcp-token-list" }, h("p", { class: "muted", role: "status" }, "Carico i Mac collegati…"));
-  const open = btn(validState ? "Autorizza questo Mac" : "Apri nell’app", { icon: "link", cls: "primary", onclick: async () => {
+  const open = btn(opensPanel ? "Autorizza il pannello su iPhone" : validState ? "Autorizza questo Mac" : "Apri nell’app", { icon: "link", cls: "primary", onclick: async () => {
     open.disabled = true; feedback.className = "muted"; feedback.textContent = tr("Apro l’app…");
     try {
-      const data = await api("/api/app/pairings", { method: "POST", body: validState ? { state } : {} });
+      const data = await api("/api/app/pairings", { method: "POST", body: opensPanel ? { state, panelChallenge: challenge } : validState ? { state } : {} });
       location.href = data.link;
       feedback.textContent = tr("Se l’app non si apre, installala e riprova: il collegamento vale due minuti.");
-      setTimeout(load, 4000);
+      if (!opensPanel) setTimeout(load, 4000);
     } catch (error) { feedback.className = "err-text"; feedback.textContent = tr(error.message); }
     finally { open.disabled = false; }
   } });
+  if (opensPanel) return panel({ icon: "monitor", title: "App per iPhone" },
+    h("p", {}, "Questo iPhone potrà aprire il pannello con il tuo account e i tuoi permessi."), open, feedback);
   const root = h("div", { class: "stack panel-mcp mac-app" },
     panel({ icon: "monitor", title: "App per macOS", hint: "Agenti, quote e ragionamento dal vivo nella barra dei menu del Mac." },
       validState ? h("p", {}, "L’app Cora sul tuo Mac chiede di collegarsi a questo spazio con il tuo account.") : h("p", {}, "Collega l’app al tuo account: vedrà gli agenti, le quote e il lavoro che vedi qui, in sola lettura."),

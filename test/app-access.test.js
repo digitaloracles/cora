@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
@@ -262,4 +263,32 @@ test("in a panel room the person who manages the agent answers its question from
   const said = f.app.orchestrator.state(room).history.find((item) => item.kind === "owner");
   assert.deepEqual([said.content, said.choiceFor], ["Grid", own.id], "the answer is the owner's message in the room, called to the agent that asked");
   assert.deepEqual((await f.read(alice, "/app/v1/snapshot")).data.requests, []);
+});
+
+test("an explicitly approved iPhone pairing opens a device-bound panel session for the same person", async (t) => {
+  const f = await appWorld(t);
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const { data: pairing } = await f.request(f.alice, "/api/app/pairings", { method: "POST", body: { state: "panel-state-for-ios-1234", panelChallenge: challenge } });
+  const exchange = (code, panelVerifier) => fetch(f.base + "/app/v1/session", {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Cora": "1" },
+    body: JSON.stringify({ code, panelVerifier, name: "iPhone" }),
+  });
+  const code = f.codeOf(pairing.link);
+  assert.equal((await exchange(code, "")).status, 401);
+  const response = await exchange(code, verifier);
+  assert.equal(response.status, 201);
+  const { device, token } = await response.json();
+  const cookie = response.headers.get("set-cookie");
+  assert.ok(cookie.includes("HttpOnly") && cookie.includes("SameSite=Strict"));
+  const actor = { headers: { Cookie: cookie.split(";")[0] } };
+  const me = () => f.request(actor, "/api/me");
+  assert.equal((await me()).data.user.id, f.alice.user.id);
+  assert.equal((await f.read(token, "/api/me")).data.authed, false);
+  assert.equal((await exchange(code, verifier)).status, 401);
+  const ordinary = await exchange(f.codeOf((await f.pair(f.bob)).link), verifier);
+  assert.equal(ordinary.status, 201);
+  assert.equal(ordinary.headers.get("set-cookie"), null);
+  assert.equal((await f.request(f.alice, "/api/app/devices/" + device.id, { method: "DELETE" })).status, 200);
+  assert.equal((await me()).data.authed, false);
 });
