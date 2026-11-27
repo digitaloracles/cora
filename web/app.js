@@ -8471,7 +8471,7 @@ function artifactFiles(data, head, dir = "") {
     for (const item of list.querySelectorAll(".art-file")) item.classList.toggle("on", item === row);
     preview.replaceChildren(skeleton("rows", 2));
     const shown = await artifactPreview(`/api/artifacts/commits/${head.id}/files/${artifactPath(file.path)}`, file.path, file.size, data.canUpload === false ? null : {
-      folder, head, canReview: data.canReview && !data.encryptionRequired,
+      folder, head, canReview: data.canPublish && !data.encryptionRequired,
       onSaved: (commit) => {
         if (commit.status !== "published") { location.hash = `#/artefatti/${folder.id}/c/${commit.id}`; return; }
         S.reopenFile = file.path;
@@ -8500,7 +8500,7 @@ function artifactFiles(data, head, dir = "") {
   const status = h("span", { class: "art-drop-status", role: "status" });
   const pick = h("input", { type: "file", multiple: true, hidden: true });
   const pickDir = h("input", { type: "file", multiple: true, webkitdirectory: true, hidden: true });
-  const verb = data.canReview ? "Carica qui" : "Proponi qui";
+  const verb = data.canPublish ? "Carica qui" : "Proponi qui";
   const send = async (items) => {
     if (data.encryptionRequired || data.canUpload === false || !items.length || drop.classList.contains("busy")) return;
     drop.classList.add("busy");
@@ -8524,12 +8524,12 @@ function artifactFiles(data, head, dir = "") {
   const drop = h("div", { class: "art-drop" },
     h("span", { class: "art-drop-ico" }, icon("upload")),
     h("span", { class: "grow art-drop-text" },
-      h("b", {}, tr(data.canReview ? "Trascina qui file o cartelle, oppure" : "Trascina qui file o cartelle da proporre, oppure")),
+      h("b", {}, tr(data.canPublish ? "Trascina qui file o cartelle, oppure" : "Trascina qui file o cartelle da proporre, oppure")),
       h("small", {}, tr("finiscono in"), " ", where, " ", status)),
     btn(verb, { icon: "upload", cls: "sm primary", onclick: () => pick.click() }),
     btn("Una cartella", { icon: "folder", cls: "sm ghost", onclick: () => pickDir.click() }),
     dir && data.canReview && data.shareHosting ? btn("Condividi questa cartella", { icon: "link", cls: "sm ghost", href: `#/artefatti/${folder.id}/condivisione?in=${encodeURIComponent(dir)}` }) : null,
-    dir && head && !fresh ? armedButton(data.canReview ? "Elimina questa cartella" : "Proponi di eliminarla", data.canReview ? "Elimina tutto quello che contiene" : "Proponi davvero", {
+    dir && head && !fresh ? armedButton(data.canPublish ? "Elimina questa cartella" : "Proponi di eliminarla", data.canPublish ? "Elimina tutto quello che contiene" : "Proponi davvero", {
       cls: "sm ghost", onconfirm: () => removeArtifactPaths(folder, head, [dir], parts.slice(0, -1).join("/")),
     }) : null,
     btn("Nuova cartella", { icon: "plus", cls: "sm ghost", onclick: () => {

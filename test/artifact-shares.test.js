@@ -285,7 +285,7 @@ test("a share can be public, or open with a password; addresses are lowercase ho
   assert.equal(giulia.response.status, 302, "an address is the same address in capitals");
 });
 
-test("files uploaded from the panel land where the person is: a reviewer publishes them, anyone else proposes", async (t) => {
+test("files uploaded from the panel land where the person is and go on air at once for anyone who may write there, reviewer or not", async (t) => {
   const { app, base, cookie, call, agent, put, owner } = await fixture(t);
   put("site/index.html", "<h1>Home</h1>");
   const pushed = await app.artifacts.push({ agent, folder: "caricati", path: "/home/agent/work/site", message: "sito", requester: { kind: "owner", id: "1", name: "Owner" }, create: { description: "Caricati dal pannello", kind: "site" } });
@@ -340,7 +340,9 @@ test("files uploaded from the panel land where the person is: a reviewer publish
   const theirs = await fetch(`${base}/api/artifacts/folders/${folderId}/upload`, { method: "POST", headers: { Cookie: member, "X-Cora": "1", "Content-Type": "application/json" }, body: JSON.stringify({ files: [{ path: "bozza.html", sha: draft.sha }] }) });
   const proposal = await theirs.json();
   assert.equal(theirs.status, 201);
-  assert.equal(proposal.commit.status, "proposed", "someone who does not review the folder proposes, like an agent");
+  assert.equal(proposal.commit.status, "published", "a person who may write to the folder publishes without being one of its reviewers");
+  assert.equal(app.artifacts.canReview(app.store.artifactFolder(folderId), app.store.panelUser("ac_member")), false);
+  assert.ok((await call(`/api/artifacts/folders/${folderId}`)).data.tree.some((file) => file.path === "bozza.html"), "and it is served at once");
   const owners = await (await blob("<p>solo del proprietario</p>")).json();
   const lifted = await fetch(`${base}/api/artifacts/folders/${folderId}/upload`, { method: "POST", headers: { Cookie: member, "X-Cora": "1", "Content-Type": "application/json" }, body: JSON.stringify({ files: [{ path: "preso.html", sha: owners.sha }] }) });
   assert.equal(lifted.status, 409, "what another person uploaded and never placed stays theirs");
@@ -663,7 +665,7 @@ test("an agent shares a folder itself when a person asks it, at any level and wi
   assert.match(notices.at(-1).text, /Richiesta di un link per \*\*progetti\/design\*\* \(da-routine\) da Nico/);
 });
 
-test("from the panel a file or a whole subfolder comes out as a commit: a reviewer's goes on air, anyone else's is proposed", async (t) => {
+test("from the panel a file or a whole subfolder comes out as a commit that goes on air for anyone who may write there", async (t) => {
   const { app, base, call, agent, put, owner } = await fixture(t);
   put("site/index.html", "<h1>Home</h1>");
   put("site/landing/index.html", "<h1>Landing</h1>");
@@ -691,8 +693,8 @@ test("from the panel a file or a whole subfolder comes out as a commit: a review
   const theirs = await fetch(`${base}/api/artifacts/folders/${folderId}/remove`, { method: "POST", headers: { Cookie: member, "X-Cora": "1", "Content-Type": "application/json" }, body: JSON.stringify({ paths: ["index.html"] }) });
   const proposal = await theirs.json();
   assert.equal(theirs.status, 201);
-  assert.equal(proposal.commit.status, "proposed", "someone who does not review the folder only proposes it");
-  assert.deepEqual((await call(`/api/artifacts/folders/${folderId}`)).data.tree.map((file) => file.path), ["index.html"], "and nothing goes until it is approved");
+  assert.equal(proposal.commit.status, "published", "a person who may write there removes it without a reviewer");
+  assert.deepEqual((await call(`/api/artifacts/folders/${folderId}`)).data.tree.map((file) => file.path), [], "and it is gone at once");
 });
 
 test("an agent sets who may push to a folder for the person asking; publishing without review only on the owner's word", async (t) => {

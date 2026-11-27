@@ -2554,6 +2554,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
           canEncrypt: (folder.ownerId || (folder.createdBy?.kind === "user" ? folder.createdBy.id : "")) === user.id,
           canReview: artifacts.canReview(folder, user),
           canUpload: artifacts.canUpload(folder, user),
+          canPublish: artifacts.canPublish(folder, user),
           canManage: artifacts.canManage(folder, user),
           people: artifacts.canManage(folder, user) ? store.sharingPeople(user) : [],
           effectiveAccess: artifacts.canManage(folder, user) ? Object.fromEntries(store.sharingPeople(user).map((person) => [person.id, artifacts.memberPermission(folder, person)])) : {},

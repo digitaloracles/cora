@@ -445,6 +445,11 @@ export class Artifacts {
     return this.memberPermission(folder, user) === "write";
   }
 
+  /** A person who may write to a folder publishes what they change at once: reviews are for agents' pushes. */
+  canPublish(folder, user) {
+    return this.canUpload(folder, user);
+  }
+
   checkMember(folder, userId, write = false) {
     if (userId && !(write ? this.canUpload(folder, this.store.panelUser(userId)) : this.canReadMember(folder, this.store.panelUser(userId)))) throw new ArtifactError(write ? "non puoi caricare o modificare file in questa cartella" : "non hai accesso a questa cartella", 403);
   }
@@ -963,7 +968,7 @@ export class Artifacts {
     });
   }
 
-  /** A change made from the panel, as a commit on the version it started from: published at once by a reviewer, proposed otherwise. */
+  /** A change made from the panel, as a commit on the version it started from: published at once by anyone who may write there. */
   panelCommit(folder, user, { base, to = "", sent = 0, uploaded = false, change, unchanged, message, said }) {
     this.assertPlaintextAllowed(folder.id);
     const by = { kind: "user", id: user.id, name: user.name || user.email || "Owner" };
@@ -971,7 +976,7 @@ export class Artifacts {
       this.assertPlaintextAllowed(folder.id);
       const current = this.store.artifactFolder(folder.id);
       if (!this.canUpload(current, user)) throw new ArtifactError("non puoi caricare o modificare file in questa cartella", 403);
-      const review = this.canReview(current, user);
+      const review = this.canPublish(current, user);
       const known = base === undefined || base === null ? current.head || "" : String(base);
       if (known && this.store.artifactCommit(known)?.folderId !== folder.id) throw new ArtifactError("versione di partenza sconosciuta", 409);
       const start = this.treeOf(known);
