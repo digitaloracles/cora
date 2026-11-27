@@ -18,6 +18,13 @@ test("owner storage API, native scheduler, restart slots and fail-closed backup 
     assert.equal((await change(body)).status, 400);
   }
   assert.equal((await change({ keep: 2, time: "13:10", automatic: true, monitor: false })).data.settings.keep, 2);
+  const desktopPolicy = join(store.home, "desktop-cache-policy", "policy");
+  assert.equal(readFileSync(desktopPolicy, "utf8"), "on");
+  assert.equal((await change({ desktopCache: "false" })).status, 400);
+  for (const enabled of [false, true]) {
+    assert.equal((await change({ desktopCache: enabled })).data.settings.desktopCache, enabled);
+    assert.equal(readFileSync(desktopPolicy, "utf8"), enabled ? "on" : "off");
+  }
   const folder = join(store.home, "backups");
   mkdirSync(folder, { recursive: true });
   const sample = { pages: [], revisions: [], notes: [], state: [] };

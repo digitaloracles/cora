@@ -361,7 +361,7 @@ export const DESKTOP_NETWORK = "cora-desktops";
 
 export class Boxes {
   /** `access(agent)` gives the box's SSH port on the host and the public keys allowed in. */
-  constructor({ docker, image, timezone, access = () => ({}), mailbox = null, gitAttribution = null, sealed = () => false }) {
+  constructor({ docker, image, timezone, access = () => ({}), mailbox = null, gitAttribution = null, desktopCacheDir = null, sealed = () => false }) {
     this.docker = docker;
     this.sealed = sealed;
     this.image = image;
@@ -369,6 +369,7 @@ export class Boxes {
     this.access = access;
     this.mailbox = mailbox;
     this.gitAttribution = gitAttribution;
+    this.desktopCacheDir = desktopCacheDir;
     this.gitChecks = new Map();
     this.mailboxChecks = new Map();
     this.mailboxQueue = Promise.resolve();
@@ -589,6 +590,10 @@ export class Boxes {
     const isolated = this.sealed(agent.id);
     if (isolated) await this.createNetworkGuard(agent, network, sshPort);
     else await runProcess(this.docker, ["rm", "-f", this.networkGuard(agent.id)], { timeoutMs: 60000 });
+    const cacheImage = this.desktopCacheDir && await runProcess(this.docker, [
+      "image", "inspect", this.image, "--format", '{{index .Config.Labels "cora.desktop-cache.image"}}',
+    ], { timeoutMs: 15000 });
+    const supervisedCache = cacheImage?.code === 0 && cacheImage.stdout.toString().trim() === "1";
     const created = await runProcess(this.docker, [
       "run", "-d",
       "--name", this.name(agent.id),
@@ -604,6 +609,10 @@ export class Boxes {
       "--network", isolated ? `container:${this.networkGuard(agent.id)}` : network,
       "-v", `${this.volume(agent.id)}:/home/agent`,
       "-v", `${this.sysVolume(agent.id)}:/var/lib/cora`,
+      ...(supervisedCache ? [
+        "-v", `${this.desktopCacheDir}:/opt/cora/desktop-cache:ro`,
+        "--label", "cora.desktop-cache=native",
+      ] : []),
       "--label", `cora.agent=${agent.id}`,
       this.image,
     ], { timeoutMs: 120000 });

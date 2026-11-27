@@ -1503,7 +1503,12 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce la pulizia dello spazio.");
       if (path === "/api/storage/sample" && method === "GET") return send(res, 200, storage.sample(url.searchParams.get("hour")));
       if (path === "/api/storage" && method === "GET") return send(res, 200, storage.status());
-      if (path === "/api/storage" && method === "PUT") return send(res, 200, storage.update(await readJson(req, 4096)));
+      if (path === "/api/storage" && method === "PUT") {
+        const patch = await readJson(req, 4096);
+        const status = storage.update(patch);
+        if (Object.hasOwn(patch, "desktopCache")) await storage.desktopCache.sync();
+        return send(res, 200, status);
+      }
       if (path === "/api/storage/run" && method === "POST") {
         const { action, preview } = await readJson(req, 4096);
         return send(res, 202, storage.request(action, preview));

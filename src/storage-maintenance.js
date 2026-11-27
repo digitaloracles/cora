@@ -1,3 +1,4 @@
+import { DesktopCache } from "./desktop-cache.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, statfs } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { TRACES_KEPT_PER_AGENT } from "./store.js";
 
 const exec = promisify(execFile);
 const script = name => fileURLToPath(new URL(name, import.meta.url));
-const defaults = { automatic: true, time: "05:20", backups: true, keep: 7, grok: false, monitor: false, sampleDays: 31, turns: TRACES_KEPT_PER_AGENT };
+const defaults = { automatic: true, desktopCache: true, time: "05:20", backups: true, keep: 7, grok: false, monitor: false, sampleDays: 31, turns: TRACES_KEPT_PER_AGENT };
 const actions = ["backups", "grok", "monitor"];
 
 function invalid(message, status = 400) { return Object.assign(new Error(message), { status }); }
@@ -35,6 +36,7 @@ function clock(date, timezone) {
 export class StorageMaintenance {
   constructor({ store, home, timezone, docker, boxes, brainEnabled, log }) {
     Object.assign(this, { store, home, timezone, docker, boxes, brainEnabled, log });
+    this.desktopCache = new DesktopCache({ store, boxes, docker, log });
     this.running = null;
   }
 
@@ -68,10 +70,12 @@ export class StorageMaintenance {
       } else if (typeof value !== "boolean") throw invalid("Expected a switch");
     }
     this.store.setValue("storagePolicy", { ...this.settings(), ...patch });
+    if (Object.hasOwn(patch, "desktopCache")) this.desktopCache.writePolicy();
     return this.status();
   }
 
   tick(now) {
+    this.desktopCache.tick(now.getTime());
     if (this.running) return;
     const policy = this.settings();
     if (!policy.automatic) return;
