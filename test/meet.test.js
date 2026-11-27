@@ -2,13 +2,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { knowledgeWorld } from "./knowledge-fixtures.js";
-import { fakeSoniox, tempHome } from "./helpers.js";
+import { mailWorld } from "./mail-fixtures.js";
+import { googleConnectorFixture } from "./google-connector-fixtures.js";
+import { fakeSoniox } from "./helpers.js";
 import { Voice } from "../src/voice.js";
-import { captionTurns, Meet } from "../src/meet.js";
-import { Store } from "../src/store.js";
-import { Vault } from "../src/vault.js";
-import { rmSync } from "node:fs";
+import { captionTurns } from "../src/meet.js";
 import { privateRoom } from "../src/rooms.js";
+
+test("Meet OAuth saves one shared identity without giving agents a Gmail connection", async (t) => {
+  const instance = await mailWorld(t);
+  const google = await googleConnectorFixture(t, instance);
+  const path = "/api/settings/google-meet";
+  assert.equal((await instance.call(path, { method: "POST", asMember: true })).status, 403);
+  const { response, authorize } = await google.connect(path);
+  assert.equal(response.status, 200);
+  assert.deepEqual(authorize.searchParams.get("scope").split(" ").sort(), ["email", "openid", "profile"]);
+  assert.equal(authorize.searchParams.get("access_type"), "online");
+  assert.deepEqual((await instance.call(path)).data.account, { email: "robin+google@ambox.dev", name: "Shared Meet QA" });
+  assert.equal(instance.app.googleConnector.records().length, 0);
+  assert.deepEqual((await instance.call(path, { method: "DELETE" })).data, { account: null });
+});
 
 test("Meet actions enforce agent and folder access and deliver a reviewed transcript to private chat", async (t) => {
   const f = await knowledgeWorld();
@@ -27,7 +40,7 @@ test("Meet actions enforce agent and folder access and deliver a reviewed transc
   let email = "", state, transcript, now = Date.now();
   boxes.ensure = async () => {};
   boxes.meet = async (id, [command]) => {
-    assert.equal(id, agent.id);
+    assert.match(id, /^meet_[a-f0-9]{32}$/);
     commands.push(command);
     if (command === "account") return { email };
     if (command === "state") return state;
@@ -38,15 +51,22 @@ test("Meet actions enforce agent and folder access and deliver a reviewed transc
   boxes.artifactManifest = async () => ({ root: "call", files: [{ path: "transcript.md", size: transcript.length, sha256: createHash("sha256").update(transcript).digest("hex") }], refused: [], skipped: [] });
   boxes.artifactSend = async (_agent, _root, _files, open) => { const writer = open(0); writer.write(transcript); writer.end(); };
   const input = { link: "https://meet.google.com/abc-defg-hij", folder: target.path, channelId: "attacker", memberUserId: f.bob.user.id };
-  assert.equal((await call("/signin")).status, 200);
+  assert.equal((await f.request(f.alice, "/api/settings/google-meet")).data.account, null);
   assert.equal((await call("/join", input)).status, 409);
-  email = "agent@example.test";
-  assert.equal((await call("/account")).data.account.email, email);
+  const key = f.app.googleConnector.meetIdentityKey(f.alice.user.id);
+  store.setValue(key, { email: "shared@gmail.com", name: "Shared QA", subject: "qa" });
+  email = "former-agent@example.test";
+  assert.equal((await call("/join", input)).status, 409);
+  email = "shared@gmail.com";
+  const view = (await f.request(f.alice, path)).data;
+  assert.equal(view.alias, "shared+meetingassistant@gmail.com");
+  assert.equal(view.account.name, "Shared QA");
+  assert.equal((await f.request(f.bob, "/api/settings/google-meet")).data.account, null);
   assert.equal((await call("/join", { ...input, folder: "meetings/foreign" })).status, 404);
   const responses = await Promise.all([call("/join", input), call("/join", input)]);
   assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
   assert.equal(commands.filter((cmd) => cmd === "start").length, 1);
-  assert.equal((await call("/signout")).status, 409);
+  assert.equal((await f.request(f.alice, "/api/settings/google-meet/browser", {method: "POST"})).status, 409);
   state = { phase: "joined", alive: true, joinedAt: now, recordingAt: now, people: 2, names: ["QA host"] };
   await meet.poll();
   assert.equal((await call("/leave")).status, 200);
@@ -61,99 +81,21 @@ test("Meet actions enforce agent and folder access and deliver a reviewed transc
   const notices = orchestrator.state(privateRoom(agent.id)).history.filter((item) => item.kind === "bot");
   assert.equal(notices.length, 1);
   assert.ok(notices[0].content.includes(recent.transcript.url));
-  assert.equal((await call("/signout")).data.account, null);
+  assert.equal((await f.request(f.alice, "/api/settings/google-meet", {method: "DELETE"})).data.account, null);
 });
 
-test("the Meet panel queues a private one-time setup and resumes the same reminder", async (t) => {
+test("all agents of one owner share the same browser and keep separate invitation addresses", async (t) => {
   const f = await knowledgeWorld();
   t.after(f.close);
-  const { meet, boxes, store } = f.app;
-  const agent = store.createAgent({ name: "Setup", brainOwnerId: f.alice.user.id, enabled: true, tools: true, model: "ollama/test-model" });
-  boxes.ensure = async () => {};
-  const path = "/api/agents/" + agent.id + "/meet";
-  const queue = (actor) => f.request(actor, path + "/setup", { method: "POST", body: {} });
-  assert.equal((await queue(f.bob)).status, 403);
-  assert.equal((await queue(f.alice)).status, 409);
-  meet.setEnabled(agent, true);
-  assert.equal((await queue(f.alice)).status, 409);
-  assert.equal(store.routines(agent.id).length, 0);
-  store.setValue(`agentMailbox:${agent.id}`, { email: "setup@example.test", status: "ready" });
-  const receipts = await Promise.all([queue(f.alice), queue(f.alice)]);
-  assert.deepEqual(receipts.map((r) => [r.status, r.data.setup.status]), [[200, "running"], [200, "running"]]);
-  const [routine] = store.routines(agent.id);
-  assert.equal(store.routines(agent.id).length, 1);
-  assert.equal(routine.id, meet.config(agent.id).setupRoutineId);
-  assert.equal(routine.kind, "reminder");
-  assert.equal(routine.channelId, privateRoom(agent.id));
-  assert.ok(Date.parse(routine.runAt) <= Date.now());
-  assert.match(routine.prompt, /meet_setup check/);
-  const verify = () => f.app.brain.verifyReminder({ agent, routine, result: { text: "Done" } });
-  assert.equal((await verify()).met, false);
-  meet.save(agent.id, { setup: { status: "done" }, account: { email: "other@example.test", checkedAt: Date.now() } });
-  assert.equal((await verify()).met, false);
-  meet.save(agent.id, { account: { email: "setup@example.test", checkedAt: 0 } });
-  assert.equal((await verify()).met, false);
-  meet.save(agent.id, { account: { email: "setup@example.test", checkedAt: Date.now() } });
-  assert.equal((await verify()).met, true);
-  meet.save(agent.id, { account: null, setup: { status: "running" } });
-  store.recordRoutineRun(routine.id, "error", "Fixture interrupted");
-  assert.equal((await f.request(f.alice, path)).data.setup.status, "failed");
-  meet.save(agent.id, { setup: { status: "needs-human" } });
-  assert.equal((await f.request(f.alice, path)).data.setup.status, "needs-human");
-  assert.equal((await queue(f.alice)).data.setup.status, "running");
-  assert.deepEqual(store.routines(agent.id).map((r) => [r.id, r.lastStatus]), [[routine.id, null]]);
-  let reads = 0;
-  boxes.meet = async (id, [command]) => {
-    assert.equal(id, agent.id);
-    assert.equal(command, "account");
-    reads++;
-    return { email: "setup@example.test" };
-  };
-  f.state.answer = (body) => {
-    if (!body.tools?.some((t) => t.function.name === "meet_setup")) return { content: "PASS" };
-    return reads ? { content: "Google Meet connected." } : { tool_calls: [{ function: { name: "meet_setup", arguments: { step: "check" } } }] };
-  };
-  const run = await f.app.orchestrator.runRoutine(store.routine(routine.id));
-  assert.equal(run.status, "completed");
-  assert.equal(reads, 1);
-  assert.equal(store.routine(routine.id, { archived: true }).archiveReason, "completed");
-  const final = await f.request(f.alice, path);
-  assert.equal(final.data.setup.status, "done");
-  assert.equal(final.data.account.email, "setup@example.test");
-});
-
-test("stopping setup fences an in-flight check, permits a fresh run and leaves other rooms alone", async (t) => {
-  const f = await knowledgeWorld();
-  t.after(f.close);
-  const { meet, store, boxes } = f.app;
-  const agent = store.createAgent({ name: "Stop setup", brainOwnerId: f.alice.user.id, tools: true, enabled: true });
-  const email = "stop@example.test";
-  const endpoint = `/api/agents/${agent.id}/meet`;
-  const stop = (actor) => f.request(actor, endpoint + "/stop-setup", { method: "POST", body: {} });
-  boxes.ensure = async () => {};
-  store.setValue(`agentMailbox:${agent.id}`, { status: "ready", email });
-  meet.setEnabled(agent, true);
-  await meet.queueSetup(agent);
-  const routineId = meet.config(agent.id).setupRoutineId;
-  let release, entered;
-  const checking = new Promise((resolve) => { entered = resolve; });
-  boxes.meet = () => new Promise((resolve) => { release = resolve; entered(); });
-  const pending = meet.setup(agent, { step: "check", email, routineId });
-  await checking;
-  assert.equal((await stop(f.bob)).status, 403);
-  assert.equal((await stop(f.alice)).data.setup.status, "stopped");
-  assert.equal((await stop(f.alice)).status, 200);
-  assert.equal(store.routine(routineId, { archived: true }).archiveReason, "meet-setup-stopped");
-  await meet.queueSetup(agent);
-  assert.notEqual(meet.config(agent.id).setupRoutineId, routineId);
-  release({ email });
-  await assert.rejects(pending, /stopped/);
-  assert.equal(meet.view(agent).setup.status, "running");
-  await assert.rejects(meet.setup(agent, { step: "progress", activity: "registration", routineId }), /stopped/);
-  const activity = { step: "progress", activity: "registration", routineId: meet.config(agent.id).setupRoutineId };
-  await meet.setup(agent, activity);
-  await meet.setup(agent, activity);
-  assert.deepEqual(meet.view(agent).setup.activities, ["registration"]);
+  const { meet, store, googleConnector } = f.app;
+  const agent = (name, owner) => store.createAgent({ name, brainOwnerId: owner.user.id, tools: true, enabled: true, model: "ollama/test-model" });
+  const fab = agent("Fab", f.alice), ada = agent("Ada", f.alice), other = agent("Other", f.bob);
+  for (const actor of [f.alice, f.bob]) store.setValue(googleConnector.meetIdentityKey(actor.user.id), { email: "team@gmail.com", name: "Common team name", subject: "team" });
+  assert.equal(meet.sharedSeat(fab.brainOwnerId).id, meet.sharedSeat(ada.brainOwnerId).id);
+  assert.notEqual(meet.sharedSeat(fab.brainOwnerId).id, meet.sharedSeat(other.brainOwnerId).id);
+  assert.equal(meet.view(fab).alias, "team+fab@gmail.com");
+  assert.equal(meet.view(ada).alias, "team+ada@gmail.com");
+  assert.equal(meet.view(fab).account.name, meet.view(ada).account.name);
 });
 
 test("updated Meet captions produce one timed turn per block", () => {
@@ -169,51 +111,4 @@ test("Soniox call transcription requests diarization and retains the timed token
   const transcript = await voice.transcribeCall(Buffer.from("audio"), { pollMs: 1 });
   assert.equal(f.state.transcriptions[0].enable_speaker_diarization, true);
   assert.equal(transcript.tokens[0].text, f.state.text);
-});
-
-test("meet_setup prepares the agent's own Google password, opens sign-in and is done only on the agent's address", async (t) => {
-  const home = tempHome();
-  const store = new Store(home);
-  t.after(() => { store.close?.(); rmSync(home, { recursive: true, force: true }); });
-  const agent = store.createAgent({ name: "Clàra Test", tools: true, enabled: true, model: "ollama/test-model" });
-  const imported = [];
-  const commands = [];
-  let email = "";
-  const boxes = {
-    ensure: async () => {},
-    importSecret: async (agentId, name, value) => { imported.push({ agentId, name, value: value.toString("utf8") }); },
-    meet: async (_id, [command]) => { commands.push(command); return command === "account" ? { email } : {}; },
-  };
-  const vault = new Vault({ store, key: "fixture-session-key", boxes, log: () => {} });
-  const meet = new Meet({ store, boxes });
-  meet.save(agent.id, { enabled: true });
-  await assert.rejects(meet.setup(agent, { step: "start", email: "", vault }), /mailbox/);
-  const started = await meet.setup(agent, { step: "start", email: "Clara@Example.test", vault });
-  assert.equal(started.status, "running");
-  assert.equal(started.secret, "GOOGLE_CLARA_TEST_PASSWORD");
-  assert.equal(started.newPassword, true);
-  assert.ok(started.steps.some((line) => line.includes("hush run --name GOOGLE_CLARA_TEST_PASSWORD")));
-  assert.ok(!JSON.stringify(started).includes(imported[0].value));
-  assert.deepEqual(imported.map((item) => [item.agentId, item.name]), [[agent.id, "GOOGLE_CLARA_TEST_PASSWORD"]]);
-  assert.match(imported[0].value, /^Cm[\w-]{20}#7$/);
-  assert.deepEqual(store.vaultSecret("GOOGLE_CLARA_TEST_PASSWORD").agents, [agent.id]);
-  assert.deepEqual(commands, ["account", "signin"]);
-  assert.equal(meet.view(agent).setup.status, "running");
-  const again = await meet.setup(agent, { step: "start", email: "clara@example.test", vault });
-  assert.equal(again.newPassword, false);
-  assert.equal(imported[1].value, imported[0].value);
-  await assert.rejects(meet.setup(agent, { step: "needs-human", note: "" }), /one line/);
-  assert.equal((await meet.setup(agent, { step: "needs-human", note: "Google vuole il QR" })).status, "needs-human");
-  email = "someone@else.test";
-  const wrong = await meet.setup(agent, { step: "check" });
-  assert.equal(wrong.status, "needs-human");
-  assert.match(wrong.next, /someone@else\.test/);
-  email = "clara@example.test";
-  const done = await meet.setup(agent, { step: "check" });
-  assert.equal(done.status, "done");
-  assert.equal(meet.view(agent).setup.status, "done");
-  assert.equal(meet.view(agent).account.email, "clara@example.test");
-  const signed = await meet.setup(agent, { step: "start", email: "clara@example.test", vault });
-  assert.equal(signed.status, "done");
-  assert.equal(commands.filter((cmd) => cmd === "signin").length, 2);
 });

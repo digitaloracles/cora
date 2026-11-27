@@ -288,7 +288,7 @@ test("an interrupted reminder on an inactive transport records one failure and r
   assert.equal(f.app.store.routineHistory({ agentId: agent.id }).total, 1);
 });
 
-test("only the panel's Meet setup reminder in the agent's private chat offers meet_setup", async (t) => {
+test("legacy Meet setup reminders cannot operate the shared Google account", async (t) => {
   const f = await fixture(t);
   const agent = f.app.store.createAgent({ name: "Mira", model: "ollama/test-model", tools: true, enabled: true, chattiness: 0 });
   f.app.meet.save(agent.id, { enabled: true });
@@ -302,6 +302,6 @@ test("only the panel's Meet setup reminder in the agent's private chat offers me
   await f.app.orchestrator.runRoutine(setup);
   assert.equal(offered.length, 2);
   assert.ok(offered[0].length > 0 && !offered[0].includes("meet_setup"), "another reminder does not get meet_setup");
-  assert.ok(offered[1].includes("meet_setup"), "the setup reminder gets meet_setup");
+  assert.ok(!offered[1].includes("meet_setup"), "legacy reminders cannot start an individual Google login");
   assert.ok(!offered[1].includes("meet_join") && !offered[1].includes("meet_leave"), "joining a call stays a chat request");
 });

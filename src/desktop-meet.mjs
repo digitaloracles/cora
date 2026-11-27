@@ -283,7 +283,7 @@ async function run(dir) {
   try {
     cdp = await connect();
     const who = await account(cdp);
-    if (!who.email || (config.account && who.email !== config.account)) return finish("failed", "sign-in");
+    if (!who.email || (config.account && who.email.toLowerCase() !== config.account.toLowerCase())) return finish("failed", "sign-in");
     save({ account: who.email });
     log(`account ${who.email ? "signed in" : "none"}`);
     for (const name of ["microphone", "camera"]) {
@@ -299,6 +299,7 @@ async function run(dir) {
     });
     const link = new URL(config.url);
     link.searchParams.set("hl", "en");
+    link.searchParams.set("authuser", config.account);
     await page.send("Page.navigate", { url: link.href });
     await page.send("Page.bringToFront").catch(() => {});
     // Before the door: no microphone, no camera, then ask to come in.
@@ -314,8 +315,8 @@ async function run(dir) {
       if (seen.refused) return finish("failed", "refused");
       if (seen.inCall || seen.waiting) { asked = true; break; }
       if (await press(page, NO_DEVICES)) { await sleep(1200); continue; }
-      const named = await page.evaluate(`(() => { const box = document.querySelector('input[type="text"][aria-label*="name" i], input[type="text"][aria-label*="nome" i]'); if (!box) return false; if (!box.value) { box.focus(); return "empty"; } return true; })()`).catch(() => false);
-      if (named === "empty") { await page.send("Input.insertText", { text: String(config.name || "Cora").slice(0, 60) }); await sleep(600); }
+      const guest = await page.evaluate(`Boolean(document.querySelector('input[type="text"][aria-label*="name" i],input[type="text"][aria-label*="nome" i]'))`);
+      if (guest) return finish("failed", "sign-in");
       // A desktop has no microphone or camera to send; a switch Meet shows as on is turned off, three tries at most.
       if (tries < 3 && (await has(page, MIC_ON) || await has(page, CAMERA_ON))) { tries += 1; await silence(page); continue; }
       if (!(await has(page, JOIN)) && await has(page, TAKE_OVER) && await press(page, OTHER_WAYS)) { await sleep(1200); if (!(await has(page, BESIDE))) continue; }

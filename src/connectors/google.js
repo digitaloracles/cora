@@ -505,13 +505,16 @@ export class GoogleConnector {
     if (!connection) throw new ConnectorError("Questo account Google non è autorizzato per l'agente.", 403);
     return connection;
   }
-  begin(user) {
+  meetIdentityKey(ownerId) { return this.knowledge?.ownerMemory ? `meetIdentity:${ownerId}` : "meetIdentity"; }
+  meetIdentity(ownerId) { return this.store.value(this.meetIdentityKey(ownerId), null); }
+  begin(user, { meet = false } = {}) {
     if (!this.enabled || !this.broker || !this.space) throw new ConnectorError("Il collegamento Google non è disponibile.", 409);
     for (const [key, value] of this.pending) if (value.expires < Date.now()) this.pending.delete(key);
     const nonce = randomBytes(32).toString("base64url"), verifier = randomBytes(32).toString("base64url");
-    this.pending.set(nonce, { userId: user.id, verifier, expires: Date.now() + 900000 });
+    this.pending.set(nonce, { userId: user.id, verifier, meet, expires: Date.now() + 900000 });
     const url = new URL(`${this.broker}/connectors/google/start`);
-    url.search = new URLSearchParams({ space: this.space, nonce, challenge: hash(verifier), ...(this.mailAccess !== "send" ? { access: this.mailAccess } : {}) });
+    const access = meet ? "meet-identity" : this.mailAccess;
+    url.search = new URLSearchParams({ space: this.space, nonce, challenge: hash(verifier), ...(access !== "send" ? { access } : {}) });
     return { url: url.href, nonce };
   }
   async relay(path, body) {
@@ -529,6 +532,12 @@ export class GoogleConnector {
     if (!user || (!this.knowledge?.ownerMemory && user.role !== "owner") || user.blocked) throw new ConnectorError("Accesso non autorizzato.", 403);
     if (error || !code) throw new ConnectorError("Collegamento Google annullato.");
     const result = await this.relay("exchange", { state, code, verifier: pending.verifier });
+    if (pending.meet) {
+      if (result.purpose !== "meet-identity" || !EMAIL.test(result.email || "") || !result.subject) throw new ConnectorError("Google non ha confermato l’identità Meet.");
+      const identity = { email: result.email, name: result.name || "", subject: result.subject };
+      this.store.setValue(this.meetIdentityKey(user.id), identity);
+      return identity;
+    }
     if (!result.refresh_token || !result.grant || !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(result.email || "")) throw new ConnectorError("Google non ha confermato l'indirizzo.");
     const old = this.records().find((item) => item.email === result.email && item.connectedBy === user.id);
     const id = old?.id || `gc_${randomBytes(8).toString("hex")}`;

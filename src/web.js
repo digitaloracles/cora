@@ -815,12 +815,36 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (method === "DELETE") { const result = await keyConnectors.disconnect(keyConnector[1], user, url.searchParams.get("connection") || ""); return send(res, 200, { ok: true, ...result }); }
       throw new HttpError(405, "Metodo non supportato.");
     }
-    if (path === "/api/connectors/google" && method === "POST") {
+    if (path === "/api/settings/google-meet/browser" && method === "POST") {
+      if (!knowledge?.ownerMemory && user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce Google Meet.");
+      if (actingUser) return send(res, 409, { error: "Open Google Meet settings in your browser.", browserAction: { path: "/#/settings/google-meet", identity: user.id } });
+      const seat = meet.sharedSeat(user.id);
+      if (!seat || meet.seatInUse(seat.id)) throw new HttpError(409, "Collega l’account o attendi la fine della riunione.");
+      await boxes.ensure(seat);
+      const current = await boxes.meet(seat.id, ["account"], { timeoutMs: 90000 });
+      if (meet.sharedSeat(user.id)?.id !== seat.id || meet.seatInUse(seat.id)) throw new HttpError(409, "Configurazione cambiata. Riprova.");
+      if (current.email?.toLowerCase() === seat.email) return send(res, 200, { ready: true });
+      await boxes.meet(seat.id, ["signin"]);
+      return send(res, 200, { viewer: "/box/meet-account/vnc.html?autoconnect=true&resize=scale&path=box/meet-account/websockify" });
+    }
+    const meetIdentityRoute = path === "/api/settings/google-meet";
+    if (meetIdentityRoute && (method === "GET" || method === "DELETE")) {
+      if (!knowledge?.ownerMemory && user.role !== "owner") throw new HttpError(403, "Solo il proprietario gestisce Google Meet.");
+      if (method === "DELETE") {
+        googleConnector.store.setValue(googleConnector.meetIdentityKey(user.id), null);
+        for (const [key, pending] of googleConnector.pending) {
+          if (pending.meet && googleConnector.meetIdentityKey(pending.userId) === googleConnector.meetIdentityKey(user.id)) googleConnector.pending.delete(key);
+        }
+      }
+      const account = googleConnector.meetIdentity(user.id);
+      return send(res, 200, { account: account && { email: account.email, name: account.name } });
+    }
+    if ((path === "/api/connectors/google" || meetIdentityRoute) && method === "POST") {
       if (!knowledge?.ownerMemory && user.role !== "owner") throw new HttpError(403, "Solo il proprietario collega account Google.");
-      const started = googleConnector.begin(user);
+      const started = googleConnector.begin(user, { meet: meetIdentityRoute });
       if (actingUser) {
         googleConnector.pending.delete(started.nonce);
-        return send(res, 409, { error: "Google sign-in requires your browser session. Open the returned Cora page and connect the account there.", browserAction: { path: "/#/settings/connettori/google", identity: user.id } });
+        return send(res, 409, { error: "Google sign-in requires your browser session. Open the returned Cora page and connect the account there.", browserAction: { path: meetIdentityRoute ? "/#/settings/google-meet" : "/#/settings/connettori/google", identity: user.id } });
       }
       const name = config.insecureCookies ? "cora_google" : "__Host-cora_google";
       return send(res, 200, { url: started.url }, { "Set-Cookie": `${name}=${started.nonce}; Path=/; HttpOnly; SameSite=Lax; Max-Age=900${config.insecureCookies ? "" : "; Secure"}` });
@@ -1841,7 +1865,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
     }
 
-    match = /^\/api\/agents\/([\w-]+)\/meet(?:\/(setup|stop-setup|signin|account|signout|join|leave|retry))?$/.exec(path);
+    match = /^\/api\/agents\/([\w-]+)\/meet(?:\/(join|leave|retry))?$/.exec(path);
     if (match && meet) {
       const agent = store.agent(match[1]);
       if (!agent) throw new HttpError(404, "Agente non trovato.");
@@ -1854,11 +1878,6 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
         meet.setEnabled(agent, enabled);
       } else if (method === "POST" && action) {
         const body = await readJson(req, 4096);
-        if (action === "setup") await meet.queueSetup(agent);
-        if (action === "stop-setup") meet.stopSetup(agent, orchestrator);
-        if (action === "signin") await meet.signIn(agent);
-        if (action === "account") await meet.check(agent);
-        if (action === "signout") await meet.signOut(agent);
         if (action === "join") await meet.join(agent, { link: body.link, folder: body.folder, language: body.language, by: { kind: "user", id: user.id, name: user.name }, memberUserId: user.id, channelId: privateRoom(agent.id), panelOrigin: connectorOrigin(req) });
         if (action === "leave") await meet.leave(agent);
         if (action === "retry") await meet.retry(agent, body.id);
@@ -2743,10 +2762,20 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
   async function boxTarget(req) {
     const match = /^\/box\/([\w-]+)(\/.*)?$/.exec(new URL(req.url, "http://x").pathname);
     if (!match) return null;
-    const agent = store.agent(match[1]);
-    if (!agent) throw new HttpError(404, "agente non trovato");
-    checkAgentMemory(agent.id, sessionUser(req));
-    const state = await boxes.inspect(agent.id);
+    const user = sessionUser(req);
+    let id;
+    if (match[1] === "meet-account") {
+      if (!user || (!knowledge?.ownerMemory && user.role !== "owner")) throw new HttpError(403, "Accesso negato.");
+      const seat = meet.sharedSeat(user.id);
+      if (!seat || meet.seatInUse(seat.id)) throw new HttpError(409, "Browser Meet non disponibile.");
+      id = seat.id;
+    } else {
+      const agent = store.agent(match[1]);
+      if (!agent) throw new HttpError(404, "agente non trovato");
+      checkAgentMemory(agent.id, user);
+      id = agent.id;
+    }
+    const state = await boxes.inspect(id);
     if (!state.running || !state.port) throw new HttpError(409, "desktop spento: avvialo dal pannello");
     const rest = req.url.slice(`/box/${match[1]}`.length) || "/";
     return { port: state.port, path: rest.startsWith("/") ? rest : `/${rest}` };
@@ -2844,12 +2873,15 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (picture && (req.method === "GET" || req.method === "HEAD")) return avatarFile(res, url, picture[1]);
       if (url.pathname === "/connectors/google/callback" && googleConnector && req.method === "GET") {
         const name = config.insecureCookies ? "cora_google" : "__Host-cora_google";
-        let status = 200, message = "Account Google collegato. Scegli gli agenti che possono usarlo.";
+        const nonce = parseCookies(req.headers.cookie)[name] || "";
+        const forMeet = googleConnector.pending.get(nonce)?.meet;
+        const back = forMeet ? "/#/settings/google-meet" : "/#/settings/connettori/google";
+        let status = 200, message = forMeet ? "Account Google Meet collegato." : "Account Google collegato. Scegli gli agenti che possono usarlo.";
         try {
-          await googleConnector.finish({ ...Object.fromEntries(url.searchParams), nonce: parseCookies(req.headers.cookie)[name] || "" });
-          store.setValue("googleConnectorNotice", message);
-        } catch { status = 400; message = "Collegamento Google non riuscito o scaduto. Riprova da Connettori."; store.setValue("googleConnectorNotice", message); }
-        const body = `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${status === 200 ? '<meta http-equiv="refresh" content="1;url=/#/settings/connettori/google">' : ""}<title>Google · Cora</title><style>${SEND_STYLE}</style></head><body><main>${SEND_MARK}<h1>Google</h1><p>${message}</p><a class="button" href="/#/settings/connettori/google">Torna a Connettori</a></main></body></html>`;
+          await googleConnector.finish({ ...Object.fromEntries(url.searchParams), nonce });
+          if (!forMeet) store.setValue("googleConnectorNotice", message);
+        } catch { status = 400; message = forMeet ? "Collegamento Google Meet non riuscito. Riprova dalle impostazioni." : "Collegamento Google non riuscito o scaduto. Riprova da Connettori."; if (!forMeet) store.setValue("googleConnectorNotice", message); }
+        const body = `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${status === 200 ? `<meta http-equiv="refresh" content="1;url=${back}">` : ""}<title>Google · Cora</title><style>${SEND_STYLE}</style></head><body><main>${SEND_MARK}<h1>Google</h1><p>${message}</p><a class="button" href="${back}">${forMeet ? "Torna a Google Meet" : "Torna a Connettori"}</a></main></body></html>`;
         return send(res, status, body, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'", "Set-Cookie": `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${config.insecureCookies ? "" : "; Secure"}` });
       }
       const oauthBack = url.pathname === "/connectors/microsoft/callback" ? [url.pathname, "outlook"] : /^\/connectors\/oauth\/([a-z][a-z0-9-]{1,40})\/callback$/.exec(url.pathname);
