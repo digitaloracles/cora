@@ -444,7 +444,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       if (!found) { res.writeHead(404, head); return res.end(req.method === "HEAD" ? undefined : "/* This chat is not available. */\n"); }
       const { agent, config: chat } = found;
       const settings = { path: `/embed/${token}`, name: agent.name, accent: chat.theme.accent, domains: chat.domains, avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}` };
-      const body = readFileSync(join(WEB_DIR, "embed-widget.js"), "utf8").replace("/*CONFIG*/{}", () => JSON.stringify(settings).replace(/</g, "\\u003c"));
+      const body = readFileSync(join(WEB_DIR, "embed-widget.js.in"), "utf8").replace("/*CONFIG*/{}", () => JSON.stringify(settings).replace(/</g, "\\u003c"));
       res.writeHead(200, head);
       return res.end(req.method === "HEAD" ? undefined : body);
     }
