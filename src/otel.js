@@ -234,6 +234,11 @@ export class OtlpExporter {
     this.sending = null;
     this.failing = false;
     this.dropped = 0;
+    this.exported = 0;
+    this.lost = 0;
+    this.lastOkAt = null;
+    this.lastError = null;
+    this.lastErrorAt = null;
   }
 
   /** A turn that just finished. */
@@ -281,6 +286,8 @@ export class OtlpExporter {
           signal: AbortSignal.timeout(this.timeoutMs),
         });
         if (response.ok) {
+          this.exported += batch.length;
+          this.lastOkAt = new Date().toISOString();
           if (this.failing) this.log({ type: "info", text: "OpenTelemetry: export ripreso" });
           this.failing = false;
           return true;
@@ -290,11 +297,55 @@ export class OtlpExporter {
         else throw new Error(`HTTP ${response.status}`);
       } catch (error) {
         if (attempt === 0 && error?.name !== "TimeoutError" && !/^HTTP 4/.test(error?.message || "")) continue;
-        if (!this.failing) this.log({ type: "error", text: `OpenTelemetry: export fallito (${String(error?.message || error).slice(0, 200)}), ${batch.length} turni persi` });
+        this.lost += batch.length;
+        this.lastError = String(error?.message || error).slice(0, 200);
+        this.lastErrorAt = new Date().toISOString();
+        if (!this.failing) this.log({ type: "error", text: `OpenTelemetry: export fallito (${this.lastError}), ${batch.length} turni persi` });
         this.failing = true;
         return false;
       }
     }
     return false;
   }
+}
+
+const viewerLink = (raw) => {
+  try {
+    const url = new URL(String(raw || "").trim());
+    return /^https?:$/.test(url.protocol) ? url.href.replace(/%7BtraceId%7D/gi, "{traceId}") : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * What the panel shows about the export: where it goes and how it is doing.
+ * Never the headers, which hold the collector's key.
+ */
+export function otelStatus(exporter, env = process.env) {
+  const config = exporterConfig(env);
+  const viewerUrl = viewerLink(env.CORA_OTEL_VIEWER_URL);
+  const traceUrl = viewerLink(env.CORA_OTEL_TRACE_URL);
+  const links = { viewerUrl, traceUrl: traceUrl?.includes("{traceId}") ? traceUrl : null };
+  if (!config) return { enabled: false, ...links };
+  if (config.error) return { enabled: false, error: config.error, ...links };
+  const url = new URL(config.url);
+  const attributes = parseKeyValues(env.OTEL_RESOURCE_ATTRIBUTES);
+  return {
+    enabled: Boolean(exporter),
+    endpoint: `${url.origin}${url.pathname}`,
+    protocol: "http/json",
+    authenticated: Object.keys(config.headers).length > 0,
+    content: config.content,
+    serviceName: String(env.OTEL_SERVICE_NAME || "").trim() || "cora",
+    environment: attributes["deployment.environment.name"] || attributes["deployment.environment"] || null,
+    exported: exporter?.exported || 0,
+    lost: (exporter?.lost || 0) + (exporter?.dropped || 0),
+    queued: exporter?.queue.length || 0,
+    failing: Boolean(exporter?.failing),
+    lastOkAt: exporter?.lastOkAt || null,
+    lastError: exporter?.lastError || null,
+    lastErrorAt: exporter?.lastErrorAt || null,
+    ...links,
+  };
 }

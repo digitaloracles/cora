@@ -6024,9 +6024,50 @@ function goalGroup(agent, item) {
   return row;
 }
 
+/* ---------- OpenTelemetry ---------- */
+const OTEL_DOCS = "https://usecora.space/docs/#/opentelemetry";
+
+/** An OTLP/JSON file of a turn or a thread, fetched with the panel's session. */
+async function downloadOtlp(path, fileName) {
+  try {
+    const response = await fetch(path, { headers: { "X-Cora": "1" }, credentials: "same-origin" });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
+    const url = URL.createObjectURL(new Blob([await response.text()], { type: "application/json" }));
+    const anchor = h("a", { href: url, download: fileName });
+    document.body.append(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("File OpenTelemetry scaricato");
+  } catch (error) { toast(error.message, true); }
+}
+
+const otelTraceHref = (status, otelTraceId) => status?.traceUrl && otelTraceId ? status.traceUrl.replace("{traceId}", otelTraceId) : null;
+
+/** Where the turns go and how the export is doing; the collector's key never reaches the panel. */
+function otelPanel(status) {
+  if (!status) return null;
+  const docs = btn("Guida", { icon: "external", cls: "sm ghost", href: OTEL_DOCS, target: "_blank" });
+  const viewer = status.viewerUrl ? btn("Vedi le tracce dal vivo", { icon: "external", cls: "sm", href: status.viewerUrl, target: "_blank" }) : null;
+  const download = setRow("Scarica", "Ogni turno e ogni thread si scarica come file OTLP/JSON con «Scarica OpenTelemetry», anche con l'invio spento.");
+  if (!status.enabled) {
+    return panel({ icon: "share", title: "OpenTelemetry", hint: "Invio dei turni a un servizio di osservabilità.", actions: docs },
+      setRows(
+        setRow("Invio", status.error ? tr("Configurazione non valida: {error}", { error: status.error }) : "Spento. Per inviare ogni turno a un servizio OpenTelemetry (Langfuse, Grafana, Honeycomb, Jaeger) imposta OTEL_EXPORTER_OTLP_ENDPOINT sul server e riavvia Cora.", tag(tr(status.error ? "Errore" : "Spento"), status.error ? "err" : "")),
+        download));
+  }
+  const last = status.lastOkAt ? tr(status.exported === 1 ? "1 turno inviato · ultimo invio {time}" : "{count} turni inviati · ultimo invio {time}", { count: status.exported, time: fmtTime(status.lastOkAt, true) }) : tr("Nessun turno inviato dall'ultimo avvio: un turno parte quando finisce.");
+  const where = [status.endpoint, status.environment ? tr("ambiente {name}", { name: status.environment }) : null].filter(Boolean).join(" · ");
+  return panel({ icon: "share", title: "OpenTelemetry", hint: "Ogni turno finito va al servizio qui sotto, come traccia GenAI.", actions: h("span", { class: "badges" }, viewer, docs) },
+    setRows(
+      setRow("Invio", where, tag(tr(status.failing ? "In errore" : "Attivo"), status.failing ? "err" : "on")),
+      setRow("Turni", status.lost ? tr("{text} · {lost} persi", { text: last, lost: status.lost }) : last),
+      status.lastError ? setRow("Ultimo errore", tr("{error} · {time}", { error: status.lastError, time: fmtTime(status.lastErrorAt, true) })) : null,
+      setRow("Contenuti", status.content ? "Inviati anche messaggi, ragionamento e risultati degli strumenti." : "Solo tempi, strumenti, token ed esito. Messaggi e risultati restano in Cora."),
+      download));
+}
+
 async function tracesTab(agent, isCurrent = () => true) {
   const read = () => Promise.all([guard(api(`/api/agents/${agent.id}/traces`)), guard(api(`/api/agents/${agent.id}/goals`))]);
-  const initial = await read();
+  const [initial, otel] = await Promise.all([read(), api("/api/otel").catch(() => null)]);
   if (!isCurrent()) return null;
   const content = h("div", { class: "reasoning-list" });
   const totals = h("span", { class: "reasoning-totals" });
@@ -6079,7 +6120,7 @@ async function tracesTab(agent, isCurrent = () => true) {
     pending = setTimeout(() => { pending = null; if (isCurrent()) void refresh(); }, 1500);
   };
   const hint = "Un obiettivo raccoglie le esecuzioni di Cora. Ogni esecuzione può contenere molti passaggi del modello. I costi API si aggiornano con il consumo; i dati storici mancanti restano non disponibili.";
-  return panel({ icon: "bulb", title: "Ragionamento", hint, actions: totals }, content);
+  return [panel({ icon: "bulb", title: "Ragionamento", hint, actions: totals }, content), otelPanel(otel)];
 }
 
 function stepEl(step, startedAt) {
@@ -6102,7 +6143,7 @@ function stepEl(step, startedAt) {
 }
 
 async function traceDetail(agent, traceId, isCurrent = () => true) {
-  const trace = await guard(api(`/api/traces/${traceId}`));
+  const [trace, otel] = await Promise.all([guard(api(`/api/traces/${traceId}`)), api("/api/otel").catch(() => null)]);
   if (!isCurrent()) return null;
   if (!trace) return panel({ icon: "alert", title: "Ragionamento non trovato" }, btn("Tutti i turni", { icon: "back", href: `#/agent/${agent.id}/ragionamento` }));
   const startedAt = Date.parse(trace.startedAt);
@@ -6127,6 +6168,10 @@ async function traceDetail(agent, traceId, isCurrent = () => true) {
     };
   }
   const [label, cls] = TRACE_STATUS[trace.status] || [trace.status, ""];
+  const otelHref = otel?.enabled && trace.status !== "running" ? otelTraceHref(otel, trace.otelTraceId) : null;
+  const otelActions = h("div", { class: "page-actions trace-otel" },
+    btn("Scarica OpenTelemetry", { icon: "download", cls: "sm ghost", disabled: trace.status === "running", title: trace.status === "running" ? "Disponibile quando il turno finisce" : null, onclick: () => downloadOtlp(`/api/traces/${trace.id}/otlp`, `${trace.id}.otlp.json`) }),
+    otelHref ? btn("Apri nel servizio OpenTelemetry", { icon: "external", cls: "sm ghost", href: otelHref, target: "_blank" }) : null);
   const answer = trace.status === "error"
     ? h("p", { class: "err-text" }, raw(trace.error))
     : h("div", { class: "answer" }, trace.output ? raw(trace.output) : trace.status === "running" ? "…" : "(niente)");
@@ -6138,7 +6183,8 @@ async function traceDetail(agent, traceId, isCurrent = () => true) {
       h("h3", { class: "label" }, "Passi"),
       stepsLog,
       h("h3", { class: "label" }, trace.status === "pass" ? "Risposta (ha deciso di passare)" : "Risposta"),
-      answer),
+      answer,
+      otelActions),
     panel({ icon: "eye", title: "Cosa ha ricevuto", hint: "Il contesto del turno e le istruzioni di sistema." },
       h("details", { class: "raw" }, h("summary", {}, icon("chat"), h("span", {}, "Contesto del turno")), h("pre", {}, raw(trace.prompt))),
       h("details", { class: "raw" }, h("summary", {}, icon("shield"), h("span", {}, "Istruzioni di sistema")), h("pre", {}, raw(trace.system)))),
@@ -11864,6 +11910,7 @@ async function renderThreadPage(id) {
       place.textContent = threadPlace(thread);
       linkSlot.replaceChildren(...[
         thread.link ? btn(thread.kind === "slack" ? "Apri su Slack" : "Apri su Discord", { icon: "external", cls: "ghost", href: thread.link, target: "_blank" }) : null,
+        btn("Scarica OpenTelemetry", { icon: "download", cls: "ghost", onclick: () => downloadOtlp(`${apiRoot}/otlp`, `thread-${String(thread.id).replace(/[^\w.-]+/g, "-")}.otlp.json`) }),
         manage && thread.thread && !thread.closed ? btn("Chiudi", { icon: "stop", cls: "ghost", onclick: () => guard(api("/api/threads/close", { method: "POST", body: { id: thread.id } }), "Thread chiuso").then(() => refresh()) }) : null,
       ].filter(Boolean));
       linkSlot.hidden = !linkSlot.children.length;
