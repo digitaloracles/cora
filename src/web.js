@@ -43,6 +43,7 @@ import { connectorCatalog, KEY_SERVICES } from "./connectors/index.js";
 import { KeyConnectorError } from "./connectors/key-connectors.js";
 import { runsOnAccount } from "./subscription-usage.js";
 import { readAppearance, readLogo, removeLogo, saveAppearance, saveLogo } from "./appearance.js";
+import { byAgentName } from "./agent-order.js";
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 const COOKIE = "cora_session";
@@ -608,7 +609,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
 
   /** What the native app shows: the person's agents, the accounts they run on with their quotas, per-agent usage and live work. */
   const appSnapshot = async (user, req) => {
-    const agents = quotaAgentsFor(user);
+    const agents = byAgentName(quotaAgentsFor(user));
     const ids = new Set(agents.map((agent) => agent.id));
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone, year: "numeric", month: "2-digit", day: "2-digit" });
     const today = day.format(new Date()), weekFrom = day.format(new Date(Date.now() - 6 * 86400000));
@@ -1306,7 +1307,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
     }
     if (path === "/api/state" && method === "GET") {
       const [agents, models, imageReady] = await Promise.all([
-        Promise.all((knowledge?.agentsFor(user) || store.agents()).map(publicAgent)),
+        Promise.all(byAgentName(knowledge?.agentsFor(user) || store.agents()).map(publicAgent)),
         llm.listModels(),
         boxes.imageExists().catch(() => false),
       ]);

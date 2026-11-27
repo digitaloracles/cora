@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { count, defined, fail, list, localFile, text, ToolError } from "./tooling.js";
 import { DRIVE_SCOPES, DRIVE_TOOLS } from "./google-drive.js";
+import { byAgentName } from "../agent-order.js";
 
 /**
  * Google: Gmail, Google Workspace and Google Drive accounts connected through Cora's
@@ -497,7 +498,7 @@ export class GoogleConnector {
   records() { return this.store.value("googleConnectors", []); }
   view(user = null) {
     return { available: Boolean(this.enabled && this.broker && this.space), connections: this.records().filter((item) => !item.disconnected && (!this.knowledge?.ownerMemory || item.connectedBy === user?.id)),
-      agents: (this.knowledge?.ownerMemory ? this.knowledge.agentsFor(user) : this.store.agents()).map(({ id, name }) => ({ id, name })) };
+      agents: byAgentName(this.knowledge?.ownerMemory ? this.knowledge.agentsFor(user) : this.store.agents()).map(({ id, name }) => ({ id, name })) };
   }
   forAgent(agent) { return this.records().filter((item) => !item.disconnected && item.agents.includes(agent.id)); }
   identity(agent, id) {
