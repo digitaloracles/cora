@@ -1258,6 +1258,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       ]);
       return send(res, 200, {
         settings: store.settings,
+        ...(user.role === "owner" && storage?.capacity ? { machineCapacity: storage.capacity.status() } : {}),
         appearance: readAppearance(store),
         preview: previewWindow.state(user),
         encryptionRequired: encrypted.enabled,

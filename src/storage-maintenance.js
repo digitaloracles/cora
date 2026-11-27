@@ -1,3 +1,4 @@
+import { MachineCapacity } from "./machine-capacity.js";
 import { DesktopCache } from "./desktop-cache.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -36,6 +37,7 @@ function clock(date, timezone) {
 export class StorageMaintenance {
   constructor({ store, home, timezone, docker, boxes, brainEnabled, log }) {
     Object.assign(this, { store, home, timezone, docker, boxes, brainEnabled, log });
+    this.capacity = new MachineCapacity({ store, docker, boxes });
     this.desktopCache = new DesktopCache({ store, boxes, docker, log });
     this.running = null;
   }
@@ -75,6 +77,7 @@ export class StorageMaintenance {
   }
 
   tick(now) {
+    this.capacity.tick(now.getTime());
     this.desktopCache.tick(now.getTime());
     if (this.running) return;
     const policy = this.settings();

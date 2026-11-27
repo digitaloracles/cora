@@ -318,6 +318,18 @@ code { font: 400 12px/1 var(--mono); color: var(--amber); background: var(--well
 .stack-sm { display: flex; flex-direction: column; gap: 14px; }
 
 /* ---------- stats ---------- */
+.capacity-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; }
+.capacity-metrics > div { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 6px; }
+.capacity-metrics dt, .capacity-note { color: var(--muted); font-size: 13px; }
+.capacity-metrics dd { margin: 0; color: var(--text); font: 600 21px/1.25 var(--display); }
+.capacity-note { margin: 0; }
+@media (max-width: 560px) {
+  .capacity-metrics { grid-template-columns: 1fr; gap: 8px; }
+  .capacity-metrics > div { flex-direction: row; align-items: baseline; justify-content: space-between; }
+  .capacity-metrics dd { font-size: 16px; }
+  .machine-capacity .panel-head { flex-wrap: wrap; }
+}
+
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .stat { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); text-decoration: none; }
 a.stat:hover { border-color: var(--line-strong); }

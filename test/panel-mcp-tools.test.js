@@ -63,6 +63,8 @@ test("the panel MCP lists one specific tool per panel action with its own input 
 
 test("an external agent drives and reads a whole agent through the specific tools, as the panel would", async (t) => {
   const f = await mcpWorld(t), alice = await f.issue(f.alice), bob = await f.issue(f.bob), owner = await f.issue(f.admin);
+  assert.ok((await f.call(owner, "cora_state")).structuredContent.data.machineCapacity);
+  assert.equal((await f.call(alice, "cora_state")).structuredContent.data.machineCapacity, undefined);
   const created = await f.call(alice, "cora_agent_create", { name: "Remote", personality: "Set from outside", tools: false, enabled: false, effort: "high", character: { enabled: true, scores: { analysis: 17 } } });
   assert.equal(created.structuredContent.status, 201, JSON.stringify(created.structuredContent));
   const agent = created.structuredContent.data;

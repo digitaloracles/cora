@@ -439,6 +439,7 @@ export function startCora(overrides = {}) {
     clearInterval(slackCatalogTimer);
     meet.stop();
     scheduler.stop();
+    await storage.capacity.pending;
     await storage.pending;
     await storage.desktopCache.queue;
     harnessUpdates.stop();
