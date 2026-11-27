@@ -8248,6 +8248,97 @@ describe("what runs the models", () => {
     assert.deepEqual(await appleSilicon({ platform: "linux", arch: "arm64", run }), [], "nor does a Linux ARM server");
     assert.deepEqual(await localGraphics({ platform: "darwin", arch: "x64" }), await graphicsCards(), "off Apple silicon the cards still come from nvidia-smi");
   });
+
+  test("a machine without Ollama offers to install it, and the button runs the install here", async (t) => {
+    const running = await call("/api/ollama/install", { method: "POST", body: {} });
+    assert.equal(running.status, 200);
+    assert.equal(running.data.running, true, "an Ollama that answers is left alone");
+
+    const previousUrl = app.llm.ollamaUrl;
+    const previousSetup = app.llm.setupOllama;
+    const closed = await new Promise((resolve) => { const probe = http.createServer(); probe.listen(0, "127.0.0.1", () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
+    const asked = [];
+    t.after(() => { app.llm.ollamaUrl = previousUrl; app.llm.setupOllama = previousSetup; });
+    app.llm.ollamaUrl = `http://127.0.0.1:${closed}`;
+    app.llm.setupOllama = async ({ action, url, onLine }) => { asked.push([action, url]); onLine(">>> Installing ollama"); return { ok: true, version: "0.40.18" }; };
+
+    const report = await app.llm.hardware();
+    assert.equal(report.ollama.reachable, false);
+    assert.equal(report.ollama.setup.installable, true, "an Ollama on this machine's loopback can be installed from the panel");
+    assert.equal(report.ollama.setup.command, "curl -fsSL https://ollama.com/install.sh | sh");
+    assert.ok(report.machine.ram > 0 && report.machine.cores > 0, "the machine is described before Ollama exists");
+
+    const started = await call("/api/ollama/install", { method: "POST", body: { action: "install" } });
+    assert.equal(started.status, 202);
+    assert.equal(started.data.started, true);
+    await waitFor(async () => (await call("/api/activity")).data.some((entry) => /Ollama 0\.40\.18 è acceso/.test(entry.text || "")), { what: "Ollama to be up" });
+    assert.deepEqual(asked, [["install", `http://127.0.0.1:${closed}`]], "the install ran once, for this machine's Ollama");
+
+    const policy = app.store.accessPolicy();
+    app.store.updateAccessPolicy({ emails: [...policy.emails, "member@ollama.test"] });
+    t.after(() => app.store.updateAccessPolicy(policy));
+    const member = app.store.registerPanelUser({ id: "ollama-member", name: "Member", email: "member@ollama.test", emailVerified: true, role: "member" });
+    const token = randomBytes(32).toString("base64url");
+    const hash = createHash("sha256").update(token).digest("hex");
+    app.store.createPanelSession(hash, member.id, Date.now() + 3600000);
+    t.after(() => { app.store.deletePanelSession(hash); app.store.stmt("DELETE FROM panel_users WHERE id = ?").run(member.id); });
+    const signature = createHmac("sha256", "test-session-key").update(`session.v2.${token}`).digest("base64url");
+    const refused = await call("/api/ollama/install", { method: "POST", body: {}, auth: false, headers: { Cookie: `cora_session=v2.${token}.${signature}` } });
+    assert.equal(refused.status, 403, "only the owner installs software on the machine");
+    assert.equal(asked.length, 1);
+
+    app.llm.ollamaUrl = "http://ollama.invalid:11434";
+    const elsewhere = await call("/api/ollama/install", { method: "POST", body: {} });
+    assert.equal(elsewhere.status, 400, "an Ollama on another machine is not installed from here");
+    assert.equal(asked.length, 1);
+  });
+
+  test("the panel says Ollama is missing, shows the machine, and installs it with one button", async () => {
+    const agent = { id: "ag_o", name: "Olla", model: "ollama/deepseek-v4.1-flash:cloud", enabled: true, tools: true, chattiness: 0.4, channelIds: [], color: "#e8a33d", memoryCount: 0 };
+    const state = {
+      agents: [agent], channels: [], routines: [], subscriptions: [], requests: [], guilds: [], discordChannels: [],
+      models: [{ id: "ollama/deepseek-v4.1-flash:cloud", provider: "ollama", label: "deepseek-v4.1-flash:cloud", local: false, tools: true }],
+      providers: { claude: false, codex: false, ollama: true, ollamaLocal: true, ollamaCloud: true, orcarouter: false, hermes: false },
+      ollamaCloud: { signedIn: true, signinUrl: "" }, keys: { ollama: true, orcarouter: false },
+      settings: { defaultModel: "ollama/deepseek-v4.1-flash:cloud", useResidentSubscriptions: false },
+      transport: "discord", discord: { state: "ready", user: null, guilds: [] }, telegram: { state: "missing-token" }, slack: null,
+      push: { enabled: false, publicKey: "", devices: 0 }, currentUser: { id: "u", name: "Owner", role: "owner" },
+      access: { hosted: false, canManage: true }, boxImage: { name: "cora-box:latest", ready: true }, timezone: "Europe/Rome",
+    };
+    const posts = [];
+    const reply = (body, status = 200) => new Response(JSON.stringify(body), { status });
+    const panel = panelHarness({ language: "en", hash: `#/agent/${agent.id}/cervello`, fetch: async (path, options) => {
+      if (path === "/api/me") return reply({ authed: true });
+      if (path === "/api/state") return reply(state);
+      if (path === "/api/activity") return reply([]);
+      if (path === "/api/hardware") return reply({
+        gpus: [], loaded: [], hosts: [{ url: "http://127.0.0.1:11434", label: "", gpu: "", local: true, reachable: false, version: "", models: [], loaded: [] }],
+        machine: { platform: "linux", arch: "x64", cpu: "AMD Ryzen 9 7950X", cores: 32, ram: 65536 },
+        ollama: { url: "http://127.0.0.1:11434", local: true, reachable: false, version: "", setup: { installed: false, running: false, installable: true, command: "curl -fsSL https://ollama.com/install.sh | sh" } },
+      });
+      if (path === "/api/ollama/install") { posts.push(JSON.parse(options.body)); return reply({ started: true, action: "install" }, 202); }
+      return reply({});
+    } });
+    panel.run("globalThis.confirm = () => true");
+    await panel.run("boot()");
+    await waitFor(() => panel.app.querySelector(".brain-harness"));
+    const side = () => panel.app.querySelector(".brain-side");
+    const tab = side().querySelectorAll("button").find((node) => node.textContent === "On this machine");
+    assert.ok(tab, "this machine is still a place while its Ollama is missing");
+    tab.click();
+    await waitFor(() => side().querySelector(".notice"));
+    assert.match(side().querySelector(".card-strip").textContent, /AMD Ryzen 9 7950X.*32 cores · 64 GB RAM/, "the machine is shown before Ollama exists");
+    assert.match(side().querySelector(".notice").textContent, /Ollama is not installed\./);
+    const install = side().querySelectorAll("button").find((node) => node.textContent === "Install Ollama");
+    assert.ok(install, "the owner gets an Install button");
+    install.click();
+    await waitFor(() => posts.length === 1);
+    assert.deepEqual(posts, [{ action: "install" }]);
+    panel.run(`S.events.onmessage({ data: JSON.stringify({ type: "ollama-setup", action: "install", line: ">>> Downloading ollama" }) })`);
+    assert.match(side().querySelector(".notice").textContent, />>> Downloading ollama/, "the script's progress shows under the button");
+    panel.run(`S.events.onmessage({ data: JSON.stringify({ type: "ollama-setup", action: "install", done: true, ok: true, version: "0.40.18" }) })`);
+    assert.match(side().textContent, /Ollama 0\.40\.18 is running\./);
+  });
 });
 
 describe("installed on the customer's own machine", () => {

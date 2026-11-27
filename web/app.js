@@ -777,6 +777,10 @@ function connectEvents() {
       S.onPull?.(entry);
       return;
     }
+    if (entry.type === "ollama-setup") {
+      S.onSetup?.(entry);
+      return;
+    }
     if (entry.type === "agent-owners") {
       const view = location.hash;
       guard(loadState()).then(() => {
@@ -1672,7 +1676,8 @@ const modelsOf = (harness, place) => {
   return S.data.models.filter((model) => providers.includes(model.provider) && Boolean(model.local) === (place === "local"));
 };
 
-const placesOf = (harness) => ["local", "cloud"].filter((place) => modelsOf(harness, place).length);
+// This machine stays a place for Cora's harness while its Ollama is missing or off: that side offers to install it.
+const placesOf = (harness) => ["local", "cloud"].filter((place) => modelsOf(harness, place).length || (place === "local" && harness === "cora" && S.data.providers?.ollamaLocal));
 
 /** Where a model id lives, for reopening the panel on the side the agent is already on. */
 function placeOfModel(id) {
@@ -1924,6 +1929,45 @@ function brainPanel(agent) {
     return out;
   }
 
+  /** No Ollama answering here: say whether it is missing or only off, and offer to fix it. */
+  function ollamaSetupNotice(setup) {
+    const action = setup.installed ? "start" : "install";
+    const status = h("small", { class: "muted", role: "status" });
+    const owner = S.data.currentUser?.role === "owner";
+    const button = setup.installable && owner ? btn(action === "start" ? "Avvia Ollama" : "Installa Ollama", { icon: action === "start" ? "play" : "upgrade", cls: "primary sm", onclick: async () => {
+      const question = action === "start"
+        ? tr("Avvio Ollama su questa macchina? L'avanzamento lo vedi qui.")
+        : tr("Installo Ollama su questa macchina con lo script ufficiale di ollama.com? L'avanzamento lo vedi qui.");
+      if (!confirm(question)) return;
+      button.disabled = true;
+      status.textContent = tr("comincio…");
+      const answer = await guard(api("/api/ollama/install", { method: "POST", body: { action } }), action === "start" ? tr("Avvio Ollama") : tr("Installo Ollama"));
+      if (answer?.running) loadHardware();
+      else if (answer?.already) status.textContent = tr("Ollama si sta già installando: l'avanzamento arriva qui.");
+      else if (!answer?.started) button.disabled = false;
+    } }) : null;
+    S.onSetup = (event) => {
+      if (event.done) {
+        status.textContent = event.ok ? tr("Ollama {version} è acceso.", { version: event.version }) : tr("Ollama: {error}", { error: event.error });
+        if (button) button.disabled = false;
+        if (event.ok) loadHardware();
+        return;
+      }
+      if (button) button.disabled = true;
+      status.textContent = event.line;
+    };
+    const command = h("code", {}, setup.command || "curl -fsSL https://ollama.com/install.sh | sh");
+    const how = button ? null
+      : setup.installable ? h("span", {}, tr("Solo il proprietario dello spazio lo installa da qui."))
+      : h("span", {}, tr("Sul server lancia:"), " ", command);
+    return [h("div", { class: "notice warn" }, icon("alert"), h("div", { class: "stack-sm" },
+      h("span", {}, h("b", {}, setup.installed ? tr("Ollama è installato ma non è acceso.") : tr("Ollama non è installato.")), " ",
+        tr("Serve per far girare i modelli su questa macchina.")),
+      how,
+      button ? h("span", {}, button) : null,
+      status))];
+  }
+
   function localSide() {
     if (!hardware) return [h("small", { class: "muted" }, tr("Guardo la macchina…"))];
     const out = [];
@@ -1947,8 +1991,21 @@ function brainPanel(agent) {
           // because the model loaded now is let go when the agent changes model.
           held && card && item.uuid === card.uuid ? [" · ", raw(tr("{held} GB al modello acceso, che si libera cambiando", { held: gbFromBytes(held) }))] : null,
           " · ", raw(tr("carico {load}%", { load: item.load })))))));
+    } else if (host?.local && hardware.machine?.ram) {
+      // No card to show: the machine itself, so the owner knows what a local model would run on.
+      const machine = hardware.machine;
+      out.push(h("div", { class: "card-strip" }, h("div", { class: "card-line" },
+        icon("chip"),
+        h("b", {}, raw(machine.cpu || tr("Processore"))),
+        h("span", { class: "card-meta" }, raw(tr("{cores} core · RAM {ram} GB", { cores: machine.cores, ram: gbFromMib(machine.ram) })))),
+        h("small", { class: "muted" }, tr("Nessuna scheda dedicata: i modelli locali girano sul processore."))));
     } else if (hosts.length) {
       out.push(h("small", { class: "muted" }, "Nessuna scheda dedicata: i modelli locali girano sul processore."));
+    }
+
+    if (host?.local && !host.reachable) {
+      out.push(...ollamaSetupNotice(hardware.ollama?.setup || {}));
+      return out;
     }
 
     if (hosts.length > 1) {
