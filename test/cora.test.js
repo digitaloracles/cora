@@ -24,7 +24,7 @@ import { identityCli } from "./subscription-fixtures.js";
 import { subscriptionEnvironment } from "../src/subscriptions.js";
 import { SubscriptionUsage, parseSubscriptionUsage, parseSubscriptionBalances } from "../src/subscription-usage.js";
 import { readNativeUsage } from "../src/subscription-usage-worker.js";
-import { LLM, graphicsCards } from "../src/llm.js";
+import { LLM, appleSilicon, graphicsCards, localGraphics, metalBudgetMib } from "../src/llm.js";
 import { runClaude, runCodex, runHermes } from "../src/cli.js";
 import { Doc } from "../src/doc.js";
 import { Boxes } from "../src/box.js";
@@ -8226,6 +8226,27 @@ describe("what runs the models", () => {
     const cards = await graphicsCards({ bin: stub });
     assert.deepEqual(cards, [{ index: 0, uuid: "GPU-5f2c", name: "NVIDIA GeForce RTX 4090", memoryTotal: 24564, memoryUsed: 17213, load: 41 }], "the uuid is what pins an agent's Ollama to a card");
     assert.deepEqual(await graphicsCards({ bin: join(dir, "missing-smi") }), [], "no card, no noise");
+  });
+
+  test("an Apple M chip is read as the GPU it is, with the share of unified memory Metal lends it", async () => {
+    // What an M1 Max with 64 GB answered, on macOS 27.
+    const answers = {
+      "/usr/sbin/sysctl -n machdep.cpu.brand_string hw.memsize": "Apple M1 Max\n68719476736\n",
+      "/usr/sbin/sysctl -n iogpu.wired_limit_mb": "0\n",
+      "/usr/bin/vm_stat ": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   816800.\nPages active:                                1440311.\nPages inactive:                              1417956.\nPages speculative:                             24637.\nPages wired down:                             236187.\n",
+      "/usr/sbin/system_profiler SPDisplaysDataType -json": JSON.stringify({ SPDisplaysDataType: [{ _name: "Apple M1 Max", sppci_cores: "24", sppci_device_type: "spdisplays_gpu", sppci_model: "Apple M1 Max" }] }),
+      "/usr/sbin/ioreg -r -d 1 -w 0 -c IOAccelerator": '"In use system memory"=497664000\n"Device Utilization %"=7\n',
+    };
+    const run = async (bin, args) => answers[`${bin} ${args.join(" ")}`] ?? "";
+    const [card] = await appleSilicon({ platform: "darwin", arch: "arm64", run });
+    assert.deepEqual(card, { index: 0, uuid: "apple-silicon", name: "Apple M1 Max", memoryTotal: 49152, memoryUsed: 13849, load: 7, unified: true, ram: 65536, gpuCores: 24 },
+      "48 GB of 64 for the GPU, less what the rest of the Mac holds now");
+    answers["/usr/sbin/sysctl -n iogpu.wired_limit_mb"] = "57344\n";
+    assert.equal((await appleSilicon({ platform: "darwin", arch: "arm64", run }))[0].memoryTotal, 57344, "the limit the owner raised wins");
+    assert.equal(metalBudgetMib(16384), 10922, "two thirds on a 16 GB Mac");
+    assert.deepEqual(await appleSilicon({ platform: "darwin", arch: "x64", run }), [], "an Intel Mac has no Metal share to count");
+    assert.deepEqual(await appleSilicon({ platform: "linux", arch: "arm64", run }), [], "nor does a Linux ARM server");
+    assert.deepEqual(await localGraphics({ platform: "darwin", arch: "x64" }), await graphicsCards(), "off Apple silicon the cards still come from nvidia-smi");
   });
 });
 
