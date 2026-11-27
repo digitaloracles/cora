@@ -3,16 +3,24 @@
 const TEXTS = {
   en: { send: "Send", message: "Message", placeholder: (n) => `Write to ${n}…`, writing: (n) => `${n} is writing`, hello: (n) => `Hi, I'm ${n}.`, intro: "Ask me anything: I answer here, right away.",
     failed: "The message did not go through. Try again.", noReply: "I could not answer this one. Try again in a moment.", limit: "You have reached today's message limit for this chat.", busy: "Too many conversations right now: try again in a minute.",
-    offline: (n) => `${n} is offline right now.`, gone: "This chat is not available.", mark: "Agent on Cora" },
+    offline: (n) => `${n} is offline right now.`, gone: "This chat is not available.", mark: "Agent on Cora", close: "Close the chat",
+    lead: "Before we start, leave your details.", leadOptional: "If you like, leave your details so you can be contacted.", name: "Name", email: "Email", phone: "Mobile", optional: "optional",
+    start: "Start the chat", skip: "Skip", note: "They go to whoever runs this chat.", bad: { name: "Write your name (at most 80 characters).", email: "Check the email address.", phone: "Check the number: digits only, with the country code if you like.", missing: "Fill in the required fields." }, details: "Fill in the form first.", },
   it: { send: "Invia", message: "Messaggio", placeholder: (n) => `Scrivi a ${n}…`, writing: (n) => `${n} sta scrivendo`, hello: (n) => `Ciao, sono ${n}.`, intro: "Chiedimi pure: ti rispondo qui, subito.",
     failed: "Il messaggio non è partito. Riprova.", noReply: "Non sono riuscito a rispondere. Riprova tra poco.", limit: "Hai raggiunto il limite di messaggi di oggi per questa chat.", busy: "Troppe conversazioni in corso: riprova tra un minuto.",
-    offline: (n) => `${n} adesso non è disponibile.`, gone: "Questa chat non è disponibile.", mark: "Agente su Cora" },
+    offline: (n) => `${n} adesso non è disponibile.`, gone: "Questa chat non è disponibile.", mark: "Agente su Cora", close: "Chiudi la chat",
+    lead: "Prima di iniziare, lasciaci i tuoi dati.", leadOptional: "Se vuoi, lasciaci i tuoi dati per essere ricontattato.", name: "Nome", email: "Email", phone: "Cellulare", optional: "facoltativo",
+    start: "Inizia la chat", skip: "Salta", note: "Li riceve chi gestisce questa chat.", bad: { name: "Scrivi il tuo nome (al massimo 80 caratteri).", email: "Controlla l'indirizzo email.", phone: "Controlla il numero: solo cifre, con il prefisso se vuoi.", missing: "Compila i campi obbligatori." }, details: "Compila prima il modulo.", },
   es: { send: "Enviar", message: "Mensaje", placeholder: (n) => `Escribe a ${n}…`, writing: (n) => `${n} está escribiendo`, hello: (n) => `Hola, soy ${n}.`, intro: "Pregúntame lo que quieras: te respondo aquí mismo.",
     failed: "El mensaje no se ha enviado. Inténtalo de nuevo.", noReply: "No he podido responder. Inténtalo de nuevo en un momento.", limit: "Has alcanzado el límite de mensajes de hoy en este chat.", busy: "Demasiadas conversaciones ahora: inténtalo en un minuto.",
-    offline: (n) => `${n} no está disponible ahora.`, gone: "Este chat no está disponible.", mark: "Agente en Cora" },
+    offline: (n) => `${n} no está disponible ahora.`, gone: "Este chat no está disponible.", mark: "Agente en Cora", close: "Cerrar el chat",
+    lead: "Antes de empezar, déjanos tus datos.", leadOptional: "Si quieres, déjanos tus datos para que te contacten.", name: "Nombre", email: "Email", phone: "Móvil", optional: "opcional",
+    start: "Empezar el chat", skip: "Omitir", note: "Los recibe quien gestiona este chat.", bad: { name: "Escribe tu nombre (máximo 80 caracteres).", email: "Revisa la dirección de email.", phone: "Revisa el número: solo cifras, con el prefijo si quieres.", missing: "Rellena los campos obligatorios." }, details: "Rellena antes el formulario.", },
   de: { send: "Senden", message: "Nachricht", placeholder: (n) => `Schreib ${n}…`, writing: (n) => `${n} schreibt`, hello: (n) => `Hallo, ich bin ${n}.`, intro: "Frag mich, was du willst: Ich antworte hier, sofort.",
     failed: "Die Nachricht wurde nicht gesendet. Versuch es noch einmal.", noReply: "Ich konnte nicht antworten. Versuch es gleich noch einmal.", limit: "Du hast das heutige Nachrichtenlimit für diesen Chat erreicht.", busy: "Gerade zu viele Gespräche: versuch es in einer Minute.",
-    offline: (n) => `${n} ist gerade nicht erreichbar.`, gone: "Dieser Chat ist nicht verfügbar.", mark: "Agent auf Cora" },
+    offline: (n) => `${n} ist gerade nicht erreichbar.`, gone: "Dieser Chat ist nicht verfügbar.", mark: "Agent auf Cora", close: "Chat schließen",
+    lead: "Bevor wir anfangen, hinterlass bitte deine Daten.", leadOptional: "Wenn du magst, hinterlass deine Daten, damit man dich kontaktieren kann.", name: "Name", email: "E-Mail", phone: "Handy", optional: "optional",
+    start: "Chat starten", skip: "Überspringen", note: "Sie gehen an die Person, die diesen Chat betreut.", bad: { name: "Schreib deinen Namen (höchstens 80 Zeichen).", email: "Prüf die E-Mail-Adresse.", phone: "Prüf die Nummer: nur Ziffern, gern mit Ländervorwahl.", missing: "Füll die Pflichtfelder aus." }, details: "Füll zuerst das Formular aus.", },
 };
 const LANG = (["it", "es", "de"].find((code) => (navigator.language || "").toLowerCase().startsWith(code))) || "en";
 const T = TEXTS[LANG];
@@ -44,7 +52,8 @@ function visitorKey() {
   } catch { return (visitorKey.memory ||= make()); }
 }
 
-const S = { agent: null, messages: [], running: false, sending: false, poll: null, visitor: visitorKey() };
+const S = { agent: null, ask: {}, details: { needed: false }, messages: [], running: false, sending: false, poll: null, visitor: visitorKey() };
+const ASKED = ["name", "email", "phone"];
 
 async function api(path, options = {}) {
   const response = await fetch(`${BASE}${path}`, { credentials: "omit", cache: "no-store", ...options, headers: { "x-cora": "1", "x-cora-visitor": S.visitor, ...(options.body ? { "content-type": "application/json" } : {}) } });
@@ -69,7 +78,9 @@ function applyTheme(theme = {}) {
   set("--slate", `color-mix(in srgb, ${text} 72%, ${background})`);
   set("--faint", `color-mix(in srgb, ${text} 50%, ${background})`);
   set("--line", `color-mix(in srgb, ${text} 13%, ${background})`);
-  document.documentElement.style.colorScheme = luminance(background) < 0.2 ? "dark" : "light";
+  const dark = luminance(background) < 0.2;
+  set("--red", dark ? "#ff9b8f" : "#b42318");
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
 }
 // The panel's preview repaints while the owner picks colours, before they are saved.
 window.addEventListener("message", (event) => {
@@ -77,6 +88,57 @@ window.addEventListener("message", (event) => {
 });
 
 function notice(text) { $("pv-fine").textContent = text || ""; }
+
+/** The compose box opens once the visitor has answered the form, when the owner asks for details. */
+function compose() {
+  const closed = !S.agent?.online || S.details.needed;
+  $("pv-input").disabled = closed; $("pv-send").disabled = closed || S.sending;
+  $("pv-input").placeholder = S.details.needed ? T.details : T.placeholder(S.agent?.name || "");
+}
+
+/** The details the owner asks for, before the first message: name, email and mobile, each optional or required. */
+function detailsForm() {
+  const fields = ASKED.filter((key) => S.ask[key] === "optional" || S.ask[key] === "required");
+  const required = fields.some((key) => S.ask[key] === "required");
+  const inputs = {};
+  const error = el("p", { class: "em-details-error", role: "alert" });
+  const form = el("form", { class: "em-details", novalidate: "", autocomplete: "on" },
+    el("p", { class: "em-details-lead" }, required ? T.lead : T.leadOptional),
+    ...fields.map((key) => {
+      inputs[key] = el("input", { id: `em-field-${key}`, name: key, type: key === "email" ? "email" : key === "phone" ? "tel" : "text", autocomplete: key === "phone" ? "tel" : key,
+        inputmode: key === "phone" ? "tel" : key === "email" ? "email" : "text", maxlength: key === "email" ? "160" : key === "phone" ? "24" : "80", ...(S.ask[key] === "required" ? { required: "", "aria-required": "true" } : {}) });
+      return el("label", { class: "em-field", for: `em-field-${key}` }, el("span", {}, T[key], S.ask[key] === "optional" ? el("small", {}, T.optional) : null), inputs[key]);
+    }),
+    error,
+    el("div", { class: "em-details-actions" },
+      el("button", { type: "submit", class: "em-start" }, T.start),
+      required ? null : el("button", { type: "button", class: "em-skip", onclick: () => submit(true) }, T.skip)),
+    el("p", { class: "em-details-note" }, T.note));
+  const fail = (key) => {
+    error.textContent = T.bad[key] || T.failed;
+    for (const [name, input] of Object.entries(inputs)) input.toggleAttribute("aria-invalid", name === key || (key === "missing" && S.ask[name] === "required" && !input.value.trim()));
+    (inputs[key] || Object.values(inputs).find((input) => input.hasAttribute("aria-invalid")))?.focus();
+  };
+  async function submit(skip = false) {
+    error.textContent = "";
+    if (!skip && fields.some((key) => S.ask[key] === "required" && !inputs[key].value.trim())) return fail("missing");
+    const body = skip ? {} : Object.fromEntries(fields.map((key) => [key, inputs[key].value]));
+    for (const button of form.querySelectorAll("button")) button.disabled = true;
+    try {
+      const data = await api("/visitor", { method: "POST", body: JSON.stringify(body) });
+      S.details = data.details;
+      thread(); compose();
+      if (!S.details.needed) $("pv-input").focus();
+    } catch (failure) {
+      if (failure.status === 404) return gone();
+      fail(failure.message);
+    } finally {
+      for (const button of form.querySelectorAll("button")) button.disabled = false;
+    }
+  }
+  form.addEventListener("submit", (event) => { event.preventDefault(); submit(); });
+  return form;
+}
 
 const NODES = new Map();
 function node(key, make) {
@@ -96,6 +158,7 @@ function thread() {
     if (message.role !== "error" && item.dataset.content !== message.content) { item.innerHTML = render(message.content); item.dataset.content = message.content; }
     items.push(item);
   }
+  if (S.details.needed) items.push(node("details", detailsForm));
   if (S.running || S.sending) items.push(node("writing", () => el("div", { class: "pv-msg agent writing", role: "status" }, el("span", {}, T.writing(name)), el("span", { class: "pv-dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")))));
   items.forEach((item, i) => { if (box.children[i] !== item) box.insertBefore(item, box.children[i] || null); });
   while (box.children.length > items.length) box.lastElementChild.remove();
@@ -111,7 +174,8 @@ async function load() {
     const local = S.messages.filter((message) => message.key && !data.messages.some((item) => item.role === "visitor" && item.content === message.content && item.at >= message.at - 60000));
     S.messages = [...data.messages, ...local];
     S.running = Boolean(data.running);
-    thread();
+    if (data.details) S.details = data.details;
+    thread(); compose();
   } catch (error) {
     if (error.status === 404) return gone();
   }
@@ -120,7 +184,7 @@ async function load() {
 
 async function send(text) {
   const value = String(text || "").trim();
-  if (!value || S.sending || !S.agent?.online) return;
+  if (!value || S.sending || !S.agent?.online || S.details.needed) return;
   S.sending = true; $("pv-send").disabled = true; notice("");
   const at = Date.now(), key = `local:${at}`;
   S.messages.push({ key, role: "visitor", content: value, at }); thread();
@@ -130,9 +194,10 @@ async function send(text) {
     S.running = true;
   } catch (error) {
     S.messages = S.messages.filter((message) => message.key !== key);
-    notice(error.status === 429 ? T.limit : error.status === 503 ? T.busy : error.status === 409 ? T.offline(S.agent.name) : error.status === 404 ? T.gone : T.failed);
+    if (error.status === 428) S.details = { needed: true };
+    notice(error.status === 428 ? "" : error.status === 429 ? T.limit : error.status === 503 ? T.busy : error.status === 409 ? T.offline(S.agent.name) : error.status === 404 ? T.gone : T.failed);
   } finally {
-    S.sending = false; $("pv-send").disabled = false;
+    S.sending = false; compose();
     await load();
   }
 }
@@ -148,10 +213,16 @@ function grow() { const input = $("pv-input"); input.style.height = "auto"; inpu
 async function start() {
   document.documentElement.lang = LANG;
   $("pv-send").textContent = T.send; $("pv-label").textContent = T.message; $("em-mark").textContent = T.mark;
+  if (new URLSearchParams(location.search).get("floating") === "1" && window.parent !== window) {
+    const close = $("em-close");
+    close.hidden = false; close.setAttribute("aria-label", T.close); close.title = T.close;
+    close.addEventListener("click", () => window.parent.postMessage({ type: "cora-embed-close" }, "*"));
+  }
   if (!TOKEN) return gone();
   let state;
   try { state = await api("/state"); } catch { return gone(); }
   S.agent = state.agent;
+  S.ask = state.ask || {};
   applyTheme(state.theme);
   document.title = S.agent.name;
   $("em-name").textContent = S.agent.name;

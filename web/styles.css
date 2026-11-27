@@ -3209,3 +3209,8 @@ a.skill-source:hover { color: var(--amber); }
 .embed-preview-off { align-self: center; }
 @media (max-width: 860px) { .embed-look { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .embed-preview { padding: 8px; } .embed-preview iframe { height: 520px; } }
+.embed-ask { flex-wrap: wrap; }
+.embed-ask-hint { margin: 10px 0 0; font-size: 13px; }
+.embed-who { display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 100%; color: var(--text); font-size: 13px; font-weight: 600; }
+.embed-who span { overflow-wrap: anywhere; }
+.embed-who + .embed-opener { font-weight: 400; color: var(--text-soft); }

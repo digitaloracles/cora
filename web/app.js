@@ -4825,7 +4825,8 @@ async function renderAgent() {
 }
 
 /* ---------- embed agent (NOT-117) ---------- */
-function embedSnippet(agent, path) {
+function embedSnippet(agent, path, mode = "inline") {
+  if (mode === "floating") return `<script src="${location.origin}${path}/widget.js" async></script>`;
   return `<iframe src="${location.origin}${path}" title="${tr("Chat con {name}", { name: agent.name }).replace(/"/g, "&quot;")}" width="380" height="600" style="border:0;border-radius:16px;max-width:100%" loading="lazy"></iframe>`;
 }
 
@@ -4839,7 +4840,14 @@ async function embedTab(agent, isCurrent) {
   const draw = () => {
     if (!isCurrent()) return;
     const link = `${location.origin}${data.path}`;
-    const snippet = embedSnippet(agent, data.path);
+    const snippet = embedSnippet(agent, data.path, data.mode);
+    const modes = h("div", { class: "segmented embed-mode", role: "radiogroup", "aria-label": tr("Come compare") }, [["inline", "Sempre aperta"], ["floating", "Flottante"]].map(([mode, text]) => h("button", {
+      type: "button", role: "radio", class: data.mode === mode ? "on" : "", "aria-checked": String(data.mode === mode),
+      onclick: async () => {
+        if (data.mode === mode) return;
+        const next = await guard(api(url, { method: "PUT", body: { mode } }), "Salvato");
+        if (next) { data = next; draw(); }
+      } }, tr(text))));
     const enabled = switchInput("embed-enabled", "", data.enabled);
     enabled.querySelector("input").addEventListener("change", async (event) => {
       const next = await guard(api(url, { method: "PUT", body: { enabled: event.target.checked } }), event.target.checked ? "Chat pubblica attiva" : "Chat pubblica spenta");
@@ -4879,18 +4887,34 @@ async function embedTab(agent, isCurrent) {
       const next = await guard(api(url, { method: "PUT", body: { theme } }), "Colori salvati");
       if (next) { data = next; draw(); }
     } });
+    const ASK = [["name", "Nome"], ["email", "Email"], ["phone", "Cellulare"]];
+    const MODES = [["off", "Non chiedere"], ["optional", "Facoltativo"], ["required", "Obbligatorio"]];
+    const askControl = (key, label) => h("div", { class: "segmented embed-ask", role: "radiogroup", "aria-label": tr(label) }, MODES.map(([mode, text]) => h("button", {
+      type: "button", role: "radio", class: data.ask[key] === mode ? "on" : "", "aria-checked": String(data.ask[key] === mode),
+      onclick: async () => {
+        if (data.ask[key] === mode) return;
+        const next = await guard(api(url, { method: "PUT", body: { ask: { [key]: mode } } }), "Salvato");
+        if (next) { data = next; draw(); }
+      } }, tr(text))));
+    const asked = ASK.filter(([key]) => data.ask[key] !== "off");
+    const askHint = !asked.length ? "Oggi la chat non chiede niente: il visitatore scrive subito ed è anonimo."
+      : ASK.some(([key]) => data.ask[key] === "required") ? "Prima del primo messaggio il visitatore compila il modulo: senza i dati obbligatori non può scrivere."
+        : "Prima del primo messaggio il visitatore vede il modulo e può saltarlo.";
+    const who = (item) => [item.name, item.email, item.phone].filter(Boolean);
     const list = h("div", { class: "embed-convos" });
     const openConversation = async (row, item) => {
+      const visitorName = item.name || tr("Visitatore");
       if (row.nextElementSibling?.classList.contains("embed-log")) { row.nextElementSibling.remove(); row.setAttribute("aria-expanded", "false"); return; }
       const log = await guard(api(`${url}/conversations/${item.visitor}`));
       if (!log) return;
       row.setAttribute("aria-expanded", "true");
       row.after(h("div", { class: "embed-log" }, log.messages.map((message) => h("div", { class: `embed-line ${message.role}` },
-        h("small", {}, message.role === "visitor" ? "Visitatore" : message.role === "agent" ? agent.name : "Errore", " · ", raw(fmtTime(message.at, true))),
+        h("small", {}, message.role === "visitor" ? visitorName : message.role === "agent" ? agent.name : "Errore", " · ", raw(fmtTime(message.at, true))),
         message.role === "error" ? h("p", {}, "L'agente non è riuscito a rispondere.") : h("p", {}, raw(message.content))))));
     };
     list.append(...(data.conversations.length ? data.conversations.map((item) => {
       const row = h("button", { type: "button", class: "embed-convo", "aria-expanded": "false" },
+        who(item).length ? h("span", { class: "embed-who" }, who(item).map((value) => h("span", {}, raw(value)))) : null,
         h("span", { class: "embed-opener" }, raw(item.opener || "…")),
         h("small", {}, raw(fmtTime(item.last, true)), " · ", tr("{count} messaggi", { count: item.count })));
       row.addEventListener("click", () => openConversation(row, item));
@@ -4900,13 +4924,17 @@ async function embedTab(agent, isCurrent) {
       panel({ icon: "code", title: "Embed agent", hint: tr("La chat di {name} dentro qualsiasi sito: copia il codice e incollalo nella pagina.", { name: agent.name }) },
         setRows(
           setRow("Chat pubblica attiva", agent.enabled === false ? "L'agente è muto: i visitatori vedono la chat ma non possono scrivere." : data.enabled ? "Chi apre il codice o il link parla con l'agente." : "Spenta: il codice e il link non aprono niente.", enabled),
-          setRow("Codice da incollare", "Un iframe: incollalo nell'HTML della pagina, dove vuoi che compaia la chat.", h("div", { class: "embed-snippet" }, code, btn("Copia codice", { icon: "copy", cls: "sm", onclick: () => copy(snippet) })), { stack: true }),
+          setRow("Come compare", data.mode === "floating" ? "Un bottone in basso a destra apre e chiude la chat, su ogni pagina dove incolli il codice. Sul telefono si apre a tutto schermo." : "La chat resta aperta dentro la pagina, nel punto dove incolli il codice.", modes),
+          setRow("Codice da incollare", data.mode === "floating" ? "Una riga: incollala nell'HTML del sito, prima di </body>." : "Un iframe: incollalo nell'HTML della pagina, dove vuoi che compaia la chat.", h("div", { class: "embed-snippet" }, code, btn("Copia codice", { icon: "copy", cls: "sm", onclick: () => copy(snippet) })), { stack: true }),
           setRow("Link diretto", "La stessa chat a pagina intera.", h("div", { class: "embed-row" }, codeLine(link), btn("Apri", { icon: "external", cls: "sm ghost", href: link, target: "_blank" })), { stack: true }),
           setRow("Nuovo link", "Il codice già incollato smette di funzionare.", rotate))),
       panel({ icon: "globe", title: "Siti e risposte", hint: "Dove può comparire la chat e cosa l'agente sa dire ai visitatori." },
         field("Siti ammessi", domains, "Uno per riga. Vuoto: qualsiasi sito può mostrare la chat."),
         field("Cosa sa per i visitatori", brief, "Con i visitatori l'agente usa il suo carattere e questo testo, nient'altro: niente strumenti, memorie, Brain, file o altre chat."),
         h("div", { class: "embed-row" }, save)),
+      panel({ icon: "user", title: "Dati del visitatore", hint: "Cosa chiedere a chi apre la chat, prima del primo messaggio. Li trovi nelle conversazioni qui sotto." },
+        setRows(...ASK.map(([key, label]) => setRow(label, null, askControl(key, label)))),
+        h("p", { class: "muted embed-ask-hint" }, tr(askHint))),
       panel({ icon: "eye", title: "Colori e anteprima", hint: "Scegli i colori della chat: l'anteprima cambia subito, i siti dopo il salvataggio." },
         h("div", { class: "embed-look" },
           h("div", { class: "embed-colors" },

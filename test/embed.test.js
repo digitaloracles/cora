@@ -9,6 +9,7 @@ import { fakeDocker, fakeOllama, tempHome, waitFor } from "./helpers.js";
 const keys = passKeys("fixture-embed-agent-signing-seed-0123456789abcdef");
 const VISITOR_A = "a".repeat(40);
 const VISITOR_B = "b".repeat(40);
+const VISITOR_C = "c".repeat(40);
 
 test("embed sites are plain hosts, and the chat may be framed only by them", () => {
   assert.equal(embedDomain("https://Shop.Example.com/page?x=1"), "shop.example.com");
@@ -116,6 +117,55 @@ test("an agent's public chat: one conversation per visitor, no private context, 
   assert.equal((await visit(`${on.path}/messages`, VISITOR_A, { method: "POST", body: { text: "Ancora?" } })).status, 429, "a visitor's daily limit");
   EMBED_LIMITS.perVisitorDay = limit;
 
+  assert.deepEqual(state.ask, { name: "off", email: "off", phone: "off" }, "by default the chat asks nothing");
+  assert.equal(thread.details.needed, false);
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { ask: { phone: "always" } } })).status, 400);
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { ask: { address: "required" } } })).status, 400);
+  const optional = (await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { ask: { name: "optional" } } })).data;
+  assert.deepEqual(optional.ask, { name: "optional", email: "off", phone: "off" });
+  assert.equal((await visit(`${on.path}/messages`, VISITOR_C)).data.details.needed, true, "an optional form is shown once");
+  assert.equal((await visit(`${on.path}/messages`, VISITOR_C, { method: "POST", body: { text: "Salve" } })).status, 428, "the form comes first");
+  assert.deepEqual((await visit(`${on.path}/visitor`, VISITOR_C, { method: "POST", body: {} })).data.details, { needed: false, given: true }, "an optional form can be skipped");
+
+  const asked = (await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { ask: { email: "required" } } })).data;
+  assert.deepEqual(asked.ask, { name: "optional", email: "required", phone: "off" });
+  assert.equal(asked.brief, on.brief, "saving the form keeps the rest");
+  assert.deepEqual((await visit(`${on.path}/state`, VISITOR_B)).data.ask, asked.ask);
+  assert.equal((await visit(`${on.path}/messages`, VISITOR_C)).data.details.needed, true, "a field turned required asks again");
+  assert.equal((await visit(`${on.path}/messages`, VISITOR_B, { method: "POST", body: { text: "Avete il rosso?" } })).status, 428);
+  assert.deepEqual((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { name: "Giulia" } })).data, { error: "email" }, "a required field cannot be left out");
+  assert.deepEqual((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { email: "giulia@" } })).data, { error: "email" });
+  assert.equal((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { email: "giulia@example.com" }, headers: { Origin: "https://evil.example" } })).status, 403);
+  const given = await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { name: "  Giulia   Neri ", email: "Giulia@Example.com", phone: "333 1234567" } });
+  assert.equal(given.status, 200);
+  assert.deepEqual(given.data.details, { needed: false, given: true });
+  assert.equal((await visit(`${on.path}/messages`, VISITOR_B, { method: "POST", body: { text: "Avete il rosso?" } })).status, 201);
+  await waitFor(async () => (await visit(`${on.path}/messages`, VISITOR_B)).data.messages.some((item) => item.role === "agent"), { what: "embed reply with details" });
+  const named = ollama.calls.filter((item) => item.messages).at(-1).messages[0].content;
+  assert.match(named, /"Giulia Neri"/, "the agent may call the visitor by name");
+  assert.match(named, /an email address/);
+  assert.doesNotMatch(named, /giulia@example\.com|333/i, "contacts go to the owner, not into the prompt");
+  const withDetails = (await call(owner, `/api/agents/${agent.id}/embed`)).data.conversations.find((item) => item.opener === "Avete il rosso?");
+  assert.deepEqual([withDetails.name, withDetails.email, withDetails.phone], ["Giulia Neri", "giulia@example.com", ""], "the phone was not asked, so it is not kept");
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed/conversations/${withDetails.visitor}`)).data.profile.email, "giulia@example.com");
+
+  await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { ask: { phone: "required" } } });
+  assert.deepEqual((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { phone: "12ab" } })).data, { error: "email" }, "every required field is checked");
+  assert.deepEqual((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { email: "giulia@example.com", phone: "12ab" } })).data, { error: "phone" });
+  assert.equal((await visit(`${on.path}/visitor`, VISITOR_B, { method: "POST", body: { email: "giulia@example.com", phone: "+39 333 123 4567" } })).status, 200);
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed/conversations/${withDetails.visitor}`)).data.profile.name, "Giulia Neri", "answering again keeps what was given before");
+
+  assert.equal(on.mode, "inline", "always open until the owner picks floating");
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { mode: "popup" } })).status, 400);
+  assert.equal((await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { mode: "floating" } })).data.mode, "floating");
+  const widget = await fetch(`${base}${on.path}/widget.js`);
+  assert.equal(widget.status, 200);
+  assert.match(widget.headers.get("content-type"), /^text\/javascript/);
+  const widgetCode = await widget.text();
+  assert.ok(widgetCode.includes(JSON.stringify({ path: on.path, name: "Lumen", accent: "#e4572e", avatar: state.agent.avatar })), "the button carries the chat's name, colour and face");
+  assert.doesNotMatch(widgetCode, /CONFIG|SEGRETO|Il negozio/);
+  assert.equal((await fetch(`${base}/embed/${"x".repeat(24)}/widget.js`)).status, 404);
+
   const rotated = (await call(owner, `/api/agents/${agent.id}/embed/token`, { method: "POST" })).data;
   assert.notEqual(rotated.token, on.token);
   assert.equal((await fetch(`${base}${on.path}`)).status, 404, "the old link stops working");
@@ -123,7 +173,9 @@ test("an agent's public chat: one conversation per visitor, no private context, 
 
   await call(owner, `/api/agents/${agent.id}/embed`, { method: "PUT", body: { enabled: false } });
   assert.equal((await visit(`${rotated.path}/state`, VISITOR_A)).status, 404, "off again");
+  assert.equal((await fetch(`${base}${rotated.path}/widget.js`)).status, 404, "the floating button goes with it");
 
   assert.equal((await call(owner, `/api/agents/${agent.id}`, { method: "DELETE" })).status, 200);
   assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM embed_messages WHERE agent_id = ?").get(agent.id).n, 0, "deleting the agent deletes its visitors' conversations");
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM embed_visitors WHERE agent_id = ?").get(agent.id).n, 0, "and their details");
 });

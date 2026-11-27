@@ -436,19 +436,34 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       });
       return res.end(req.method === "HEAD" ? undefined : page.body);
     }
+    if (part === "widget.js") {
+      if (!["GET", "HEAD"].includes(req.method)) throw new HttpError(405, "method not allowed");
+      const head = { "Content-Type": "text/javascript; charset=utf-8", "X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=300" };
+      if (!found) { res.writeHead(404, head); return res.end(req.method === "HEAD" ? undefined : "/* This chat is not available. */\n"); }
+      const { agent, config: chat } = found;
+      const settings = { path: `/embed/${token}`, name: agent.name, accent: chat.theme.accent, avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}` };
+      const body = readFileSync(join(WEB_DIR, "embed-widget.js"), "utf8").replace("/*CONFIG*/{}", () => JSON.stringify(settings).replace(/</g, "\\u003c"));
+      res.writeHead(200, head);
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
     const json = { "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" };
     if (!found) return send(res, 404, { error: "unavailable" }, json);
     const { agent } = found;
     if (part === "state" && req.method === "GET") {
-      return send(res, 200, { agent: { name: agent.name, description: agent.description || "", color: agent.color || "#264cd6", avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}`, online: agent.enabled !== false, language: agent.language || "" }, theme: found.config.theme, limits: { text: EMBED_LIMITS.text } }, json);
+      return send(res, 200, { agent: { name: agent.name, description: agent.description || "", color: agent.color || "#264cd6", avatar: `/avatars/${agent.id}.png?v=${encodeURIComponent(agent.avatarVersion || "")}`, online: agent.enabled !== false, language: agent.language || "" }, theme: found.config.theme, ask: found.config.ask, limits: { text: EMBED_LIMITS.text } }, json);
     }
     const visitor = embeds.visitor(agent.id, req.headers["x-cora-visitor"]);
     if (!visitor) throw new HttpError(400, "visitor");
-    if (req.method === "GET") return send(res, 200, { messages: embeds.messages(agent.id, visitor), running: embeds.running(agent.id, visitor) }, json);
+    const details = () => ({ needed: embeds.detailsNeeded(agent.id, visitor), given: Boolean(embeds.profile(agent.id, visitor)) });
+    if (part === "messages" && req.method === "GET") return send(res, 200, { messages: embeds.messages(agent.id, visitor), running: embeds.running(agent.id, visitor), details: details() }, json);
     if (req.method !== "POST") throw new HttpError(405, "method not allowed");
     if (req.headers["x-cora"] !== "1" || (req.headers.origin && originHost(req.headers.origin) !== req.headers.host)) throw new HttpError(403, "cross-origin request");
     const body = await readJson(req, 16384);
-    try { return send(res, 201, { message: embeds.post(agent, visitor, body.text) }, json); }
+    try {
+      if (part === "visitor") { embeds.saveProfile(agent.id, visitor, body); return send(res, 200, { details: details() }, json); }
+      if (part !== "messages") throw new HttpError(404, "not found");
+      return send(res, 201, { message: embeds.post(agent, visitor, body.text) }, json);
+    }
     catch (error) { if (error.status) return send(res, error.status, { error: error.message }, json); throw error; }
   };
 
@@ -2058,12 +2073,12 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
       if (!match[2] && method === "PUT") {
         const body = await readJson(req, 16384);
-        try { embeds.save(agent.id, { enabled: body.enabled, domains: body.domains, brief: body.brief, theme: body.theme }); }
+        try { embeds.save(agent.id, { enabled: body.enabled, domains: body.domains, brief: body.brief, theme: body.theme, ask: body.ask, mode: body.mode }); }
         catch (error) { throw new HttpError(error.status || 400, error.message); }
         return send(res, 200, view());
       }
       if (match[2] === "token" && method === "POST") { embeds.save(agent.id, { rotate: true }); return send(res, 200, view()); }
-      if (match[2] === "conversations" && match[3] && method === "GET") return send(res, 200, { visitor: match[3], messages: embeds.messages(agent.id, match[3], 200) });
+      if (match[2] === "conversations" && match[3] && method === "GET") return send(res, 200, { visitor: match[3], profile: embeds.profile(agent.id, match[3]), messages: embeds.messages(agent.id, match[3], 200) });
       throw new HttpError(405, "method not allowed");
     }
 
@@ -2851,7 +2866,7 @@ export function createWeb({ storage, config, store, subscriptions, discord, tele
       }
     }
     try {
-      const embedPath = /^\/embed\/([A-Za-z0-9_-]{24})(?:\/(state|messages))?$/.exec(url.pathname);
+      const embedPath = /^\/embed\/([A-Za-z0-9_-]{24})(?:\/(state|messages|visitor|widget\.js))?$/.exec(url.pathname);
       if (embedPath) return await embedRoute(req, res, url, embedPath[1], embedPath[2] || "");
       const mailEvent = /^\/mail\/events\/(ag_[a-z0-9]+)\/([a-f0-9]{24})$/.exec(url.pathname);
       if (mailEvent && email && req.method === "POST") {

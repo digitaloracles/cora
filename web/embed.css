@@ -25,3 +25,26 @@
 .em .pv-compose textarea::placeholder { color: var(--faint); }
 .em .pv-msg code { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .em .pv-compose button:focus-visible { outline-color: color-mix(in srgb, var(--cobalt) 40%, transparent); }
+/* The visitor's details, asked before the first message when the owner wants them. */
+.em-details { align-self: stretch; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 18px; border: 1px solid var(--line); background: var(--card); }
+.em-details-lead { margin: 0; font-weight: 500; }
+.em-field { display: flex; flex-direction: column; gap: 5px; font-size: 14px; font-weight: 500; }
+.em-field span { display: flex; align-items: baseline; gap: 6px; }
+.em-field small { color: var(--faint); font-weight: 400; font-size: 13px; }
+.em-field input { width: 100%; height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font: 400 16px/1 var(--body); }
+.em-field input:focus { outline: none; border-color: var(--cobalt); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cobalt) 22%, transparent); }
+.em-field input[aria-invalid] { border-color: var(--red); }
+.em-details-error { margin: 0; color: var(--red); font-size: 14px; }
+.em-details-error:empty { display: none; }
+.em-details-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.em-start { height: 44px; padding: 0 20px; border: 0; border-radius: 999px; background: var(--cobalt); color: var(--on-accent, #fff); font: 600 15px/1 var(--body); cursor: pointer; }
+.em-skip { padding: 6px 2px; border: 0; background: none; color: var(--slate); font: 500 15px/1 var(--body); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.em-start:disabled, .em-skip:disabled { opacity: 0.6; cursor: default; }
+.em-start:focus-visible, .em-skip:focus-visible { outline: 3px solid color-mix(in srgb, var(--cobalt) 40%, transparent); outline-offset: 2px; }
+.em-details-note { margin: 0; color: var(--faint); font-size: 13px; }
+/* Floating on a site (widget.js): the chat closes from its own header too, which is all a phone shows. */
+.em-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.em-close { flex: none; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--slate); cursor: pointer; }
+.em-close[hidden] { display: none; }
+.em-close:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
+.em-close:focus-visible { outline: 3px solid color-mix(in srgb, var(--cobalt) 40%, transparent); outline-offset: 1px; }
