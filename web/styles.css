@@ -2866,6 +2866,7 @@ a.thread-dependency-node:hover, a.thread-dependency-node:focus-visible { border-
   padding: 12px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow);
 }
 .agent-chat-window > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-chat-tools { display: flex; align-items: center; gap: 4px; }
 .agent-chat-body, .agent-chat-body .chat, .agent-chat-body .chat-log { flex: 1; min-height: 0; }
 .agent-chat-body { display: flex; overflow: auto; }
 .agent-chat-body .chat { min-width: 0; }
