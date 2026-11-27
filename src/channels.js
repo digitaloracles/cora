@@ -1,4 +1,4 @@
-import { SALOTTO, isWebRoom, isSalotto, roomLabel } from "./rooms.js";
+import { SALOTTO, isAppThread, isWebRoom, isSalotto, roomLabel } from "./rooms.js";
 import { isDirectChannel } from "./slack.js";
 import { L } from "./prompt-lang.js";
 
@@ -257,6 +257,13 @@ export class Channels {
    * ("in #general") and the `place` the cora is in right now.
    */
   info(id) {
+    if (isAppThread(id)) {
+      const record = this.store.value("appThreads", {})[id];
+      const names = (record?.agentIds || []).map((agentId) => this.store.agent(agentId)?.name).filter(Boolean);
+      const name = record?.name || "thread";
+      return { id, kind: "web", web: true, app: true, thread: true, name, where: L`nel thread in app «${name}» del pannello`, place: L`nel pannello web di cora`,
+        note: names.length > 1 ? L`è un thread aperto nel pannello web di cora, senza Discord, Slack o Telegram: ci siete ${names.join(", ")}; la persona vi scrive da lì` : L`è un thread aperto nel pannello web di cora, senza Discord, Slack o Telegram: ci sei solo tu con la persona che ti scrive da lì; rispondile sempre` };
+    }
     if (isWebRoom(id)) {
       return isSalotto(id)
         ? { id, kind: "web", web: true, name: "salotto", where: L`nel salotto del pannello`, place: L`nel pannello web di cora`, note: L`il proprietario vi scrive dal pannello web di cora, ci siete tutti voi agenti` }

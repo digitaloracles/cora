@@ -8,7 +8,8 @@ import { ThreadSessions, killPid, noteChildPid, pidAlive, recoverHarness, sessio
 import { ProcessUsage } from "./process-usage.js";
 import { escapeSlack, isDirectChannel } from "./slack.js";
 import { TRANSPORT_LABELS, discordLink, isSlackChannel, slackLink, isTelegramChannel, slackChannel, slackIds, telegramBotAgent, telegramChannel, telegramChatId, transportOf } from "./channels.js";
-import { SALOTTO, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
+import { SALOTTO, isAppThread, isWebRoom, isSalotto, ownerRoom, privateRoom, roomAgentId } from "./rooms.js";
+import { AppThreads } from "./app-threads.js";
 import { MEMORY_TOOLS } from "./tools.js";
 import { userName } from "./telegram.js";
 import { asksToStop } from "./brain.js";
@@ -229,6 +230,7 @@ export class Orchestrator {
   constructor({ store, discord, brain, log, bots = null, channels, telegram = null, tgBots = null, slack = null, skBots = null, voice = null, emit = () => {}, filesDir = null, notifier = null, watching = () => false }) {
     this.notifier = notifier;
     this.voice = voice;
+    this.appThreads = new AppThreads(store);
     // Messages being read right now (a voice message takes seconds): the other bots' copies wait for nothing.
     this.arriving = new Set();
     this.readingMentions = new Set();
@@ -297,6 +299,10 @@ export class Orchestrator {
   }
 
   agentsFor(channelId) {
+    if (isAppThread(channelId)) {
+      const ids = this.appThreads.agentIds(channelId);
+      return ids.map((id) => this.store.agent(id)).filter((agent) => agent?.enabled);
+    }
     if (isWebRoom(channelId)) {
       const only = roomAgentId(channelId);
       return this.store.agents().filter((agent) => agent.enabled && (!only || agent.id === only) && (only || !agent.sealed) && (!this.brain.knowledge?.ownerMemory || only || channelId === ownerRoom(this.brain.knowledge.ownerId(agent))));
@@ -810,10 +816,12 @@ export class Orchestrator {
       if (!item.choiceFor) this.closeChoice((record) => record.agentId === asked.agentId && record.channelId === state.id, { answer: item.content, by: item.authorName, via: "text" });
     }
     const direct = roomAgentId(state.id) || this.dmAgentId(state.id);
+    // In a thread opened in the app a message that names nobody is for the agents of the thread.
+    const members = isAppThread(state.id) ? available.map((agent) => agent.id) : [];
     const inferred = lastCalled(state.history, available).filter((id) => previous.includes(id));
     const remembered = (state.focus?.turn || []).filter((id) => previous.includes(id));
     const partners = inferred.length ? inferred : (remembered.length ? remembered : previous);
-    const recipients = named.length ? named : asked ? [asked.agentId] : partners.length ? partners : direct ? [direct] : [];
+    const recipients = named.length ? named : asked ? [asked.agentId] : partners.length ? partners : direct ? [direct] : members;
     const ids = [...new Set([...previous, ...recipients])].filter((id) => !leaving.includes(id) && available.some((agent) => agent.id === id));
     const now = Number(item.at) || Date.now();
     const turn = (named.length ? named : partners).filter((id) => ids.includes(id));
@@ -823,7 +831,7 @@ export class Orchestrator {
     this.store.setValue("conversationEngagements", this.engagements);
     item.addressed = recipients.filter((id) => available.some((agent) => agent.id === id));
     // Called by name where they do not listen, or while switched off: they cannot answer, so Cora says why.
-    item.deaf = direct ? [] : this.store.agents().filter((agent) => !available.some((candidate) => candidate.id === agent.id) && calls(agent)).map((agent) => agent.id);
+    item.deaf = direct || isAppThread(state.id) ? [] : this.store.agents().filter((agent) => !available.some((candidate) => candidate.id === agent.id) && calls(agent)).map((agent) => agent.id);
     // Of those, the ones that do listen here but may not take this person's messages.
     item.refused = item.deaf.filter((id) => listening.some((agent) => agent.id === id));
     item.handledBy = [...leaving];
@@ -2119,7 +2127,7 @@ export class Orchestrator {
     let info = this.channels.listFor(agent).find((channel) => channel.id === target);
     // A thread under a channel it may write to counts too, even one opened since the list was made.
     if (!info && transportOf(target) === "discord") info = await this.threadFor(agent, target);
-    const allowed = (!agent.sealed && target === (this.brain.knowledge?.ownerMemory ? ownerRoom(this.brain.knowledge.ownerId(agent)) : SALOTTO)) || target === privateRoom(agent.id) || telegramBotAgent(target) === agent.id || Boolean(info);
+    const allowed = (!agent.sealed && target === (this.brain.knowledge?.ownerMemory ? ownerRoom(this.brain.knowledge.ownerId(agent)) : SALOTTO)) || target === privateRoom(agent.id) || telegramBotAgent(target) === agent.id || this.appThreads.agentIds(target).includes(agent.id) || Boolean(info);
     if (!allowed || !this.channels.isActive(target)) throw new Error("destination not authorized; use list_channels");
     const state = this.state(target);
     if (transportOf(target) === "discord") {
@@ -2626,6 +2634,13 @@ export class Orchestrator {
   }
 
   /** A message in a panel room: archived like a Discord one and pushed live to the panel. */
+  /** Where the panel shows a room: the salotto, a thread in app, or the agent's private chat. */
+  webRoomUrl(id, agent) {
+    if (isSalotto(id)) return "/#/salotto";
+    if (isAppThread(id)) return `/#/chat/${id}`;
+    return `/#/agent/${agent.id}/chat`;
+  }
+
   postWeb(agent, state, text, file, traceId, { request, passive = false, silent = false, delegationAuthorized = false, voiceOnly = false, continuation = false, returnToAgentId = "" } = {}) {
     const item = {
       id: `web_${randomBytes(8).toString("hex")}`,
@@ -2652,8 +2667,8 @@ export class Orchestrator {
     this.log({ type: "say", agentId: agent.id, channelId: state.id, text: (text || `[file ${file?.name}]`).slice(0, 500), file: file?.name, traceId });
     // Nobody has the panel open: the reply reaches the owner's phone.
     if (this.notifier?.enabled && !this.watching() && !item.request && !silent) {
-      const url = isSalotto(state.id) ? "/#/salotto" : `/#/agent/${agent.id}/chat`;
-      this.notifier.notify({ userId: this.memoryOwner?.(agent) || "", title: agent.name, body: voiceOnly ? `🎙 ${file?.name}` : text || `📎 ${file?.name}`, url, tag: state.id }).catch(() => {});
+      const url = this.webRoomUrl(state.id, agent);
+      this.notifier.notify({ userId: this.appThreads.get(state.id)?.ownerId || this.memoryOwner?.(agent) || "", title: agent.name, body: voiceOnly ? `🎙 ${file?.name}` : text || `📎 ${file?.name}`, url, tag: state.id }).catch(() => {});
     }
     return [item];
   }
@@ -2686,8 +2701,8 @@ export class Orchestrator {
       [item] = await this.postAs(agent, state, text, undefined, traceId, { request, ...this.replyDelivery(replyTo) });
       this.emit({ type: "request", agentId: agent.id });
       if (this.notifier?.enabled) {
-        const url = isSalotto(state.id) ? "/#/salotto" : `/#/agent/${agent.id}/chat`;
-        const recipients = this.brain.knowledge?.ownerMemory && state.id === privateRoom(agent.id) ? this.brain.knowledge.proprietorIds(agent).filter(id => { const person = this.store.panelUser(id); return person && !person.blocked && this.store.allowsPanelUser({ ...person, emailVerified: true }); }) : [this.memoryOwner?.(agent) || ""];
+        const url = this.webRoomUrl(state.id, agent);
+        const recipients = isAppThread(state.id) ? [this.appThreads.get(state.id)?.ownerId || ""] : this.brain.knowledge?.ownerMemory && state.id === privateRoom(agent.id) ? this.brain.knowledge.proprietorIds(agent).filter(id => { const person = this.store.panelUser(id); return person && !person.blocked && this.store.allowsPanelUser({ ...person, emailVerified: true }); }) : [this.memoryOwner?.(agent) || ""];
         for (const userId of recipients) this.notifier.notify({ userId, title: english ? `${agent.name} asks you` : `${agent.name} ti chiede`, body: replyTo?.voice && replyTo.replyMode !== "text" && replyTo.replyMode !== "both" ? (english ? "Voice message" : "Messaggio vocale") : text, url, tag: `request-${agent.id}` }).catch(() => {});
       }
     } else {
@@ -3020,7 +3035,7 @@ export class Orchestrator {
     return guilds.length === 1 ? guilds[0] : "";
   }
 
-  async threadBoard({ agentIds = null, emptyThreadIds = [] } = {}) {
+  async threadBoard({ agentIds = null, emptyThreadIds = [], usage: sample = true } = {}) {
     const allowed = agentIds ? new Set(agentIds) : null;
     const visibleAgent = (id) => !allowed || allowed.has(id);
     const emptyVisible = new Set(emptyThreadIds.filter((id) => !this.store.threadParticipantIds(id).length && !this.engagements?.[id]?.ids?.length));
@@ -3041,11 +3056,12 @@ export class Orchestrator {
       const info = !channel && !saved && (kind === "web" || kind === "telegram") ? this.channels?.info?.(id) : null;
       const guildId = channel?.guildId || saved?.guildId || (saved?.direct ? "@me" : "");
       const parentId = channel?.parentId || saved?.parentId || (slack?.threadTs ? slackChannel(slack.channelId) : "");
+      const app = this.appThreads.get(id);
       const group = {
         id,
-        name: labels[id] || channel?.name || saved?.name || info?.name || id,
+        name: app?.name || labels[id] || channel?.name || saved?.name || info?.name || id,
         kind,
-        thread: Boolean(channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs),
+        thread: Boolean(app || channel?.thread || channel?.parentId || saved?.thread || slack?.threadTs),
         parentId,
         parentName: parentId ? (known.get(parentId)?.name || "") : "",
         guildId,
@@ -3054,14 +3070,21 @@ export class Orchestrator {
         total: 0,
         lastAt: "",
         closed: closed.has(id),
-        open: Boolean(channel) && !closed.has(id),
+        open: Boolean(channel || app) && !closed.has(id),
         flows: [],
+        ...(app ? { app: true, agentIds: app.agentIds, createdAt: app.createdAt } : {}),
       };
       groups.set(id, group);
       return group;
     };
     for (const channel of known.values()) if (channel.thread || channel.parentId) ensure(channel.id);
     for (const id of Object.keys(labels)) ensure(id);
+    for (const record of this.appThreads.list()) {
+      const group = ensure(record.id);
+      const last = this.store.recentMessages(record.id, 1)[0];
+      const at = last ? new Date(last.at).toISOString() : record.createdAt;
+      if (at > group.lastAt) group.lastAt = at;
+    }
     for (const [id, updatedAt] of planned) ensure(id).lastAt = updatedAt;
     const engagements = this.engagements || {};
     for (const [id, focus] of Object.entries(engagements)) if (focus?.ids?.length && !closed.has(id) && (slackIds(id)?.threadTs || transportOf(id) === "telegram")) ensure(id);
@@ -3102,13 +3125,13 @@ export class Orchestrator {
       if (group.thread && !group.closed && (group.listening.length || (group.kind === "slack" && !group.flows.length))) group.open = true;
       // A Telegram chat has no threads of its own: the chat is the conversation, live while an agent is engaged in it.
       if (group.kind === "telegram") group.open = !group.closed && group.listening.length > 0;
-      if (allowed) group.open = !group.closed && Boolean(group.listening.length || group.flows.some((flow) => flow.status === "active") || (emptyVisible.has(group.id) && group.open));
+      if (allowed && !group.app) group.open = !group.closed && Boolean(group.listening.length || group.flows.some((flow) => flow.status === "active") || (emptyVisible.has(group.id) && group.open));
     }
-    const usage = await this.processUsage.sample(measured.map(([, pid]) => pid)).catch(() => new Map());
+    const usage = sample ? await this.processUsage.sample(measured.map(([, pid]) => pid)).catch(() => new Map()) : new Map();
     for (const [flow, pid] of measured) if (usage.has(pid)) flow.usage = usage.get(pid);
     const parents = [...known.values()].filter((channel) => !channel.thread && !channel.parentId && (channel.kind === "discord" || channel.kind === "slack"))
       .map((channel) => ({ id: channel.id, name: channel.name, kind: channel.kind }));
-    return { threads: [...groups.values()].filter((group) => !allowed || group.flows.length || group.listening.length || planned.has(group.id) || emptyVisible.has(group.id)), parents, machine: this.processUsage.machine() };
+    return { threads: [...groups.values()].filter((group) => !allowed || group.app || group.flows.length || group.listening.length || planned.has(group.id) || emptyVisible.has(group.id)), parents, machine: this.processUsage.machine() };
   }
 
   /** One thread whole: its flows and every turn the agents took in it, with their steps. */
@@ -3193,6 +3216,29 @@ export class Orchestrator {
       this.states.get(session.channelId)?.working?.delete(session.agentId);
     }
     return { stopped: sessions.length };
+  }
+
+  /** A thread in app closed: its sessions stop and the agents let go of it; a new message opens it again. */
+  async closeAppThread(id) {
+    if (!this.appThreads.get(id)) throw Object.assign(new Error("thread non trovato"), { status: 404 });
+    this.stopThread(id);
+    const closed = new Set(this.store.value("closedThreads", []));
+    closed.add(id);
+    this.store.setValue("closedThreads", [...closed]);
+    if (this.engagements?.[id]) {
+      delete this.engagements[id];
+      this.store.setValue("conversationEngagements", this.engagements);
+    }
+    const state = this.states.get(id);
+    if (state) state.focus = null;
+    return { id, closed: true };
+  }
+
+  reopenAppThread(id) {
+    if (!this.appThreads.get(id)) throw Object.assign(new Error("thread non trovato"), { status: 404 });
+    const closed = this.store.value("closedThreads", []);
+    if (closed.includes(id)) this.store.setValue("closedThreads", closed.filter((item) => item !== id));
+    return { id, closed: false };
   }
 
   async closePlatformThread(id) {
