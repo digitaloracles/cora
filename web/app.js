@@ -10330,7 +10330,11 @@ function storagePane() {
     const time = h("input", { type: "time", required: true, value: settings.time, "aria-label": "Ora della pulizia", onchange: () => time.reportValidity() && save("time", time.value) });
     const keep = h("input", { type: "number", min: 1, max: 90, required: true, value: String(settings.keep), "aria-label": "Copie per tipo", onchange: () => keep.reportValidity() && save("keep", keep.valueAsNumber) });
     const days = h("input", { type: "number", min: 1, max: 90, required: true, value: String(settings.sampleDays), "aria-label": "Giorni di storico", onchange: () => days.reportValidity() && save("sampleDays", days.valueAsNumber) });
+    const allTurns = h("input", { type: "checkbox", role: "switch", "aria-label": "Conserva tutti i turni", checked: settings.turns === 0, onchange: () => save("turns", allTurns.checked ? 0 : 300) });
+    const turns = h("input", { type: "number", min: 50, max: 100000, step: 1, required: true, value: String(settings.turns || 300), "aria-label": "Turni per agente", onchange: () => turns.reportValidity() && save("turns", turns.valueAsNumber) });
     const policy = panel({ title: "Pulizia e backup", icon: "layers", hint: "Scegli quando intervenire e quali dati conservare." }, setRows(
+      setRow("Conserva tutti i turni", "Tieni lo storico completo dei turni degli agenti, con passi e strumenti. Il database cresce nel tempo.", h("label", { class: "switch" }, allTurns, h("span", { class: "rocker" }))),
+      settings.turns !== 0 && setRow("Turni per agente", "Da 50 a 100000. Oltre questo numero Cora cancella i turni più vecchi di ogni agente.", turns),
       toggle("automatic", "Pulizia automatica", "Esegui le operazioni selezionate a orari programmati."),
       setRow("Ora della pulizia", timezone, time),
       toggle("backups", "Ruota i backup", "Conserva le copie notturne verificate. Le copie di rilascio sono escluse."),

@@ -80,3 +80,27 @@ test("owner storage API, native scheduler, restart slots and fail-closed backup 
   assert.deepEqual((await f.request(f.admin, "/api/storage/sample?hour=2026-11-25T09")).data, measurement);
   assert.equal((await f.request(f.admin, "/api/storage/sample?hour=2026-11-24T10")).status, 404);
 });
+
+test("turn retention follows the storage policy and 0 keeps every turn", async t => {
+  const f = await knowledgeWorld({ timezone: "UTC" }); t.after(f.close);
+  const { store } = f.app;
+  const change = body => f.request(f.admin, "/api/storage", { method: "PUT", body });
+  assert.equal((await f.request(f.admin, "/api/storage")).data.settings.turns, 300);
+  for (const turns of [-1, 49, 100001, 2.5, "0", null]) assert.equal((await change({ turns })).status, 400);
+  const agentId = "ag_keep";
+  const add = (count, from) => {
+    for (let i = 0; i < count; i++) {
+      store.saveTrace({ id: `tr_keep${from + i}`, agentId, kind: "chat", startedAt: new Date(Date.UTC(2026, 10, 1) + (from + i) * 1000).toISOString(), endedAt: null, status: "running", steps: [], tools: [] });
+    }
+  };
+  const count = () => store.stmt("SELECT COUNT(*) AS n FROM traces WHERE agent_id = ?").get(agentId).n;
+  const before = count();
+  add(120, 0);
+  assert.equal((await change({ turns: 0 })).data.settings.turns, 0);
+  store.pruneTraces(agentId);
+  assert.equal(count(), before + 120);
+  assert.equal((await change({ turns: 50 })).data.settings.turns, 50);
+  store.pruneTraces(agentId);
+  assert.equal(count(), 50);
+  assert.equal(store.stmt("SELECT MIN(started_at) AS at FROM traces WHERE agent_id = ?").get(agentId).at, new Date(Date.UTC(2026, 10, 1) + 70000).toISOString());
+});
