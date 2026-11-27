@@ -6222,6 +6222,7 @@ function paintSideThreads() {
         thread.working ? h("span", { class: "typing", title: tr("Sta rispondendo") }, h("i"), h("i"), h("i")) : null);
     }));
   }
+  side.node.classList.toggle("no-threads", !side.items.length && !words.length);
   side.none.hidden = Boolean(shown.length);
   side.none.textContent = tr(words.length ? "Nessun thread con questo nome." : "Ancora nessun thread: aprine uno.");
 }

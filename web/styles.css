@@ -276,7 +276,8 @@ code { font: 400 12px/1 var(--mono); color: var(--amber); background: var(--well
 .side-lamp { flex: none; display: grid; place-items: center; text-decoration: none; }
 .side-lamp .onair { padding: 6px; }
 .side-lamp .onair span { display: none; }
-.side-threads { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.side-threads { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.side-threads.no-threads .side-search-box, .side-threads.no-threads .side-threads-head, .side-threads.no-threads .side-thread-list { display: none; }
 .sidebar .btn.side-new { width: 100%; height: 36px; justify-content: center; font-size: 13px; background: var(--side-active); border-color: var(--side-active); color: var(--side-on-active); box-shadow: none; }
 .sidebar .btn.side-new:hover { background: color-mix(in srgb, var(--side-active) 85%, var(--side-on-active)); }
 .side-search-box { position: relative; display: block; }
@@ -286,7 +287,7 @@ code { font: 400 12px/1 var(--mono); color: var(--amber); background: var(--well
 .side-threads-head .label { font-size: 11px; }
 .side-threads-head a { color: var(--faint); font: 600 11px/1 var(--body); text-decoration: none; }
 .side-threads-head a:hover { color: var(--text); }
-.side-thread-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; margin: 0 -4px; padding: 0 4px; scrollbar-width: thin; }
+.side-thread-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; margin: 0 -4px; padding: 0 4px; scrollbar-width: thin; }
 .side-thread { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 4px 8px; border-radius: var(--r-sm); color: var(--text); text-decoration: none; }
 .side-thread:hover { background: color-mix(in srgb, var(--tint) 7%, transparent); }
 .side-thread.active { background: color-mix(in srgb, var(--side-tint) 12%, transparent); box-shadow: inset 2px 0 0 var(--amber); }
@@ -299,12 +300,12 @@ code { font: 400 12px/1 var(--mono); color: var(--amber); background: var(--well
 .side-thread-ico.in-app { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent); }
 .side-thread .typing i { width: 4px; height: 4px; }
 .side-thread .typing { gap: 3px; }
-.side-none { margin: 4px 8px; color: var(--faint); font-size: 12px; }
+.side-none { margin: 0 8px 4px; color: var(--faint); font-size: 12px; line-height: 1.4; }
 .side-threads .sk-row { padding: 6px 8px; }
 .sidebar .side-nav { gap: 0; padding-top: 8px; border-top: 1px solid var(--line); }
 .sidebar .side-nav a { height: 32px; gap: 10px; padding: 0 10px; font-size: 12.5px; border-radius: var(--r-sm); }
 .sidebar .side-nav a .ico { width: 16px; height: 16px; }
-.sidebar .side-account { margin-top: 0; padding-top: 6px; }
+.sidebar .side-account { margin-top: auto; padding-top: 6px; }
 .sidebar .side-identity { padding: 6px 8px; }
 
 /* A thread in app: who is in it and who can be invited, then the chat. */
