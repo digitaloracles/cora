@@ -62,6 +62,8 @@ const LOOP_WINDOW = 10;
 const JUDGE_MISS_LIMIT = 3;
 /** How far back an agent remembers, word for word, what it said in its other places. */
 const ELSEWHERE_MS = 12 * 3600 * 1000;
+// In a call the agent sees the threads it worked in during the last day.
+const CALL_WORK_MS = 24 * 3600 * 1000;
 const ROUTINE_DEADLINE_MS = 8 * 3600 * 1000;
 const SLEEP_MESSAGES = 400;
 
@@ -520,6 +522,43 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
     parts.push(L`Ti torna in mente:\n${facts.length ? facts.map((fact) => `- [${fact.id}] ${fact.text}${fact.scope === "shared" ? L` (condiviso)` : ""}${fact.pinned ? L` (fissato)` : ""}${elsewhereNote(fact.text)}`).join("\n") : L`- (niente di specifico)`}`);
     if (diary.length) parts.push(L`Dal tuo diario:\n${diary.map((entry) => `- ${formatWhen(Date.parse(entry.createdAt), this.timezone)}: ${entry.text}`).join("\n")}`);
     return parts.join("\n\n");
+  }
+
+  /**
+   * What an agent in a voice call knows, as its written turns see it: the memories and diary that bear on
+   * what is being said, the company brain's pages, the threads it worked in and its open plans.
+   */
+  async callContext(agent, { query = "" } = {}) {
+    const parts = [];
+    const tries = [() => this.memoryContext(agent, query), () => this.recentWork(agent), () => this.brainContext(query, agent)];
+    for (const part of tries) {
+      try { parts.push(await part()); } catch (error) { this.log?.({ type: "error", agentId: agent.id, text: `voice context: ${error.message}` }); }
+    }
+    return parts.filter(Boolean).join("\n\n");
+  }
+
+  /** The threads an agent worked in lately, newest first, with the last request and its last words there; then its open plans. */
+  recentWork(agent, since = Date.now() - CALL_WORK_MS) {
+    this.knowledge?.assertCurrent(agent);
+    if (agent.brainSource === "external") return "";
+    const short = (text, max) => { const flat = String(text || "").replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max)}…` : flat; };
+    const places = this.store.recentElsewhere(agent.id, this.channelIdsFor(agent), since, { channels: 10, perChannel: 6 })
+      .map((place) => this.knowledge ? { ...place, messages: place.messages.filter((message) => this.knowledge.ownsMessage(agent, message)) } : place)
+      .filter((place) => place.messages.length).reverse();
+    const threads = places.map(({ channelId, messages }) => {
+      const mine = messages.filter((message) => message.agentId === agent.id).at(-1);
+      const asked = messages.filter((message) => message.kind === "owner" || message.kind === "human").at(-1);
+      const last = messages.at(-1);
+      return `- «${this.channelLabel(channelId)}» (${formatWhen(last.at, this.timezone)})${asked ? `: ${asked.authorName}: «${short(asked.content, 220)}»` : ""}${mine ? L`; tu: «${short(mine.content, 320)}»` : ""}`;
+    });
+    const plans = (this.store.plans?.recent({ agentIds: [agent.id], open: true, limit: 8 }) || []).map((plan) => {
+      const next = plan.items?.[plan.done]?.text;
+      return `- «${this.channelLabel(plan.channelId)}» ${plan.name}: ${plan.done}/${plan.items?.length || 0}${next ? L`, prossimo passo: ${short(next, 160)}` : ""}${plan.blockedReason ? L`, bloccato: ${short(plan.blockedReason, 160)}` : ""}`;
+    });
+    return [
+      threads.length ? L`I tuoi thread delle ultime 24 ore, dal più recente:\n${threads.join("\n")}` : "",
+      plans.length ? L`I tuoi piani aperti:\n${plans.join("\n")}` : "",
+    ].filter(Boolean).join("\n\n");
   }
 
   /** Where a turn happens, said in the agent's language: the channel's own words are read again inside the turn. */
@@ -1928,7 +1967,7 @@ Brain.prototype.agentLanguage = function (agent) {
 };
 
 // Every turn of an agent, and everything it builds on the way, is written in the agent's language.
-for (const [name, agentOf] of [["systemPrompt", (args) => args[0]], ["memoryContext", (args) => args[0]], ["elsewhere", (args) => args[0]], ["sleep", (args) => args[0]],
+for (const [name, agentOf] of [["systemPrompt", (args) => args[0]], ["memoryContext", (args) => args[0]], ["elsewhere", (args) => args[0]], ["callContext", (args) => args[0]], ["recentWork", (args) => args[0]], ["sleep", (args) => args[0]],
   ["chatTurn", (args) => args[0]?.agent], ["emailTurn", (args) => args[0]?.agent], ["routineTurn", (args) => args[0]?.agent], ["resumeTurn", (args) => args[0]?.agent], ["loop", (args) => args[0]?.agent]]) {
   const original = Brain.prototype[name];
   Brain.prototype[name] = function (...args) { return withPromptLanguage(this.agentLanguage(agentOf(args)), () => original.apply(this, args)); };

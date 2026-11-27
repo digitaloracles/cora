@@ -151,7 +151,7 @@ export function captionTurns(captions) {
 }
 
 export class Meet {
-  constructor({ store, boxes, voice = null, artifacts = null, log = () => {}, emit = () => {}, notice = null, instanceUrl = "", timezone = "Europe/Rome", pollMs = 4000, limits = {} }) {
+  constructor({ store, boxes, voice = null, artifacts = null, log = () => {}, emit = () => {}, notice = null, thread = null, instanceUrl = "", timezone = "Europe/Rome", pollMs = 4000, limits = {} }) {
     this.store = store;
     this.boxes = boxes;
     this.voice = voice;
@@ -159,6 +159,7 @@ export class Meet {
     this.log = log;
     this.emit = emit;
     this.notice = notice;
+    this.thread = thread;
     this.instanceUrl = instanceUrl;
     this.timezone = timezone;
     this.pollMs = pollMs;
@@ -552,6 +553,7 @@ export class Meet {
       });
       await this.boxes.meet(agent.id, ["clean", session.id]).catch(() => {});
       this.log({ type: "meet", agentId: agent.id, text: `${agent.name} ha trascritto la riunione ${session.link} in ${session.folder}/${name}` });
+      await this.writeThread(agent, session, named);
       const state = commit?.status === "published" ? (this.language === "it" ? "pubblicata" : "published") : (this.language === "it" ? "in attesa di revisione" : "waiting for review");
       await this.tell(current, this.language === "it"
         ? `📞 ${agent.name} è uscito dalla riunione ${session.link} (${text.reasons[reason] || reason}). Trascrizione in **${session.folder}**, ${state}: ${named.length} ${named.length === 1 ? "intervento" : "interventi"}${others.length ? ` di ${[...new Set(named.map((turn) => turn.name))].join(", ")}` : ""}.${current.transcript.url ? ` ${current.transcript.url}` : ""}`
@@ -563,6 +565,17 @@ export class Meet {
       await this.tell(current, this.language === "it" ? `📞 ${agent.name} è uscito dalla riunione ${session.link}, ma la trascrizione non è riuscita: ${current.error}. La registrazione resta sul suo desktop: riprova dalle sue impostazioni, in Google Meet.` : `📞 ${agent.name} left the call ${session.link}, but the transcript failed: ${current.error}. The recording stays on its desktop: try again from its settings, under Google Meet.`);
     }
     return current;
+  }
+
+  /** Like a voice call, the meeting is written down in a thread of its own beside the conversation that sent the agent. */
+  async writeThread(agent, session, turns) {
+    if (!this.thread || !session.channelId || !turns.length) return;
+    try {
+      const lines = turns.map((turn) => ({ at: session.recordingAt + Math.round((Number(turn.start) || 0) * 1000), name: turn.name || words(this.language).unknown, text: turn.text }));
+      await this.thread({ agent, origin: session.channelId, callName: "Meet", startedAt: session.recordingAt, endedAt: session.endedAt, lines });
+    } catch (error) {
+      this.log({ type: "error", agentId: agent.id, text: `Meet: trascrizione non scritta nel thread (${error.message})` });
+    }
   }
 
   /** A transcript that failed is made again from the recording still on the desktop. */

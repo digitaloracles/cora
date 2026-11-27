@@ -91,7 +91,7 @@ class FakeTts extends EventEmitter {
   abort() { this.aborted = true; }
 }
 
-function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now } = {}) {
+function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now, context = null, transcript = null } = {}) {
   const people = [{ userId: SEB, name: "Seb", bot: false }];
   const members = () => [...people, ...[...calls.calls.values()].flatMap((call) => [...call.members.values()].map((member) => ({ userId: member.userId, name: member.agent.name, bot: true })))];
   const clients = { [radix.id]: fakeClient("bot-radix", members), [ada.id]: fakeClient("bot-ada", members) };
@@ -111,7 +111,7 @@ function setup({ replies = {}, agentChain = 6, dispatch = null, listenGapMs, now
   const calls = new VoiceCalls({
     store: { settings: { defaultModel: "ollama/fast" }, agents: () => [radix, ada] }, bots: { client: (id) => clients[id] || null }, llm, fish, agentChain, dispatch,
     log: (entry) => log.push(entry), makeLink: (options) => { const link = new FakeLink(options); links.push(link); return link; },
-    listenGapMs, now,
+    listenGapMs, now, context, transcript,
   });
   return { calls, fish, llm, asked, links, log, people, clients };
 }
@@ -297,6 +297,73 @@ test("voice calls: asked to leave, an agent says goodbye and goes; an agent cann
   await until(() => two.fish.ttss.length === 2, "Ada answering Radix");
   await wait(30);
   assert.equal(two.calls.calls.get(VOICE)?.members.has(ada.id), true, "an agent's words never make another leave");
+});
+
+test("voice calls: the agent knows its memories, threads and plans, and checks in writing what it does not find", async (t) => {
+  const loads = [];
+  const context = async (agent, { query, channelId }) => {
+    loads.push({ agent: agent.id, query, channelId });
+    return `I tuoi thread delle ultime 24 ore, dal più recente:\n- «Investigare opentelemetry» (27/11 09:08): NOT-115 su main, span invoke_agent (${loads.length})`;
+  };
+  const jobs = [];
+  const { calls, fish, links, asked } = setup({ context, dispatch: async (work) => { jobs.push(work); return "thread"; }, replies: { Radix: "Ci lavoro, NOT-115 è su main." } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE, origin: "cora-voice" });
+  await until(() => loads.length === 1, "the context loaded on joining");
+  assert.deepEqual(loads[0], { agent: "ag_radix", query: "General", channelId: "cora-voice" }, "loaded for the conversation that called it in");
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, a che punto è OpenTelemetry?", user_turn: true });
+  await until(() => asked.length === 1, "Radix answering");
+  assert.match(asked[0].system, /## Cosa sai e cosa stai facendo\n[\s\S]*«Investigare opentelemetry»[\s\S]*NOT-115 su main/, "its threads are in what it knows");
+  assert.match(asked[0].system, /non dire mai che non esiste, che non lo conosci o che non hai niente di aperto: di' che controlli per scritto e aggiungi la riga «LAVORO:»/);
+  assert.doesNotMatch(asked[0].system, /non tirare fuori impegni di altri progetti/);
+
+  // A stale context is reloaded on the person's words, and the answer waits for it briefly.
+  let slow;
+  const late = setup({ context: () => new Promise((resolve) => { slow = resolve; }), replies: { Radix: "Sì." } });
+  t.after(() => late.calls.stop());
+  await late.calls.join(radix, { channelId: VOICE });
+  late.links[0].emit("audio", SEB, speech16(8000));
+  await until(() => late.fish.stts.length === 1, "Seb's stream");
+  late.fish.stts[0].emit("committed", { text: "Radix, ci sei?", user_turn: true });
+  await wait(50);
+  assert.equal(late.asked.length, 0, "the answer waits for the context being loaded");
+  slow("Memoria: niente di specifico");
+  await until(() => late.asked.length === 1, "the answer once the context is there");
+  assert.match(late.asked[0].system, /Memoria: niente di specifico/);
+});
+
+test("voice calls: every call is written down in a thread of its own, word by word, and closed when the last agent leaves", async (t) => {
+  const opened = [];
+  const written = [];
+  const transcript = {
+    open: async (options) => { opened.push(options); return "thread-vocale"; },
+    write: async (channelId, lines, options) => { written.push({ channelId, lines, options }); },
+  };
+  const { calls, fish, links } = setup({ transcript, replies: { Radix: "Ciao Seb." } });
+  t.after(() => calls.stop());
+  await calls.join(radix, { channelId: VOICE, origin: "cora-voice" });
+  await calls.join(ada, { channelId: VOICE });
+  await until(() => opened.length === 1, "the transcript thread");
+  assert.equal(opened[0].origin, "cora-voice");
+  assert.equal(opened[0].callName, "General");
+  links[0].emit("audio", SEB, speech16(8000));
+  await until(() => fish.stts.length === 1, "Seb's stream");
+  fish.stts[0].emit("committed", { text: "Radix, mi senti?", user_turn: true });
+  const call = calls.calls.get(VOICE);
+  await until(() => call.history.length === 2, "Radix's answer");
+  await calls.leave(radix);
+  await calls.leave(ada);
+  await until(() => written.some((entry) => entry.options.ended), "the closing batch");
+  const lines = written.flatMap((entry) => entry.lines);
+  assert.deepEqual(lines.map((line) => [line.name, line.text, line.agentId, line.userId]), [
+    ["Seb", "Radix, mi senti?", null, SEB],
+    ["Radix", "Ciao Seb.", "ag_radix", null],
+  ]);
+  assert.ok(written.every((entry) => entry.channelId === "thread-vocale"));
+  assert.equal(written.filter((entry) => entry.options.ended).length, 1, "closed once");
+  assert.ok(written.at(-1).options.startedAt > 0);
 });
 
 test("voice calls: leaving closes the person's stream, and the last agent out ends the call", async (t) => {
