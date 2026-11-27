@@ -82,6 +82,14 @@ const EMPTY_CALL_MS = 180000;
 // A person still in the channel, and the ear has had no audio from them for this long: logged once, until audio returns.
 const LISTEN_GAP_MS = 30000;
 const REPLY_TIMEOUT_MS = 45000;
+// What an agent knows in a call: reloaded at most this often on a person's words, waited for this long before an answer.
+const CONTEXT_REFRESH_MS = 15000;
+const CONTEXT_FRESH_MS = 60000;
+const CONTEXT_WAIT_MS = 1500;
+const CONTEXT_CHARS = 9000;
+// The transcript is written in batches, the audio never kept.
+const TRANSCRIPT_FLUSH_MS = 8000;
+const TRANSCRIPT_BACKLOG = 400;
 
 const fold = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 // The words a person uses only to acknowledge, to test the line or to fill a silence: not a request.
@@ -228,12 +236,16 @@ class Call {
     this.linkAudioAt = new Map();
     this.listenStall = new Map();
     this.dave = null;
+    this.transcript = { channelId: "", opening: null, lines: [], timer: null, writing: null, ended: false, closed: false };
   }
 }
 
 export class VoiceCalls {
-  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null, listenGapMs = LISTEN_GAP_MS, now = Date.now }) {
+  constructor({ store, bots, llm, fish, log = () => {}, emit = () => {}, language = () => "it", makeLink = (options) => new VoiceLink(options), agentChain = AGENT_CHAIN, dispatch = null, listenGapMs = LISTEN_GAP_MS, now = Date.now, context = null, transcript = null }) {
     this.store = store;
+    // What the agent knows as its written turns do (memories, threads, plans), and where each call is written down.
+    this.context = context;
+    this.transcript = transcript;
     this.bots = bots;
     this.llm = llm;
     this.fish = fish;
@@ -316,6 +328,8 @@ export class VoiceCalls {
       if (call.members.get(agent.id)?.link === link) this.drop(call, agent.id, reason);
     });
     this.log({ type: "voice", agentId: agent.id, channelId: target, text: `${agent.name} è entrato nel canale vocale «${call.name}»` });
+    this.openTranscript(call, member);
+    this.refreshContext(call, member);
     this.changed();
     return this.where(call, agent);
   }
@@ -351,6 +365,8 @@ export class VoiceCalls {
     if (!call.members.size) {
       for (const speaker of [...call.speakers.values()]) this.closeSpeaker(call, speaker);
       this.calls.delete(call.channelId);
+      call.transcript.ended = true;
+      this.flushTranscript(call);
     }
     this.log({ type: "voice", agentId, channelId: call.channelId, text: `${member.agent.name} è uscito dal canale vocale «${call.name}» (${reason})` });
     this.changed();
@@ -677,6 +693,9 @@ export class VoiceCalls {
       call.lastHumanAt = Date.now();
     } else call.chain += 1;
     this.log({ type: "voice", agentId: turn.agent?.id, channelId: call.channelId, text: `[voce] ${turn.agent?.name || turn.name}: ${turn.text.slice(0, 300)}` });
+    this.record(call, turn);
+    // What a person says changes which memories and threads matter: each agent reloads them in the background.
+    if (!turn.agent) for (const member of call.members.values()) if (!member.context || this.now() - member.context.at > CONTEXT_REFRESH_MS) this.refreshContext(call, member);
     // A murmur or a test of the line is not a request: it neither cuts the agent nor is answered, and starts no work.
     if (!turn.agent && isNoise(turn.text) && !this.askedQuestion(call)) {
       this.log({ type: "voice", channelId: call.channelId, text: `[voce] ${turn.name}: ${turn.text.slice(0, 120)} (riscontro, ignorato)` });
@@ -754,10 +773,12 @@ export class VoiceCalls {
     const people = this.people(call).map((person) => person.name).filter(Boolean);
     const language = this.language(agent);
     const cut = this.pendingCut(call, agent);
+    const known = String(call.members.get(agent.id)?.context?.text || "").trim().slice(0, CONTEXT_CHARS);
     const system = [
       L`Sei ${agent.name}.`,
       agentPersona(agent, tf) ? L`## Chi sei\n${agentPersona(agent, tf).slice(0, 2500)}` : "",
       agent.core?.trim() ? L`## La tua scheda\n${agent.core.trim().slice(0, 3000)}` : "",
+      known ? L`## Cosa sai e cosa stai facendo\nUn estratto della tua memoria, dei tuoi thread e dei tuoi piani, gli stessi che hai quando lavori per scritto:\n${known}` : "",
       [
         L`## Ora`,
         L`Sei in una chiamata vocale dal vivo su Discord, nel canale «${call.name}».`,
@@ -776,8 +797,12 @@ export class VoiceCalls {
           L`In chiamata coordini il lavoro: parli e intanto lavori. Se una persona ti chiede un lavoro (cercare, controllare, scrivere, aggiustare, rilasciare…), non farlo a voce e non inventare risultati: di' solo «ci lavoro» o poche parole, poi aggiungi in fondo una riga a parte che comincia con «LAVORO:» seguita dal compito completo e comprensibile da solo, come lo scriverebbe chi te lo chiede, sempre con la sigla della issue a cui si riferisce, se ne ha una (es. NOT-43, REF-73), e con il nome del progetto. Cora lo porta nel thread di quella issue; se quella issue o quel progetto non ha un thread, gliene apre uno, e non lo scrive mai nel thread di un altro argomento. Quella riga non viene detta: diventa il compito che svolgi con tutti i tuoi strumenti mentre la chiamata continua, e lì scrivi i risultati.`,
           L`Se il lavoro è per un collega, in chiamata o fuori, scrivi «LAVORO per Nome:» e il compito va a lui.`,
           L`Non creare un lavoro se nessuno te l'ha chiesto o se è già tra quelli avviati: una richiesta uguale a una già avviata non si riapre.`,
-          L`Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase, senza riga LAVORO, e non tirare fuori impegni di altri progetti.`,
-        ] : [L`In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat.`]),
+          L`Una domanda su cosa stai facendo, su come va o su chi c'è non è un lavoro: rispondi a voce in una frase con quello che trovi in «Cosa sai e cosa stai facendo», senza riga LAVORO.`,
+          L`Quello che sai qui è solo un estratto. Se ti chiedono di un lavoro, di un tema o di un fatto che non trovi qui, non dire mai che non esiste, che non lo conosci o che non hai niente di aperto: di' che controlli per scritto e aggiungi la riga «LAVORO:» con la domanda, così la risposta la dai per scritto con i tuoi strumenti.`,
+        ] : [
+          L`In chiamata non puoi usare strumenti né fare lavori: se ti chiedono un lavoro, dillo e proponi di scriverlo in chat.`,
+          L`Quello che sai qui è solo un estratto. Se ti chiedono di qualcosa che non trovi qui, non dire mai che non esiste o che non lo conosci: di' che controlli e che rispondi per scritto.`,
+        ]),
         ...(call.works.length ? [L`Lavori già avviati da questa chiamata (li svolgete nella conversazione scritta):\n${call.works.slice(-8).map((work) => `- ${work.agentName}, per ${work.by}: ${work.task.slice(0, 200)}`).join("\n")}`] : []),
         L`Se una persona vi chiede di uscire o di staccarvi dalla chiamata, saluta in poche parole e aggiungi in fondo una riga a parte con «ESCI».`,
         ...(farewell ? [L`${farewell.name} è appena uscito perché una persona gliel'ha chiesto. Se quella richiesta era anche per te (per tutti, oppure ti nomina), saluta in tre parole e aggiungi in fondo la riga «ESCI»; se era solo per ${farewell.name}, rispondi esattamente PASS.`] : []),
@@ -790,6 +815,80 @@ export class VoiceCalls {
 Hai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole vere, anche solo una frase breve.` : "";
     const prompt = L`Conversazione finora (l'ultima frase è la più recente):\n${lines.join("\n")}${nudge}\n\nLa tua risposta a voce:`;
     return { system, prompt };
+  }
+
+  /**
+   * What the agent knows and is doing, as its written turns see it: memories that bear on what is said,
+   * its latest threads, its open plans. Loaded in the background; one load at a time per agent.
+   */
+  refreshContext(call, member) {
+    if (!this.context || !member) return Promise.resolve();
+    if (member.contextLoading) return member.contextLoading;
+    const query = call.history.filter((entry) => !entry.agent).slice(-4).map((entry) => entry.text).join(" ") || call.name;
+    const loading = Promise.resolve()
+      .then(() => this.context(member.agent, { query, channelId: member.origin || call.channelId }))
+      .then((text) => { member.context = { text: String(text || ""), at: this.now() }; })
+      .catch((error) => this.log({ type: "error", agentId: member.agent.id, channelId: call.channelId, text: `voice: context not loaded (${error.message})` }))
+      .finally(() => { if (member.contextLoading === loading) member.contextLoading = null; });
+    member.contextLoading = loading;
+    return loading;
+  }
+
+  /** Before an answer: a load under way, or a stale context, is waited for briefly; the answer never waits long. */
+  async contextFor(call, agent) {
+    const member = call.members.get(agent.id);
+    if (!this.context || !member) return;
+    const loading = member.contextLoading || (!member.context || this.now() - member.context.at > CONTEXT_FRESH_MS ? this.refreshContext(call, member) : null);
+    if (!loading) return;
+    let timer;
+    await Promise.race([loading, new Promise((resolve) => { timer = setTimeout(resolve, CONTEXT_WAIT_MS); timer.unref?.(); })]);
+    clearTimeout(timer);
+  }
+
+  /** Every call is written down, word for word, in a thread of its own: the audio is never kept. */
+  openTranscript(call, member) {
+    const transcript = call.transcript;
+    if (!this.transcript || transcript.channelId || transcript.opening) return;
+    const opening = Promise.resolve()
+      .then(() => this.transcript.open({ agent: member.agent, origin: member.origin, callChannelId: call.channelId, callName: call.name, startedAt: call.startedAt }))
+      .then((channelId) => {
+        transcript.channelId = String(channelId || "");
+        if (transcript.channelId) this.log({ type: "voice", agentId: member.agent.id, channelId: call.channelId, text: `trascrizione della chiamata «${call.name}» nel thread ${transcript.channelId}` });
+      })
+      .catch((error) => this.log({ type: "error", agentId: member.agent.id, channelId: call.channelId, text: `voice: transcript not opened (${error.message})` }))
+      .finally(() => {
+        transcript.opening = null;
+        if (transcript.channelId) this.flushTranscript(call);
+        else if (transcript.ended) transcript.lines.length = 0;
+      });
+    transcript.opening = opening;
+  }
+
+  record(call, entry) {
+    if (!this.transcript) return;
+    const transcript = call.transcript;
+    transcript.lines.push({ at: entry.at || Date.now(), name: entry.agent?.name || entry.name || "?", agentId: entry.agent?.id || null, userId: entry.agent ? null : String(entry.userId || ""), text: String(entry.text || "") });
+    if (transcript.lines.length > TRANSCRIPT_BACKLOG) transcript.lines.splice(0, transcript.lines.length - TRANSCRIPT_BACKLOG);
+    if (!transcript.timer) {
+      transcript.timer = setTimeout(() => this.flushTranscript(call), TRANSCRIPT_FLUSH_MS);
+      transcript.timer.unref?.();
+    }
+  }
+
+  /** The lines heard since the last batch go to the call's thread, in order; the last batch closes it. */
+  flushTranscript(call) {
+    const transcript = call.transcript;
+    clearTimeout(transcript.timer);
+    transcript.timer = null;
+    if (!this.transcript || !transcript.channelId) return transcript.writing || Promise.resolve();
+    const ended = transcript.ended && !transcript.closed;
+    if (!transcript.lines.length && !ended) return transcript.writing || Promise.resolve();
+    const lines = transcript.lines.splice(0);
+    if (ended) transcript.closed = true;
+    transcript.writing = (transcript.writing || Promise.resolve())
+      .then(() => this.transcript.write(transcript.channelId, lines, { ended, startedAt: call.startedAt, endedAt: ended ? Date.now() : 0, callName: call.name }))
+      .catch((error) => this.log({ type: "error", channelId: call.channelId, text: `voice: transcript not written (${error.message})` }));
+    return transcript.writing;
   }
 
   /**
@@ -830,6 +929,8 @@ Hai risposto PASS, ma la persona ha parlato a te: rispondi a voce con parole ver
     let reply;
     let leaving = false;
     try {
+      if (!early) await this.contextFor(call, agent);
+      if (controller.signal.aborted) return;
       const raw = String(await (early ? early.reply : this.think(agent, this.prompt(call, agent, null, { farewell }), controller.signal)) || "");
       leaving = mayLeave && LEAVE_LINE.test(raw);
       if (!mayLeave && LEAVE_LINE.test(raw)) this.log({ type: "voice", agentId: agent.id, channelId: call.channelId, text: `${agent.name} voleva uscire ma nessuna persona gliel'ha chiesto: resta` });

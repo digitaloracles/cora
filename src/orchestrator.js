@@ -1590,6 +1590,56 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * A call's transcript gets a thread of its own («🎙️ Vocale · …») beside the conversation that called the
+   * agent in; without one, the voice channel's own chat. Only words are kept, never the audio.
+   */
+  async callTranscript({ agent, origin = "", callChannelId = "", callName = "", startedAt = Date.now() }) {
+    const timeZone = this.brain?.timezone || "Europe/Rome";
+    const when = new Intl.DateTimeFormat("it-IT", { timeZone, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(startedAt));
+    const name = `🎙️ Vocale · ${String(callName || "chiamata").replace(/\s+/g, " ").trim().slice(0, 60)} · ${when}`;
+    if (origin && transportOf(origin) === "discord") {
+      try {
+        return (await this.openThread(agent, origin, { name })).id;
+      } catch (error) {
+        this.log({ type: "error", agentId: agent.id, channelId: origin, text: `voice: no transcript thread (${error.message})` });
+      }
+    }
+    return callChannelId && transportOf(callChannelId) === "discord" ? callChannelId : "";
+  }
+
+  /** Lines of a call, posted in its thread and kept in the archive as said by each person or agent: recall and context find them. */
+  async writeTranscript(channelId, lines, { ended = false, startedAt = 0, endedAt = 0 } = {}) {
+    if (!channelId) return;
+    const timeZone = this.brain?.timezone || "Europe/Rome";
+    const clock = new Intl.DateTimeFormat("it-IT", { timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const rendered = [];
+    for (const line of lines) {
+      const text = String(line.text || "").replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const at = Number(line.at) || Date.now();
+      rendered.push(`\`${clock.format(new Date(at))}\` **${line.name}**: ${text}`);
+      try {
+        this.store.appendArchive(channelId, {
+          id: `voice_${randomBytes(8).toString("hex")}`, at, authorId: line.agentId ? null : line.userId || null, authorName: line.name,
+          kind: line.agentId ? "agent" : this.isOwner(line.userId) ? "owner" : "human", agentId: line.agentId || null, content: text,
+        });
+      } catch (error) {
+        this.log({ type: "error", channelId, text: `voice: transcript not archived (${error.message})` });
+      }
+    }
+    if (ended) {
+      const minutes = startedAt ? Math.max(1, Math.round(((endedAt || Date.now()) - startedAt) / 60000)) : 0;
+      rendered.push(`— Fine della chiamata${minutes ? `, ${minutes} min` : ""}. Restano solo le parole: l'audio non viene salvato.`);
+    }
+    const chunks = [];
+    for (const line of rendered) {
+      if (chunks.length && chunks.at(-1).length + line.length + 1 <= 1800) chunks[chunks.length - 1] += `\n${line}`;
+      else chunks.push(line.slice(0, 1900));
+    }
+    for (const chunk of chunks) await this.discord.post(channelId, { username: "Cora", content: chunk });
+  }
+
   async notice(channelId, text) {
     const content = String(text || "").slice(0, 1500);
     if (!content || this.dmAgent.has(channelId)) return [];

@@ -232,7 +232,13 @@ export function startCora(overrides = {}) {
   artifacts.knowledge = knowledge;
   brain.artifacts = artifacts;
   const meet = new Meet({ store, boxes, voice, artifacts, log: activity, instanceUrl, timezone: cfg.timezone,
-    notice: (channelId, text) => orchestrator.notice(channelId, text) });
+    notice: (channelId, text) => orchestrator.notice(channelId, text),
+    // A meeting is written down in a thread of its own too, beside the conversation that sent the agent.
+    thread: async ({ agent, origin, callName, startedAt, endedAt, lines }) => {
+      const channelId = await orchestrator.callTranscript({ agent, origin, callName, startedAt });
+      if (channelId) await orchestrator.writeTranscript(channelId, lines, { ended: true, startedAt, endedAt });
+      return channelId;
+    } });
   brain.meet = meet;
   // Secrets by name: encrypted here, put into an agent's hush, never shown back.
   const vault = new Vault({
@@ -275,7 +281,12 @@ export function startCora(overrides = {}) {
     catch (error) { activity({ type: "error", text: `notifiche iOS: chiave APNs non valida (${error.message})` }); }
   };
   push.loadApns();
-  const voiceCalls = new VoiceCalls({ store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it" });
+  const voiceCalls = new VoiceCalls({
+    store, bots, llm, fish, log: activity, emit: live, language: (agent) => agent.voiceLanguage || store.settings.language || "it",
+    // In a call the agent knows what it knows in writing, and every call is written down in a thread of its own.
+    context: (agent, options) => brain.callContext(agent, options),
+    transcript: { open: (options) => orchestrator.callTranscript(options), write: (channelId, lines, options) => orchestrator.writeTranscript(channelId, lines, options) },
+  });
   voiceCalls.refreshKey = fishFromVault;
   orchestrator.callVoice = voiceCalls;
   brain.voiceCalls = voiceCalls;
