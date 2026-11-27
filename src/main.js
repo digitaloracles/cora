@@ -124,7 +124,7 @@ export function startCora(overrides = {}) {
     return [...new Set([...host, ...store.settings.sshKeys])];
   };
   const mailboxFor = (agent) => store.value(`agentMailbox:${agent.id}`, null);
-  const boxes = new Boxes({ docker: cfg.docker, image: cfg.boxImage, timezone: cfg.timezone, access: (agent) => ({ sshPort: store.sshPort(agent.id), keys: sshKeys() }), sealed: (id) => Boolean(store.agent(id)?.sealed),
+  const boxes = new Boxes({ desktopCacheDir: join(cfg.home, "desktop-cache-policy"), docker: cfg.docker, image: cfg.boxImage, timezone: cfg.timezone, access: (agent) => ({ sshPort: store.sshPort(agent.id), keys: sshKeys() }), sealed: (id) => Boolean(store.agent(id)?.sealed),
     gitAttribution: { enabled: cfg.gitAttribution, email: cfg.gitCoauthorEmail },
     mailbox: { endpoint: cfg.mailEndpoint, domain: cfg.mailDomain, namespace: cfg.mailNamespace, token: cfg.mailRegistrationToken, identity: mailboxFor,
       changed: (agent, state) => {
@@ -440,6 +440,7 @@ export function startCora(overrides = {}) {
     meet.stop();
     scheduler.stop();
     await storage.pending;
+    await storage.desktopCache.queue;
     harnessUpdates.stop();
     github.stop();
     await email.stop();

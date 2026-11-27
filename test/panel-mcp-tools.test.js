@@ -33,6 +33,7 @@ test("the panel MCP lists one specific tool per panel action with its own input 
     assert.equal(tool.inputSchema.type, "object", tool.name);
     assert.ok(tool.description.length > 40, tool.name);
   }
+  assert.equal(tools.find(tool => tool.name === "cora_storage_set").inputSchema.properties.desktopCache.type, "boolean");
   const update = tools.find((tool) => tool.name === "cora_agent_update");
   assert.deepEqual(update.inputSchema.required, ["agent_id"]);
   for (const field of ["name", "personality", "character", "model", "subscriptionId", "effort", "tools", "enabled", "voice", "channelIds"]) assert.ok(update.inputSchema.properties[field], field);

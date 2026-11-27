@@ -10381,6 +10381,7 @@ function storagePane() {
     const policy = panel({ title: "Pulizia e backup", icon: "layers", hint: "Scegli quando intervenire e quali dati conservare." }, setRows(
       setRow("Conserva tutti i turni", "Tieni lo storico completo dei turni degli agenti, con passi e strumenti. Il database cresce nel tempo.", h("label", { class: "switch" }, allTurns, h("span", { class: "rocker" }))),
       settings.turns !== 0 && setRow("Turni per agente", "Da 50 a 100000. Oltre questo numero Cora cancella i turni più vecchi di ogni agente.", turns),
+      toggle("desktopCache", "Pulizia nei desktop", "Ogni desktop elimina ogni giorno i file di cache Go e Babel inutilizzati da oltre sette giorni. Le dipendenze installate restano al loro posto."),
       toggle("automatic", "Pulizia automatica", "Esegui le operazioni selezionate a orari programmati."),
       setRow("Ora della pulizia", timezone, time),
       toggle("backups", "Ruota i backup", "Conserva le copie notturne verificate. Le copie di rilascio sono escluse."),

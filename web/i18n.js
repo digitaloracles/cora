@@ -25,6 +25,8 @@ export const EN = {
   "Scarica OpenTelemetry": "Download OpenTelemetry",
   "Disponibile quando il turno finisce": "Available when the turn finishes",
   "Apri nel servizio OpenTelemetry": "Open in the OpenTelemetry service",
+  "Pulizia nei desktop": "Desktop cleanup",
+  "Ogni desktop elimina ogni giorno i file di cache Go e Babel inutilizzati da oltre sette giorni. Le dipendenze installate restano al loro posto.": "Each desktop removes Go and Babel build cache files unused for more than seven days, once a day. Installed dependencies are preserved.",
   "Ora della misura": "Measurement time",
   "Giorni di storico": "History in days",
   "Conserva tutti i turni": "Keep every turn",

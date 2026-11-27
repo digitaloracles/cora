@@ -46,6 +46,7 @@ RUN curl -fsSL https://raw.githubusercontent.com/turinglabsorg/hush/${HUSH_VERSI
     && npm cache clean --force \
     && hush --version && ambox --version
 
+LABEL cora.desktop-cache.image="1"
 COPY supervisord.conf /etc/supervisor/cora.conf
 COPY start.sh /usr/local/bin/cora-box-start
 COPY cdp.mjs /usr/local/bin/cora-cdp
