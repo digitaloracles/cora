@@ -715,6 +715,12 @@ async function loadState() {
     data.harnesses = S.data.harnesses;
   }
   S.data = data;
+  const capacityPanel = document.querySelector(".machine-capacity");
+  if (capacityPanel) {
+    const updated = machineCapacityPanel();
+    if (updated) capacityPanel.replaceWith(updated);
+    else capacityPanel.remove();
+  }
   if (data.appearance) applyAppearance(data.appearance);
   if (BUILD && data.build && data.build !== BUILD) S.staleBuild = true;
   if (S.quotaPanel?.node.isConnected) S.quotaPanel.apply([...(data.quotaAccounts || data.subscriptions || []), ...(data.providerUsage || [])]);
@@ -1221,6 +1227,23 @@ function traceRow(trace, { withAgent = false } = {}) {
     icon("next", "chev"));
 }
 
+function machineCapacityPanel() {
+  const capacity = S.data.machineCapacity;
+  if (!capacity) return null;
+  const active = capacity.active ?? "—";
+  const available = Number.isInteger(capacity.additional);
+  const resources = { cpu: "CPU", ram: "RAM", disk: "Disco" };
+  const metric = (value, label) => h("div", {}, h("dt", {}, label), h("dd", {}, value));
+  const details = available && capacity.diskDefault ? "Per il disco si stimano 20 GiB per agente in attesa delle misure dei desktop." : "";
+  return panel({ cls: "machine-capacity", icon: "monitor", title: "Capacità della macchina",
+    actions: capacity.preliminary ? badge("Stima preliminare") : null },
+    h("dl", { class: "capacity-metrics" },
+      metric(active, "Desktop attivi"),
+      metric(available ? capacity.additional : "—", "Altri agenti con carico simile"),
+      metric(resources[capacity.limit] || "—", "Risorsa limitante")),
+    !available || details ? h("p", { class: "capacity-note" }, available ? details : "In attesa delle misure della macchina.") : null);
+}
+
 async function renderDashboard() {
   const agents = S.data.agents;
   const info = transportInfo();
@@ -1238,6 +1261,7 @@ async function renderDashboard() {
       statCard({ icon: "radio", value: `${agents.filter((agent) => agent.enabled).length}/${agents.length}`, label: "agenti in onda", href: "#/agenti" }),
       statCard({ icon: "monitor", value: desktops, label: "desktop accesi" }),
       statCard({ icon: "clock", value: active.length, label: "attività programmate", sub: next ? tr("prossima {time} · {name}", { time: fmtTime(next.nextRunAt), name: agents.find((agent) => agent.id === next.agentId)?.name || "" }) : "" })),
+    machineCapacityPanel(),
     panel({ icon: "users", title: "Agenti", hint: "Ognuno con il suo cervello, la sua memoria e il suo computer.", actions: btn("", { icon: "plus", href: "#/new", title: "Nuovo agente", cls: "sm" }) },
       agents.length ? h("div", { class: "agent-grid" }, agents.map(agentCard)) : empty("users", "Ancora nessun agente.", btn("Crea il primo", { icon: "plus", href: "#/new", cls: "primary" }))),
     h("div", { class: "split" },
@@ -1544,6 +1568,7 @@ function renderAgents() {
   shell([
     heading,
     requestsStrip(),
+    machineCapacityPanel(),
     usageOverview(usage, subscriptions),
     panel({ icon: "users", title: "Gli agenti", cls: "agent-roster", actions: [btn("Importa", { icon: "upload", href: "#/importa", title: "Importa agente" }), btn("Nuovo agente", { icon: "plus", href: "#/new", cls: "primary", title: "Nuovo agente" })] },
       agents.length ? h("div", { class: "rows" }, agents.map((agent) => {
@@ -1560,6 +1585,7 @@ function renderAgents() {
     panel({ icon: "chart", title: "Consumi per agente", hint: "Quanti token spende ognuno, giorno per giorno.", actions: heatLegend() }, usage.individual),
   ], { title: "Agenti" });
   subscriptions.start();
+  if (S.data.machineCapacity) S.timers.push(setInterval(() => { if (!document.hidden) scheduleRefresh(); }, 30000));
 }
 
 /* ---------- agent ---------- */

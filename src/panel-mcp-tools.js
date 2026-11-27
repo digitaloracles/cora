@@ -217,7 +217,7 @@ export const TOOLS = [
   T("providers", "cora_voice_preview", "Hear a voice", "POST", "/api/voices/preview", "A spoken sample of a voice, returned as audio.", { body: { voice: str("Voice id."), language: str("Language."), text: str("Sample text, up to 300 characters.") } }),
 
   // Space settings
-  T("settings", "cora_state", "Whole panel state", "GET", "/api/state", "Everything the panel loads at once: your identity and role, settings, version, transports and their status, channels, agents, routines, models, providers, keys, subscriptions, quotas, desktop image, artifacts.", {}),
+  T("settings", "cora_state", "Whole panel state", "GET", "/api/state", "Everything the panel loads at once: your identity and role, settings, version, transports and their status, channels, agents, routines, models, providers, keys, subscriptions, quotas, desktop image, artifacts, and machine capacity for the space owner.", {}),
   T("settings", "cora_settings_get", "Space settings", "GET", "/api/state", "Space settings with the transports, channels and Discord servers they refer to.", { pick: (data) => ({ settings: data.settings, timezone: data.timezone, transport: data.transport, transports: data.transports, channels: data.channels, guilds: data.guilds, discord: data.discord, telegram: data.telegram, slack: data.slack, access: data.access }) }),
   T("settings", "cora_settings_update", "Change space settings", "PUT", "/api/settings", "Change space settings (space owner). Fields left out stay as they are. Chat permissions use cora_permissions_set.", { body: SETTINGS_FIELDS }),
   T("settings", "cora_storage_get", "Read storage maintenance", "GET", "/api/storage", "Read the space owner's cleanup policy, current run and latest per-task results.", {}),

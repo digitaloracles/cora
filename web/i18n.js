@@ -1,6 +1,14 @@
 // English for the panel. The UI is written in Italian; keys are the Italian texts,
 // with {placeholders} for the parts that change.
 export const EN = {
+  "Capacità della macchina": "Machine capacity",
+  "Desktop attivi": "Active desktops",
+  "Altri agenti con carico simile": "Additional agents at a similar workload",
+  "Risorsa limitante": "Limiting resource",
+  "Stima preliminare": "Preliminary estimate",
+  "Disco": "Disk",
+  "In attesa delle misure della macchina.": "Waiting for machine measurements.",
+  "Per il disco si stimano 20 GiB per agente in attesa delle misure dei desktop.": "Disk sizing assumes 20 GiB per agent until desktop measurements are available.",
   "1 turno inviato · ultimo invio {time}": "1 turn sent · last sent {time}",
   "File OpenTelemetry scaricato": "OpenTelemetry file downloaded",
   "Guida": "Guide",
