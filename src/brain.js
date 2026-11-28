@@ -1,4 +1,5 @@
 import { assessProgress, progressWindows } from "./agent-progress.js";
+import { ACCESS_ERROR, blockQuery, declaresBlock, findProcedures, procedureLines, toolFailure } from "./brain-procedures.js";
 import { noteChildPid, recoverHarness } from "./thread-sessions.js";
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -1312,6 +1313,48 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       trace.add({ type: "note", text: `doc: messaggio fermato — ${reason}` });
       return `error: not sent. ${reason}`;
     };
+    /**
+     * The owner's Brain, put in front of an agent that hits a wall: a failed call or a reply
+     * that gives up brings the procedures and rules that answer it, once per blocker per turn.
+     */
+    const procedureBrain = selectedBrain?.enabled && agent.brainSource !== "external" && !this.knowledge?.isSealed(agent) ? selectedBrain : null;
+    const offeredProcedures = new Set();
+    const readPages = new Set();
+    const failureQueries = [];
+    const failureSignatures = new Set();
+    let procedureLookups = 0;
+    let procedureAskChecked = false;
+    let procedureBlockChecked = false;
+    const lookupProcedures = async (trigger, query, exclude) => {
+      procedureLookups += 1;
+      const pages = await findProcedures(procedureBrain, query, { exclude }).catch((error) => {
+        trace.add({ type: "note", text: `Procedure dal Brain non disponibili: ${String(error.message).slice(0, 200)}` });
+        return [];
+      });
+      for (const page of pages) offeredProcedures.add(page.slug);
+      trace.add({ type: "note", text: pages.length ? `Procedure dal Brain (${trigger}): ${pages.map((page) => page.slug).join(", ")}` : `Procedure dal Brain (${trigger}): nessuna pertinente`,
+        procedures: { trigger, query: query.slice(0, 500), offered: pages.map((page) => ({ slug: page.slug, kind: page.kind, score: page.score })) } });
+      return pages;
+    };
+    const procedureRefusal = async (name, args) => {
+      if (name !== "ask_owner" || !procedureBrain || procedureAskChecked || halted) return "";
+      const question = String(args?.question || "");
+      if (!ACCESS_ERROR.test(question) && !declaresBlock(question)) return "";
+      procedureAskChecked = true;
+      const pages = await lookupProcedures("ask_owner", [question, ...failureQueries.slice(-2)].join(" "), readPages);
+      if (!pages.length) return "";
+      return `error: not sent yet. The owner's Brain has procedures or rules for this, not read in this turn:\n${procedureLines(pages)}\nRead them with brain_page and apply them with your tools now. If they do not apply, call ask_owner again and say why.`;
+    };
+    const procedureNote = async (name, args, text) => {
+      if (!procedureBrain || procedureLookups >= 4 || MEMORY_TOOLS.has(name) || LOOKUP_TOOLS.has(name) || THREAD_PLAN_TOOLS.has(name) || TALK_TOOLS.has(name)) return "";
+      const failure = toolFailure(name, args, text);
+      if (!failure) return "";
+      failureQueries.push(failure.query);
+      if (failureSignatures.has(failure.signature)) return "";
+      failureSignatures.add(failure.signature);
+      const pages = await lookupProcedures(`tool ${name}`, failure.query, new Set([...offeredProcedures, ...readPages]));
+      return pages.length ? `[Cora] The owner's Brain has procedures or rules for this error. Read them with brain_page and apply them before you declare yourself blocked or ask the owner:\n${procedureLines(pages)}` : "";
+    };
     const checkPlanClosure = () => {
       if (followedPlan && currentPlan()?.id !== followedPlan) {
         linkPlanTask(null);
@@ -1335,12 +1378,19 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       if (allowed && LOOKUP_TOOLS.has(name)) looked.add(name);
       else if (allowed && !TALK_TOOLS.has(name)) changed += 1;
       const waitingForOwner = blockedWork && !OWN_TOOLS.has(name) && !["say", "ask_owner", "notify", "list_channels"].includes(name);
-      const refusal = allowed && !repeated && !halted && !waitingForOwner ? threadRefusal(name, args) || await docRefusal(name, args) : "";
+      const refusal = allowed && !repeated && !halted && !waitingForOwner ? threadRefusal(name, args) || await docRefusal(name, args) || await procedureRefusal(name, args) : "";
       let output = waitingForOwner ? { text: `error: the progress review found a real dependency: ${blockedWork}. Do not repeat searches or writes. Report completed results and ask the owner for the precise missing decision with ask_owner.` } : halted ? { text: "error: the owner asked you to stop. Do not run anything else: say where you had got to, in one line." }
         : !allowed ? { text: `error: the tool ${name} is not available now` }
         : repeated ? { text: "error: you have already done exactly this several times with the same result. Stop repeating it: write what you have so far and what is blocking you." }
         : refusal ? { text: refusal }
         : await executeTool({ name, args }, ctx);
+      const ran = allowed && !repeated && !halted && !waitingForOwner && !refusal;
+      if (ran && name === "brain_page" && !String(output.text).startsWith("error:")) {
+        const slug = String(args?.slug || "");
+        readPages.add(slug);
+        if (offeredProcedures.has(slug)) trace.add({ type: "note", text: `Procedura del Brain letta: ${slug}`, procedures: { trigger: "read", slug } });
+      }
+      const procedure = ran ? await procedureNote(name, args, output.text) : "";
       if (name === "screenshot" && allowed && !halted) {
         const observed = createHash("sha256").update(output.image || output.text).digest("hex");
         if (output.image) screen = observed;
@@ -1415,7 +1465,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
         }
       }
       const steer = await news();
-      return before || steer || review ? { ...output, text: [output.text, before, steer, review].filter(Boolean).join("\n\n") } : output;
+      return before || steer || review || procedure ? { ...output, text: [output.text, procedure, before, steer, review].filter(Boolean).join("\n\n") } : output;
     };
     const runTool = (name, args) => {
       touched = true;
@@ -1641,6 +1691,16 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
         : L`in questo turno non hai usato nessuno strumento: quindi non sono successe`;
       return { kind: "claim", text, prompt: L`[Cora] Nella risposta dici di aver fatto delle cose, ma ${done}. Falle adesso con gli strumenti. Se parli di qualcosa fatto in un turno precedente, controllalo adesso con gli strumenti prima di confermarlo. Se non puoi farlo, scrivi chiaramente che non l'hai fatto.` };
     };
+    /** A reply that gives up on a block the owner's Brain knows how to clear goes back once, with those pages. */
+    const procedureVerdict = async (raw) => {
+      if (procedureBlockChecked || !procedureBrain || halted || asked || Date.now() > deadline - 20000) return null;
+      const text = cleanReply(raw, agent) || "";
+      if (!declaresBlock(text)) return null;
+      procedureBlockChecked = true;
+      const pages = await lookupProcedures("reply", [blockQuery(text), ...failureQueries.slice(-2)].join(" "), readPages);
+      if (!pages.length || halted) return null;
+      return { kind: "procedure", text, prompt: L`[Cora] Risposta non ancora pubblicata: dichiari un blocco, ma il Brain del proprietario ha procedure o regole che in questo turno non hai letto:\n${procedureLines(pages)}\nLeggile con brain_page e applicale adesso con gli strumenti. Se risolvono il blocco, completa il lavoro e scrivi il risultato; se non si applicano, scrivi di nuovo la risposta e di' perché.` };
+    };
     /** A final reply carrying another thread's work is written again, twice at most; after that done() posts a pointer instead. */
     let threadChecks = 0;
     const threadVerdict = (raw) => {
@@ -1665,7 +1725,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       trace.add({ type: "note", text: `doc: risposta fermata — ${reason}` });
       return { kind: "doc", text, prompt: L`[Cora] ${reason} Scrivi di nuovo la risposta finale, senza rifare il lavoro.` };
     };
-    const HARNESS_NOTES = { language: "risposta in un'altra lingua: la faccio riscrivere in quella del messaggio", plan: "riprendo il prossimo passo del piano", confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread" };
+    const HARNESS_NOTES = { language: "risposta in un'altra lingua: la faccio riscrivere in quella del messaggio", plan: "riprendo il prossimo passo del piano", confirm: "chiedo conferma che sia finito", claim: "dice di aver fatto cose che nessuno strumento ha fatto: lo rimando a farle", doc: "doc ha fermato la risposta: la faccio riscrivere", thread: "risposta sul lavoro di un altro thread: la rimando nel suo thread", procedure: "dichiara un blocco che il Brain sa risolvere: gli mostro le procedure" };
     const nudgedPlanSteps = new Set();
     const planVerdict = () => {
       if (!followedPlan || !caps.tools || halted || asked || looping || blockedWork || goalBlocked || Date.now() > deadline - 20000) return null;
@@ -1681,7 +1741,7 @@ Gestisci i tuoi compiti ricorrenti con set_routine, quelli da fare una sola volt
       await settleNews();
       checkPlanClosure();
       if (halted) return null;
-      return threadVerdict(raw) || languageVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (goal ? await goalVerdict(raw) : null) || planVerdict() || (!goal ? verdict(raw) : null);
+      return threadVerdict(raw) || languageVerdict(raw) || (await docVerdict(raw)) || claimVerdict(raw) || (await procedureVerdict(raw)) || (goal ? await goalVerdict(raw) : null) || planVerdict() || (!goal ? verdict(raw) : null);
     };
 
     control.settle = settleNews;

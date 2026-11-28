@@ -519,6 +519,10 @@ case "$1" in
         if [ -f "${dir}/cdp" ]; then cat "${dir}/cdp"; exit 0; fi
         echo '{"url":"https://example.test/","title":"Esempio","text":"ciao dal browser"}'; exit 0 ;;
     esac
+    if [ -f "${dir}/exec-fail" ] && grep -qF -- "$(head -n 1 "${dir}/exec-fail")" <<CMD
+$*
+CMD
+    then tail -n +2 "${dir}/exec-fail"; exit 1; fi
     for last; do :; done
     echo "ran: $last"; exit 0 ;;
 esac
