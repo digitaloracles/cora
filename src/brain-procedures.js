@@ -13,6 +13,19 @@ export const ACCESS_ERROR = /\b(?:auth\w*|reauth\w*|credential\w*|credenzial\w*|
 /** A reply that says the work stopped on something the agent could not get past. */
 export const BLOCK_WORDS = /\b(?:unverified|blocked|bloccat[oaie]|blocco|cannot (?:access|proceed|continue)|can't (?:access|proceed|continue)|unable to (?:access|authenticate|log ?in)|needs? (?:the )?owner|non (?:sono riuscit[oaie]|riesco|posso) (?:a |ad )?(?:accedere|autenticar\w*|entrare|leggere|proseguire|continuare|verificare)|(?:accesso|autenticazione|login|rinnovo)[^.\n]{0,60}(?:fallit[oa]|negat[oa]|rifiutat[oa]|scadut[oa])|serve (?:ripristinare|riattivare|rifare|il tuo|un tuo|la tua|che tu)|(?:ripristinare|riattivare) (?:l'|l’)?(?:autenticazione|accesso|login|profilo))/i;
 
+/** A path that is simply not there ("ls: cannot access 'x': No such file or directory") is not an access problem. */
+const MISSING_PATH = /no such file or directory/i;
+
+/** The output lines that report an access problem. */
+const accessLines = (text) => String(text || "").split("\n").filter((line) => ACCESS_ERROR.test(line) && !MISSING_PATH.test(line));
+
+/** The agent's own words, without what it quotes: code, quotation marks, guillemets and quoted lines. */
+export const ownWords = (text) => String(text || "")
+  .replace(/```[\s\S]*?```/g, " ")
+  .replace(/`[^`\n]*`/g, " ")
+  .replace(/«[^»\n]*»|“[^”\n]*”|"[^"\n]*"/g, " ")
+  .replace(/^\s*>.*$/gm, " ");
+
 const PROCEDURE_KINDS = new Set(["procedure", "decision"]);
 const MIN_SCORE = 2;
 const STOP = new Set(("error errore errori failed fallito fallita please run command comando output exit with from that this have there your when what will into then than were been only also more none null true false " +
@@ -56,7 +69,7 @@ export async function findProcedures(brain, query, { exclude = new Set(), limit 
 /** The words of a failed call that say what failed: the tool, what it was asked, and the error lines. */
 export function failureQuery(name, args, text) {
   const asked = name === "shell" ? String(args?.command || "") : Object.values(args || {}).filter((value) => typeof value === "string").join(" ");
-  const lines = String(text || "").split("\n").filter((line) => ACCESS_ERROR.test(line) || /^error:/i.test(line)).slice(-6).join(" ");
+  const lines = String(text || "").split("\n").filter((line) => (ACCESS_ERROR.test(line) && !MISSING_PATH.test(line)) || /^error:/i.test(line)).slice(-6).join(" ");
   return `${name === "shell" ? "" : name.replace(/_/g, " ")} ${asked.slice(0, 400)} ${(lines || String(text || "").slice(-600)).slice(0, 800)}`.trim();
 }
 
@@ -65,17 +78,17 @@ export function toolFailure(name, args, text) {
   const output = String(text || "");
   const exit = /^\[(?:exit (\d+)|timed out[^\]]*)\]/.exec(output);
   if (name === "shell" || exit) {
-    if (!exit || exit[1] === "0" || !ACCESS_ERROR.test(output.slice(exit[0].length))) return null;
+    if (!exit || exit[1] === "0" || !accessLines(output.slice(exit[0].length)).length) return null;
   } else if (!/^error:/i.test(output)) return null;
   return { query: failureQuery(name, args, output), signature: `${name}:${searchText(output).slice(0, 160)}` };
 }
 
 /** Whether a reply declares that the work stopped on a block. */
-export const declaresBlock = (text) => BLOCK_WORDS.test(String(text || ""));
+export const declaresBlock = (text) => BLOCK_WORDS.test(ownWords(text));
 
 /** The sentences of a reply that carry the block: the query for the lookup. */
 export function blockQuery(text) {
-  const sentences = String(text || "").split(/(?<=[.!?:])\s+|\n+/).filter((sentence) => BLOCK_WORDS.test(sentence) || ACCESS_ERROR.test(sentence));
+  const sentences = ownWords(text).split(/(?<=[.!?:])\s+|\n+/).filter((sentence) => BLOCK_WORDS.test(sentence) || ACCESS_ERROR.test(sentence));
   const topic = String(text || "").replace(/\s+/g, " ").slice(0, 200);
   return `${topic} ${sentences.slice(0, 4).join(" ")}`.slice(0, 1000);
 }
