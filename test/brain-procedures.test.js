@@ -24,6 +24,13 @@ test("what counts as a failure worth a lookup, and what as a declared block", ()
   assert.ok(declaresBlock("I am blocked: the deploy key was rejected."));
   assert.equal(declaresBlock("Costi del 26/11: 31,43 CHF, +7,6% sulla mediana."), false);
   assert.match(blockQuery(DOBI_RESULT), /Refracto[\s\S]*credenziali/);
+  // 28/11 10:00, Dobi's health check: a missing directory is not an access problem.
+  assert.equal(toolFailure("shell", { command: "ls -l ~/work/health-monitor && tailscale status" }, "[exit 2]\nls: cannot access '/home/agent/work/health-monitor': No such file or directory"), null);
+  assert.ok(toolFailure("shell", { command: "ls /srv/keys" }, "[exit 2]\nls: cannot open directory '/srv/keys': Permission denied"), "a real refusal still counts");
+  // A reply that quotes someone else's block does not declare one.
+  assert.equal(declaresBlock("Dobi chiudeva con «UNVERIFIED» e Cora l'ha fatto tornare indietro; il rilascio di `blocked` è verificato."), false);
+  assert.equal(declaresBlock("> Costi Refracto: UNVERIFIED\nIl rilascio è verificato."), false);
+  assert.ok(declaresBlock("L'impatto dello spazio sulle attività resta **UNVERIFIED**."), "the agent's own words still count");
 });
 
 test("a blocked agent is shown the owner's Brain procedures before it gives up, once, and only when they match", async (t) => {
